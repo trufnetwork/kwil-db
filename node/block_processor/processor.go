@@ -705,7 +705,7 @@ func (bp *BlockProcessor) Commit(ctx context.Context, req *ktypes.CommitRequest)
 	}
 
 	// Snapshots:
-	if err := bp.snapshotDB(ctx, req.Height, req.Syncing); err != nil {
+	if err := bp.snapshotDB(ctx, req.Height); err != nil {
 		bp.log.Warn("Failed to create snapshot of the database", "err", err)
 	}
 
@@ -744,12 +744,12 @@ var (
 	statsyncExcludedTables   = []string{"kwild_internal.sentry"}
 )
 
-func (bp *BlockProcessor) snapshotDB(ctx context.Context, height int64, syncing bool) error {
+func (bp *BlockProcessor) snapshotDB(ctx context.Context, height int64) error {
 	snapshotsDue := bp.snapshotter.Enabled() &&
 		(bp.snapshotter.IsSnapshotDue(uint64(height)) || len(bp.snapshotter.ListSnapshots()) == 0)
 	// snapshotsDue = snapshotsDue && height > max(1, a.cfg.InitialHeight)
 
-	if snapshotsDue && !syncing {
+	if snapshotsDue {
 		// we make a snapshot tx but don't directly use it. This is because under the hood,
 		// we are using the pg_dump executable to create the snapshot, and we are simply
 		// giving pg_dump the snapshot ID to guarantee it has an isolated view of the database.
