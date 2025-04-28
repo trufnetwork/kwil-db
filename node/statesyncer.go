@@ -146,34 +146,60 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		providers = append(providers, s.snapshotPool.getPeers()...)
 	}
 
+	const chunkFetchers = 10 // limit the number of concurrent chunk fetches
+
 	errChan := make(chan error, snapshot.Chunks)
+	tasks := make(chan uint32, snapshot.Chunks) // channel to send tasks to chunk fetchers
+
 	chunkCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	for i := range snapshot.Chunks {
+	// start chunk fetchers
+	for range chunkFetchers {
 		wg.Add(1)
-		go func(idx uint32) {
+		go func() {
 			defer wg.Done()
-			for _, provider := range providers {
+
+			for chunkIdx := range tasks {
+				success := true
+				for _, provider := range providers {
+					select {
+					case <-chunkCtx.Done():
+						// Exit early if the context is cancelled
+						return
+					default:
+					}
+					if err := s.requestSnapshotChunk(chunkCtx, snapshot, provider, chunkIdx); err != nil {
+						s.log.Warn("failed to request snapshot chunk %d from peer %s: %v", chunkIdx, provider.ID, err)
+						continue
+					}
+					// successfully fetched the chunk
+					s.log.Info("Received snapshot chunk", "height", snapshot.Height, "index", chunkIdx, "provider", provider.ID)
+					success = true
+					break // Move to next chunk after successful fetch
+				}
+
+				if success {
+					continue // Move to next chunk after successful fetch
+				}
+
+				// failed to fetch the chunk from all providers
 				select {
-				case <-chunkCtx.Done():
+				case errChan <- fmt.Errorf("failed to fetch snapshot chunk index %d", chunkIdx):
+					cancel()
 					// Exit early if the context is cancelled
 					return
 				default:
 				}
-				if err := s.requestSnapshotChunk(chunkCtx, snapshot, provider, idx); err != nil {
-					s.log.Warn("failed to request snapshot chunk %d from peer %s: %v", idx, provider.ID, err)
-					continue
-				}
-				// successfully fetched the chunk
-				s.log.Info("Received snapshot chunk", "height", snapshot.Height, "index", idx, "provider", provider.ID)
-				return
 			}
-			// failed to fetch the chunk from all providers
-			errChan <- fmt.Errorf("failed to fetch snapshot chunk index %d", idx)
-			cancel()
-		}(i)
+		}()
 	}
+
+	// send chunk indexes to chunk fetchers
+	for chunk := range snapshot.Chunks {
+		tasks <- chunk
+	}
+	close(tasks) // close the tasks channel to signal the end of chunks to fetch
 
 	wg.Wait()
 
