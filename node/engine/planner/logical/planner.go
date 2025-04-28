@@ -2332,15 +2332,15 @@ func (s *scopeContext) insert(node *parse.InsertStatement) (*Insert, error) {
 
 	if node.Select != nil {
 		// if a select statement is present, we need to plan it
-		plan, newRel, err := s.selectStmt(node.Select)
+		plan, _, err := s.selectStmt(node.Select)
 		if err != nil {
 			return nil, err
 		}
 
-		// check that the select statement returns the correct number of columns and types
-		if err = equalShape(rel, newRel); err != nil {
-			return nil, err
-		}
+		// we don't need to check the number / type of columns and compare them
+		// to the table. Postgres will catch this error and return a much more
+		// helpful error message, so we leave it. We simply call the select
+		// statement above to ensure it is deterministic.
 
 		ins.InsertionValues = plan
 	} else {
