@@ -42,11 +42,23 @@ const (
 
 var blackholeIP6 = net.ParseIP("100::")
 
-func newTestHost(t *testing.T, mn mock.Mocknet) (p2pcrypto.PrivKey, host.Host) {
-	privKey, _, err := p2pcrypto.GenerateSecp256k1Key(rand.Reader)
+func newTestHost(t *testing.T, mn mock.Mocknet, keyType crypto.KeyType) (p2pcrypto.PrivKey, host.Host) {
+	var privKey p2pcrypto.PrivKey
+	var err error
+
+	// Generate key based on specified type
+	if keyType == crypto.KeyTypeEd25519 {
+		privKey, _, err = p2pcrypto.GenerateEd25519Key(rand.Reader)
+	} else {
+		// Default to secp256k1
+		privKey, _, err = p2pcrypto.GenerateSecp256k1Key(rand.Reader)
+	}
+
 	if err != nil {
 		t.Fatalf("Failed to generate private key: %v", err)
 	}
+
+	// Rest of the function remains the same
 	id, err := peer.IDFromPrivateKey(privKey)
 	if err != nil {
 		t.Fatalf("Failed to get private key: %v", err)
@@ -74,7 +86,7 @@ func newTestHost(t *testing.T, mn mock.Mocknet) (p2pcrypto.PrivKey, host.Host) {
 	return privKey, host
 }
 
-func makeTestHosts(t *testing.T, nNodes, nExtraHosts int, blockInterval time.Duration) ([]*Node, []host.Host, []*P2PService, mock.Mocknet) {
+func makeTestHosts(t *testing.T, nNodes, nExtraHosts int, blockInterval time.Duration, keyType crypto.KeyType) ([]*Node, []host.Host, []*P2PService, mock.Mocknet) {
 	mn := mock.New()
 	t.Cleanup(func() {
 		mn.Close()
@@ -86,14 +98,22 @@ func makeTestHosts(t *testing.T, nNodes, nExtraHosts int, blockInterval time.Dur
 	var nodes []*Node
 	var hosts []host.Host
 	var p2p []*P2PService
-	// var privKeys []*crypto.Secp256k1PrivateKey
 
-	for range nNodes {
-		pk, h := newTestHost(t, mn)
-		t.Logf("node host is %v", h.ID())
+	// Create nodes with alternating key types
+	for i := range nNodes {
+		pk, h := newTestHost(t, mn, keyType)
+		t.Logf("node host is %v with key type %s", h.ID(), keyType)
 
 		pkBts, _ := pk.Raw()
-		priv, err := crypto.UnmarshalSecp256k1PrivateKey(pkBts)
+		var priv crypto.PrivateKey
+		var err error
+
+		if keyType == crypto.KeyTypeEd25519 {
+			priv, err = crypto.UnmarshalEd25519PrivateKey(pkBts)
+		} else {
+			priv, err = crypto.UnmarshalSecp256k1PrivateKey(pkBts)
+		}
+
 		if err != nil {
 			t.Fatalf("Failed to unmarshal private key: %v", err)
 		}
@@ -107,12 +127,11 @@ func makeTestHosts(t *testing.T, nNodes, nExtraHosts int, blockInterval time.Dur
 		t.Logf("node root dir: %s", rootDir)
 
 		cfg := &Config{
-			ChainID: "test",
-			RootDir: rootDir,
-			PrivKey: priv,
-			Logger:  log.DiscardLogger,
-			P2P:     &defaultConfigSet.P2P,
-			// DB unused
+			ChainID:     "test",
+			RootDir:     rootDir,
+			PrivKey:     priv,
+			Logger:      log.DiscardLogger,
+			P2P:         &defaultConfigSet.P2P,
 			DBConfig:    &defaultConfigSet.DB,
 			Statesync:   &defaultConfigSet.StateSync,
 			Mempool:     mempool.New(mempoolSz, maxTxSz),
@@ -139,16 +158,15 @@ func makeTestHosts(t *testing.T, nNodes, nExtraHosts int, blockInterval time.Dur
 
 		node, err := NewNode(cfg)
 		if err != nil {
-			t.Fatalf("Failed to create Node 1: %v", err)
+			t.Fatalf("Failed to create Node %d: %v", i+1, err)
 		}
 
-		// privKeys = append(privKeys, priv)
 		nodes = append(nodes, node)
-
 	}
 
+	// Create extra hosts with alternating key types
 	for range nExtraHosts {
-		_, h := newTestHost(t, mn)
+		_, h := newTestHost(t, mn, keyType)
 		setupStreamHandlers(t, h)
 		hosts = append(hosts, h)
 	}
@@ -225,10 +243,25 @@ func createTestBlock(height int64, numTxns int) (*ktypes.Block, types.Hash) {
 	return blk, fakeAppHash(height)
 }
 
-func newGenesis(t *testing.T, nodekeys [][]byte) ([]crypto.PrivateKey, *config.GenesisConfig) {
+func newGenesis(t *testing.T, nodeKeys []p2pcrypto.PrivKey) ([]crypto.PrivateKey, *config.GenesisConfig) {
 	var privKeys []crypto.PrivateKey
-	for _, nodekey := range nodekeys {
-		priv, err := crypto.UnmarshalSecp256k1PrivateKey(nodekey)
+	for _, nodeKey := range nodeKeys {
+		rawKey, err := nodeKey.Raw()
+		if err != nil {
+			t.Fatalf("Failed to get raw key: %v", err)
+		}
+
+		var priv crypto.PrivateKey
+
+		switch nodeKey.Type() {
+		case p2pcrypto.Ed25519:
+			priv, err = crypto.UnmarshalEd25519PrivateKey(rawKey)
+		case p2pcrypto.Secp256k1:
+			priv, err = crypto.UnmarshalSecp256k1PrivateKey(rawKey)
+		default:
+			t.Fatalf("Unsupported key type: %s", nodeKey.Type())
+		}
+
 		if err != nil {
 			t.Fatalf("Failed to unmarshal private key: %v", err)
 		}
@@ -441,7 +474,7 @@ func (f *faker) SetResetStateHandler(resetStateHandler func(height int64, txIDs 
 }
 
 func TestStreamsBlockFetch(t *testing.T) {
-	nodes, extraHosts, _, mn := makeTestHosts(t, 1, 1, 5*time.Hour)
+	nodes, extraHosts, _, mn := makeTestHosts(t, 1, 1, 5*time.Hour, crypto.KeyTypeSecp256k1)
 	linkAll(t, mn)
 
 	n1 := nodes[0]
