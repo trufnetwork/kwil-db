@@ -5,6 +5,7 @@ package node
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	p2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	mock "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,10 +51,9 @@ func TestSingleNodeMocknet(t *testing.T) {
 	}
 	mn := mock.New()
 
-	pk1, h1 := newTestHost(t, mn)
+	pk1, h1 := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
 	bs1 := memstore.NewMemBS()
 	mp1 := mempool.New(mempoolSz, maxTxSz)
-	priv1, _ := pk1.Raw()
 
 	db1 := initDB(t, "5432", "kwil_test_db")
 
@@ -66,7 +67,7 @@ func TestSingleNodeMocknet(t *testing.T) {
 		wg.Wait()
 	})
 
-	privKeys, _ := newGenesis(t, [][]byte{priv1})
+	privKeys, _ := newGenesis(t, []p2pcrypto.PrivKey{pk1})
 
 	valSet := make(map[string]ktypes.Validator)
 	for _, priv := range privKeys {
@@ -92,10 +93,7 @@ func TestSingleNodeMocknet(t *testing.T) {
 	genCfg.Leader = ktypes.PublicKey{PublicKey: privKeys[0].Public()}
 	genCfg.Validators = valSetList
 
-	k, err := crypto.UnmarshalSecp256k1PrivateKey(priv1)
-	require.NoError(t, err)
-
-	signer1 := &auth.EthPersonalSigner{Key: *k}
+	signer1 := auth.GetNodeSigner(privKeys[0])
 
 	es := &mockEventStore{}
 	// accounts := &mockAccounts{}
@@ -192,12 +190,21 @@ func TestSingleNodeMocknet(t *testing.T) {
 }
 
 func TestDualNodeMocknet(t *testing.T) {
+	keyTypes := []crypto.KeyType{crypto.KeyTypeEd25519, crypto.KeyTypeSecp256k1}
+
+	for _, keyType := range keyTypes {
+		t.Run(fmt.Sprintf("KeyType=%s", keyType), func(t *testing.T) {
+			runDualNodeMocknetTest(t, keyType)
+		})
+	}
+}
+func runDualNodeMocknetTest(t *testing.T, keyType crypto.KeyType) {
 	if testing.Short() {
 		t.Skip()
 	}
 	mn := mock.New()
 
-	pk1, h1 := newTestHost(t, mn)
+	pk1, h1 := newTestHost(t, mn, keyType)
 	bs1 := memstore.NewMemBS()
 	mp1 := mempool.New(mempoolSz, maxTxSz)
 
@@ -210,17 +217,22 @@ func TestDualNodeMocknet(t *testing.T) {
 		require.NoError(t, err)
 	}()
 
-	priv1, _ := pk1.Raw()
+	// priv1, _ := pk1.Raw()
 	pub1, _ := pk1.GetPublic().Raw()
 	host1, port1, _ := maHostPort(h1.Addrs()[0])
-	peerStr1 := hex.EncodeToString(pub1) + "#secp256k1@" + net.JoinHostPort(host1, port1)
+	var peerStr1 string
+	if keyType == crypto.KeyTypeEd25519 {
+		peerStr1 = hex.EncodeToString(pub1) + "#ed25519@" + net.JoinHostPort(host1, port1)
+	} else {
+		peerStr1 = hex.EncodeToString(pub1) + "#secp256k1@" + net.JoinHostPort(host1, port1)
+	}
 
-	pk2, h2 := newTestHost(t, mn)
+	pk2, h2 := newTestHost(t, mn, keyType)
 	bs2 := memstore.NewMemBS()
 	mp2 := mempool.New(mempoolSz, maxTxSz)
 	db2 := initDB(t, "5432", "kwil_test_db2") // NOTE: using the same postgres host is a little wild
 
-	priv2, _ := pk2.Raw()
+	// priv2, _ := pk2.Raw()
 	// pub2, _ := pk2.GetPublic().Raw()
 
 	root1 := t.TempDir()
@@ -234,7 +246,7 @@ func TestDualNodeMocknet(t *testing.T) {
 		wg.Wait()
 	})
 
-	privKeys, _ := newGenesis(t, [][]byte{priv1, priv2})
+	privKeys, _ := newGenesis(t, []p2pcrypto.PrivKey{pk1, pk2})
 
 	valSet := make(map[string]ktypes.Validator)
 	for _, priv := range privKeys {
