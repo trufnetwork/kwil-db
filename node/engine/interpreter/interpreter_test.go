@@ -806,6 +806,15 @@ func Test_SQL(t *testing.T) {
 				{int64(2)},
 			},
 		},
+		{
+			// this is a regression test for a previous bug
+			// https://github.com/trufnetwork/kwil-db/issues/1503
+			name: "insert with select, without all columns",
+			sql: []string{
+				`CREATE TABLE info (id int primary key, name text);`,
+			},
+			execSQL: `INSERT INTO info (id) SELECT 1;`,
+		},
 	}
 
 	db := newTestDB(t, nil, nil)
