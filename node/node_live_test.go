@@ -24,7 +24,6 @@ import (
 	"github.com/kwilteam/kwil-db/core/crypto"
 	"github.com/kwilteam/kwil-db/core/crypto/auth"
 	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
 	ktypes "github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/node/accounts"
 	blockprocessor "github.com/kwilteam/kwil-db/node/block_processor"
@@ -72,7 +71,7 @@ func TestSingleNodeMocknet(t *testing.T) {
 	valSet := make(map[string]ktypes.Validator)
 	for _, priv := range privKeys {
 		valSet[hex.EncodeToString(priv.Public().Bytes())] = ktypes.Validator{
-			AccountID: types.AccountID{
+			AccountID: ktypes.AccountID{
 				Identifier: priv.Public().Bytes(),
 				KeyType:    priv.Type(),
 			},
@@ -251,7 +250,7 @@ func runDualNodeMocknetTest(t *testing.T, keyType crypto.KeyType) {
 	valSet := make(map[string]ktypes.Validator)
 	for _, priv := range privKeys {
 		valSet[hex.EncodeToString(priv.Public().Bytes())] = ktypes.Validator{
-			AccountID: types.AccountID{
+			AccountID: ktypes.AccountID{
 				Identifier: priv.Public().Bytes(),
 				KeyType:    priv.Type(),
 			},
