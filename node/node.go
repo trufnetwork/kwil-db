@@ -278,7 +278,7 @@ func (n *Node) Start(ctx context.Context) error {
 
 	for _, val := range n.bp.GetValidators() {
 		n.log.Infof("Adding validator %v to peer whitelist", val.Identifier)
-		peerID, err := peerIDForValidator(val.Identifier)
+		peerID, err := peerIDForValidator(val)
 		if err != nil {
 			n.log.Errorf("cannot get peerID for validator (%v): %v", val.Identifier, err)
 			continue
@@ -298,7 +298,7 @@ func (n *Node) Start(ctx context.Context) error {
 				}
 				// update peer filter
 				for _, up := range valUpdates {
-					peerID, err := peerIDForValidator(up.Identifier)
+					peerID, err := peerIDForValidator(up)
 					if err != nil {
 						n.log.Errorf("cannot get peerID for validator (%v): %v", up.Identifier, err)
 						continue
@@ -388,17 +388,24 @@ func (n *Node) Start(ctx context.Context) error {
 	return ceErr
 }
 
-func peerIDForValidator(pubkeyBts []byte) (peer.ID, error) {
+func peerIDForValidator(pubkey *ktypes.Validator) (peer.ID, error) {
 	// We only support secp256k1 keys for validators presently.
-	pk, err := crypto.UnmarshalSecp256k1PublicKey(pubkeyBts)
-	if err != nil {
-		return "", fmt.Errorf("Invalid validator pubkey: %vw", err)
+	switch pubkey.KeyType {
+	case crypto.KeyTypeSecp256k1:
+		p2pPub, err := p2pcrypto.UnmarshalSecp256k1PublicKey(pubkey.Identifier)
+		if err != nil {
+			return "", fmt.Errorf("Invalid validator pubkey: %vw", err)
+		}
+		return peer.IDFromPublicKey(p2pPub)
+	case crypto.KeyTypeEd25519:
+		p2pPub, err := p2pcrypto.UnmarshalEd25519PublicKey(pubkey.Identifier)
+		if err != nil {
+			return "", fmt.Errorf("Invalid validator pubkey: %vw", err)
+		}
+		return peer.IDFromPublicKey(p2pPub)
+	default:
+		return "", fmt.Errorf("unsupported validator key type: %s", pubkey.KeyType)
 	}
-	peerID, err := peer.IDFromPublicKey((*p2pcrypto.Secp256k1PublicKey)(pk))
-	if err != nil {
-		return "", fmt.Errorf("Invalid validator pubkey: %w", err)
-	}
-	return peerID, nil
 }
 
 func nodeIDToPeerID(nodeID string) (peer.ID, error) {

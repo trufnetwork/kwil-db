@@ -3,13 +3,13 @@ package types_test
 
 import (
 	"testing"
+
 	types "github.com/kwilteam/kwil-db/core/types"
 )
 
-
 func FuzzDecodeBlock(f *testing.F) {
 	// Seed corpus
-	testcases := []struct{
+	testcases := []struct {
 		rawBlk []byte
 	}{
 		{rawBlk: []byte{}},
