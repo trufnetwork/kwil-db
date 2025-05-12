@@ -32,7 +32,6 @@ require (
 	github.com/samber/lo v1.47.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/pflag v1.0.6
-	github.com/stretchr/testify v1.10.0
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.34.0
 	go.opentelemetry.io/otel/metric v1.34.0
@@ -225,4 +224,12 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.3.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
+)
+
+require github.com/stretchr/testify v1.10.0
+
+require (
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 )

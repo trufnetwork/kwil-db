@@ -2212,18 +2212,27 @@ func Test_Actions(t *testing.T) {
 				return nil
 			})
 			if test.err != nil {
-				require.Error(t, err)
-				require.ErrorIs(t, err, test.err)
+				if err == nil {
+					require.Error(t, res.Error)
+					require.ErrorIs(t, res.Error, test.err)
+				} else {
+					require.Error(t, err)
+					require.ErrorIs(t, err, test.err)
+				}
 			} else if test.errContains != "" {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), test.errContains)
+				if err == nil {
+					require.Error(t, res.Error)
+					require.Contains(t, res.Error.Error(), test.errContains)
+				} else {
+					require.Error(t, err)
+					require.Contains(t, err.Error(), test.errContains)
+				}
 			} else {
 				require.NoError(t, err)
-			}
-
-			if test.executionErrContains != "" {
-				require.NotNil(t, res.Error)
-				require.Contains(t, res.Error.Error(), test.executionErrContains)
+				if test.executionErrContains != "" {
+					require.NotNil(t, res.Error)
+					require.Contains(t, res.Error.Error(), test.executionErrContains)
+				}
 			}
 
 			require.Equal(t, len(test.results), len(results))

@@ -1,6 +1,7 @@
 package interpreter
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/kwilteam/kwil-db/core/types"
@@ -922,5 +923,182 @@ func testRoundTripParse(t *testing.T, v value) {
 
 	if !equal.RawValue().(bool) {
 		t.Fatalf("values not equal: %v != %v", v.RawValue(), val2.RawValue())
+	}
+}
+
+func Test_blobValue_Cast(t *testing.T) {
+	type fields struct {
+		bts []byte
+	}
+	type args struct {
+		t *types.DataType
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		want    value
+		wantErr bool
+	}{
+		{
+			name: "cast to int - valid",
+			fields: fields{
+				bts: []byte("123"),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    makeInt8(123),
+			wantErr: false,
+		},
+		{
+			name: "cast to int - invalid",
+			fields: fields{
+				bts: []byte("not an int"),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "cast to text",
+			fields: fields{
+				bts: []byte("hello world"),
+			},
+			args: args{
+				t: types.TextType,
+			},
+			want:    makeText("hello world"),
+			wantErr: false,
+		},
+		{
+			name: "cast to bytea - same type",
+			fields: fields{
+				bts: []byte{0x01, 0x02, 0x03},
+			},
+			args: args{
+				t: types.ByteaType,
+			},
+			want: &blobValue{
+				bts: []byte{0x01, 0x02, 0x03},
+			},
+			wantErr: false,
+		},
+		{
+			name: "cast to unsupported type",
+			fields: fields{
+				bts: []byte("data"),
+			},
+			args: args{
+				t: types.BoolType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "cast to numeric - not supported",
+			fields: fields{
+				bts: []byte("123.45"),
+			},
+			args: args{
+				t: types.NumericType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "cast to uuid - not supported",
+			fields: fields{
+				bts: []byte("550e8400-e29b-41d4-a716-446655440000"),
+			},
+			args: args{
+				t: types.UUIDType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "cast to array type - not supported",
+			fields: fields{
+				bts: []byte("test"),
+			},
+			args: args{
+				t: types.TextArrayType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "cast empty blob to int",
+			fields: fields{
+				bts: []byte(""),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "cast zero int",
+			fields: fields{
+				bts: []byte("0"),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    makeInt8(0),
+			wantErr: false,
+		},
+		{
+			name: "cast negative int",
+			fields: fields{
+				bts: []byte("-42"),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    makeInt8(-42),
+			wantErr: false,
+		},
+		{
+			name: "cast max int64",
+			fields: fields{
+				bts: []byte("9223372036854775807"),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    makeInt8(9223372036854775807),
+			wantErr: false,
+		},
+		{
+			name: "cast overflow int64",
+			fields: fields{
+				bts: []byte("9223372036854775808"),
+			},
+			args: args{
+				t: types.IntType,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &blobValue{
+				bts: tt.fields.bts,
+			}
+			got, err := b.Cast(tt.args.t)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("blobValue.Cast() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("blobValue.Cast() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
