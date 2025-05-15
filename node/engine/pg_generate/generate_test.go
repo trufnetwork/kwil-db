@@ -155,7 +155,7 @@ func Test_PgGenerate(t *testing.T) {
 		{
 			name: "window function",
 			sql:  "SELECT col1, col2, SUM(col3) OVER (PARTITION BY col1 ORDER BY col2) FROM tbl;",
-			want: "SELECT col1, col2, sum(col3) OVER (PARTITION BY col1 ORDER BY col2 ASC NULLS LAST) FROM tbl;",
+			want: "SELECT col1, col2, sum(col3) OVER (PARTITION BY col1 ORDER BY col2) FROM tbl;",
 		},
 		{
 			name: "array access",
@@ -345,7 +345,7 @@ func Test_PgGenerate(t *testing.T) {
 		{
 			name: "window function",
 			sql:  `SELECT col1, col2, row_number() OVER (PARTITION BY col1 ORDER BY col2) FROM tbl;`,
-			want: `SELECT col1, col2, row_number() OVER (PARTITION BY col1 ORDER BY col2 ASC NULLS LAST) FROM tbl;`,
+			want: `SELECT col1, col2, row_number() OVER (PARTITION BY col1 ORDER BY col2) FROM tbl;`,
 		},
 	}
 
