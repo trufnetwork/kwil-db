@@ -1198,16 +1198,18 @@ func (s *schemaVisitor) VisitCompound_operator(ctx *gen.Compound_operatorContext
 func (s *schemaVisitor) VisitOrdering_term(ctx *gen.Ordering_termContext) any {
 	ord := &OrderingTerm{
 		Expression: ctx.Sql_expr().Accept(s).(Expression),
-		Order:      OrderTypeAsc,
-		Nulls:      NullOrderLast,
 	}
 
 	if ctx.DESC() != nil {
 		ord.Order = OrderTypeDesc
+	} else if ctx.ASC() != nil {
+		ord.Order = OrderTypeAsc
 	}
 
 	if ctx.FIRST() != nil {
 		ord.Nulls = NullOrderFirst
+	} else if ctx.LAST() != nil {
+		ord.Nulls = NullOrderLast
 	}
 
 	ord.Set(ctx)
@@ -1327,8 +1329,9 @@ func (s *schemaVisitor) VisitJoin(ctx *gen.JoinContext) any {
 }
 
 func (s *schemaVisitor) VisitExpression_result_column(ctx *gen.Expression_result_columnContext) any {
+	expr := ctx.Sql_expr().Accept(s).(Expression)
 	col := &ResultColumnExpression{
-		Expression: ctx.Sql_expr().Accept(s).(Expression),
+		Expression: expr,
 	}
 
 	if ctx.Identifier() != nil {

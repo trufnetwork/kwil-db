@@ -1149,6 +1149,989 @@ func Test_SQL(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "array access - single index",
+			sql:  "SELECT users[1] FROM arrays;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionArrayAccess{
+										Array: exprColumn("", "users"),
+										Index: exprLit(1),
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "arrays",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "array access - range",
+			sql:  "SELECT users[1:5] FROM arrays;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionArrayAccess{
+										Array: exprColumn("", "users"),
+										FromTo: &[2]Expression{
+											exprLit(1),
+											exprLit(5),
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "arrays",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "array access - left range",
+			sql:  "SELECT users[1:] FROM arrays;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionArrayAccess{
+										Array: exprColumn("", "users"),
+										FromTo: &[2]Expression{
+											exprLit(1),
+											nil,
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "arrays",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "array access - right range",
+			sql:  "SELECT users[:5] FROM arrays;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionArrayAccess{
+										Array: exprColumn("", "users"),
+										FromTo: &[2]Expression{
+											nil,
+											exprLit(5),
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "arrays",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "array access - full range",
+			sql:  "SELECT users[:] FROM arrays;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionArrayAccess{
+										Array: exprColumn("", "users"),
+										FromTo: &[2]Expression{
+											nil,
+											nil,
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "arrays",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "between expression",
+			sql:  "SELECT * FROM users WHERE id BETWEEN 1 AND 10;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionBetween{
+								Expression: exprColumn("", "id"),
+								Lower:      exprLit(1),
+								Upper:      exprLit(10),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "not between expression",
+			sql:  "SELECT * FROM users WHERE id NOT BETWEEN 1 AND 10;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionBetween{
+								Expression: exprColumn("", "id"),
+								Lower:      exprLit(1),
+								Upper:      exprLit(10),
+								Not:        true,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "logical operators with between",
+			sql:  "SELECT * FROM users WHERE (id BETWEEN 1 AND 10) AND username = 'test';",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionLogical{
+								Left: &ExpressionParenthesized{
+									Inner: &ExpressionBetween{
+										Expression: exprColumn("", "id"),
+										Lower:      exprLit(1),
+										Upper:      exprLit(10),
+									},
+								},
+								Operator: LogicalOperatorAnd,
+								Right: &ExpressionComparison{
+									Left:     exprColumn("", "username"),
+									Operator: ComparisonOperatorEqual,
+									Right:    exprLit("test"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "logical operators",
+			sql:  "SELECT * FROM users WHERE username = 'test' AND id > 5 OR active = true;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionLogical{
+								Left: &ExpressionLogical{
+									Left: &ExpressionComparison{
+										Left:     exprColumn("", "username"),
+										Operator: ComparisonOperatorEqual,
+										Right:    exprLit("test"),
+									},
+									Operator: LogicalOperatorAnd,
+									Right: &ExpressionComparison{
+										Left:     exprColumn("", "id"),
+										Operator: ComparisonOperatorGreaterThan,
+										Right:    exprLit(5),
+									},
+								},
+								Operator: LogicalOperatorOr,
+								Right: &ExpressionComparison{
+									Left:     exprColumn("", "active"),
+									Operator: ComparisonOperatorEqual,
+									Right:    exprLit(true),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "window function with named window",
+			sql:  "SELECT row_number() OVER win FROM users WINDOW win AS (PARTITION BY username ORDER BY id);",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionWindowFunctionCall{
+										FunctionCall: &ExpressionFunctionCall{
+											Name: "row_number",
+										},
+										Window: &WindowReference{
+											Name: "win",
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Windows: []*struct {
+								Name   string
+								Window *WindowImpl
+							}{
+								{
+									Name: "win",
+									Window: &WindowImpl{
+										PartitionBy: []Expression{
+											exprColumn("", "username"),
+										},
+										OrderBy: []*OrderingTerm{
+											{
+												Expression: exprColumn("", "id"),
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "window function with inline window and filter",
+			sql:  "SELECT count(*) FILTER (WHERE active = true) OVER (PARTITION BY dept ORDER BY salary) FROM employees;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionWindowFunctionCall{
+										FunctionCall: &ExpressionFunctionCall{
+											Name: "count",
+											Star: true,
+										},
+										Filter: &ExpressionComparison{
+											Left:     exprColumn("", "active"),
+											Operator: ComparisonOperatorEqual,
+											Right:    exprLit(true),
+										},
+										Window: &WindowImpl{
+											PartitionBy: []Expression{
+												exprColumn("", "dept"),
+											},
+											OrderBy: []*OrderingTerm{
+												{
+													Expression: exprColumn("", "salary"),
+												},
+											},
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "employees",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "collate expression",
+			sql:  "SELECT name FROM users ORDER BY name COLLATE NOCASE;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: exprColumn("", "name"),
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+					Ordering: []*OrderingTerm{
+						{
+							Expression: &ExpressionCollate{
+								Expression: exprColumn("", "name"),
+								Collation:  "nocase",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "is null expression",
+			sql:  "SELECT * FROM users WHERE last_login IS NULL;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIs{
+								Left: exprColumn("", "last_login"),
+								Right: &ExpressionLiteral{
+									Type: types.NullType,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "is not null expression",
+			sql:  "SELECT * FROM users WHERE last_login IS NOT NULL;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIs{
+								Left: exprColumn("", "last_login"),
+								Not:  true,
+								Right: &ExpressionLiteral{
+									Type: types.NullType,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "is true expression",
+			sql:  "SELECT * FROM users WHERE active IS TRUE;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIs{
+								Left: exprColumn("", "active"),
+								Right: &ExpressionLiteral{
+									Type:  types.BoolType,
+									Value: true,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "is not false expression",
+			sql:  "SELECT * FROM users WHERE active IS NOT FALSE;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIs{
+								Left: exprColumn("", "active"),
+								Not:  true,
+								Right: &ExpressionLiteral{
+									Type:  types.BoolType,
+									Value: false,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "is distinct from expression",
+			sql:  "SELECT * FROM users WHERE username IS DISTINCT FROM email;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIs{
+								Left:     exprColumn("", "username"),
+								Distinct: true,
+								Right:    exprColumn("", "email"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "is not distinct from expression",
+			sql:  "SELECT * FROM users WHERE username IS NOT DISTINCT FROM email;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIs{
+								Left:     exprColumn("", "username"),
+								Not:      true,
+								Distinct: true,
+								Right:    exprColumn("", "email"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "like expression",
+			sql:  "SELECT * FROM users WHERE username LIKE '%admin%';",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionStringComparison{
+								Left:     exprColumn("", "username"),
+								Operator: StringComparisonOperatorLike,
+								Right:    exprLit("%admin%"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "not like expression",
+			sql:  "SELECT * FROM users WHERE username NOT LIKE '%admin%';",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionStringComparison{
+								Left:     exprColumn("", "username"),
+								Operator: StringComparisonOperatorLike,
+								Not:      true,
+								Right:    exprLit("%admin%"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "ilike expression",
+			sql:  "SELECT * FROM users WHERE username ILIKE '%ADMIN%';",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionStringComparison{
+								Left:     exprColumn("", "username"),
+								Operator: StringComparisonOperatorILike,
+								Right:    exprLit("%ADMIN%"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "not ilike expression",
+			sql:  "SELECT * FROM users WHERE username NOT ILIKE '%ADMIN%';",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionStringComparison{
+								Left:     exprColumn("", "username"),
+								Operator: StringComparisonOperatorILike,
+								Not:      true,
+								Right:    exprLit("%ADMIN%"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "unary not expression",
+			sql:  "SELECT * FROM users WHERE NOT active;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionUnary{
+								Operator:   UnaryOperatorNot,
+								Expression: exprColumn("", "active"),
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "unary negation expression",
+			sql:  "SELECT -count(*) FROM users;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionUnary{
+										Operator: UnaryOperatorNeg,
+										Expression: &ExpressionFunctionCall{
+											Name: "count",
+											Star: true,
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "unary positive expression",
+			sql:  "SELECT +id FROM users;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionUnary{
+										Operator:   UnaryOperatorPos,
+										Expression: exprColumn("", "id"),
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "make array expression",
+			sql:  "SELECT array[1, 2, 3] FROM dual;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionMakeArray{
+										Values: []Expression{
+											exprLit(1),
+											exprLit(2),
+											exprLit(3),
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "dual",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "empty array expression",
+			sql:  "SELECT array[] FROM dual;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionMakeArray{
+										Values: nil,
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "dual",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "array expression with type cast",
+			sql:  "SELECT array[1, 2, 3]::int[] FROM dual;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionMakeArray{
+										Values: []Expression{
+											exprLit(1),
+											exprLit(2),
+											exprLit(3),
+										},
+										Typecastable: Typecastable{
+											types.IntArrayType,
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "dual",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "simple case expression",
+			sql:  "SELECT CASE status WHEN 'active' THEN 1 WHEN 'inactive' THEN 0 ELSE -1 END FROM users;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionCase{
+										Case: exprColumn("", "status"),
+										WhenThen: [][2]Expression{
+											{
+												exprLit("active"),
+												exprLit(1),
+											},
+											{
+												exprLit("inactive"),
+												exprLit(0),
+											},
+										},
+										Else: exprLit(-1),
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "searched case expression",
+			sql:  "SELECT CASE WHEN id < 10 THEN 'low' WHEN id < 100 THEN 'medium' ELSE 'high' END FROM users;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionCase{
+										WhenThen: [][2]Expression{
+											{
+												&ExpressionComparison{
+													Left:     exprColumn("", "id"),
+													Operator: ComparisonOperatorLessThan,
+													Right:    exprLit(10),
+												},
+												exprLit("low"),
+											},
+											{
+												&ExpressionComparison{
+													Left:     exprColumn("", "id"),
+													Operator: ComparisonOperatorLessThan,
+													Right:    exprLit(100),
+												},
+												exprLit("medium"),
+											},
+										},
+										Else: exprLit("high"),
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "case expression without else",
+			sql:  "SELECT CASE WHEN score > 90 THEN 'A' WHEN score > 80 THEN 'B' END FROM grades;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionCase{
+										WhenThen: [][2]Expression{
+											{
+												&ExpressionComparison{
+													Left:     exprColumn("", "score"),
+													Operator: ComparisonOperatorGreaterThan,
+													Right:    exprLit(90),
+												},
+												exprLit("A"),
+											},
+											{
+												&ExpressionComparison{
+													Left:     exprColumn("", "score"),
+													Operator: ComparisonOperatorGreaterThan,
+													Right:    exprLit(80),
+												},
+												exprLit("B"),
+											},
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "grades",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "in expression with list",
+			sql:  "SELECT * FROM users WHERE status IN ('active', 'pending', 'suspended');",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIn{
+								Expression: exprColumn("", "status"),
+								List: []Expression{
+									exprLit("active"),
+									exprLit("pending"),
+									exprLit("suspended"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "not in expression with list",
+			sql:  "SELECT * FROM users WHERE status NOT IN ('deleted', 'banned');",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIn{
+								Expression: exprColumn("", "status"),
+								Not:        true,
+								List: []Expression{
+									exprLit("deleted"),
+									exprLit("banned"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "in expression with subquery",
+			sql:  "SELECT * FROM users WHERE id IN (SELECT user_id FROM admins);",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIn{
+								Expression: exprColumn("", "id"),
+								Subquery: &SelectStatement{
+									SelectCores: []*SelectCore{
+										{
+											Columns: []ResultColumn{
+												&ResultColumnExpression{
+													Expression: exprColumn("", "user_id"),
+												},
+											},
+											From: &RelationTable{
+												Table: "admins",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "not in expression with subquery",
+			sql:  "SELECT * FROM users WHERE id NOT IN (SELECT user_id FROM banned_users);",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnWildcard{},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+							Where: &ExpressionIn{
+								Expression: exprColumn("", "id"),
+								Not:        true,
+								Subquery: &SelectStatement{
+									SelectCores: []*SelectCore{
+										{
+											Columns: []ResultColumn{
+												&ResultColumnExpression{
+													Expression: exprColumn("", "user_id"),
+												},
+											},
+											From: &RelationTable{
+												Table: "banned_users",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1172,8 +2155,11 @@ func Test_SQL(t *testing.T) {
 
 			assertPositionsAreSet(t, res.Statements[0])
 			res.Statements[0].(*SQLStatement).raw = nil
+			RecursivelyVisitPositions(res.Statements[0], func(gp GetPositioner) {
+				gp.Clear()
+			})
 			if !deepCompare(tt.want, res.Statements[0]) {
-				t.Errorf("unexpected AST:%s", diff(tt.want, res.Statements[0]))
+				assert.EqualValues(t, tt.want, res.Statements[0])
 			}
 		})
 	}
