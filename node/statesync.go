@@ -41,6 +41,7 @@ type blockStore interface {
 type StatesyncConfig struct {
 	StateSyncCfg *config.StateSyncConfig
 	DBConfig     config.DBConfig
+	BlockSyncCfg *config.BlockSyncConfig
 	RcvdSnapsDir string
 	P2PService   *P2PService
 
@@ -54,6 +55,7 @@ type StateSyncService struct {
 	// Config
 	cfg              *config.StateSyncConfig
 	dbConfig         config.DBConfig
+	blockSyncCfg     *config.BlockSyncConfig
 	snapshotDir      string
 	trustedProviders []*peer.AddrInfo // trusted providers
 
@@ -81,6 +83,7 @@ func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncS
 	ss := &StateSyncService{
 		cfg:           cfg.StateSyncCfg,
 		dbConfig:      cfg.DBConfig,
+		blockSyncCfg:  cfg.BlockSyncCfg,
 		snapshotDir:   cfg.RcvdSnapsDir,
 		db:            cfg.DB,
 		host:          cfg.P2PService.host,
@@ -157,7 +160,7 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	}
 
 	// request and commit the block to the blockstore
-	_, rawBlk, ci, _, err := getBlkHeight(ctx, height, ss.host, ss.log)
+	_, rawBlk, ci, _, err := getBlkHeight(ctx, height, ss.host, ss.log, ss.blockSyncCfg)
 	if err != nil {
 		return false, fmt.Errorf("failed to get statesync block %d: %w", height, err)
 	}
@@ -194,7 +197,7 @@ func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
 		ciBytes, _ := ci.MarshalBinary()
 		// maybe we remove hash from the protocol, was thinking receiver could
 		// hang up earlier depending...
-		stream.SetWriteDeadline(time.Now().Add(blkSendTimeout))
+		stream.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
 		stream.Write(hash[:])
 		ktypes.WriteCompactBytes(stream, ciBytes)
 		ktypes.WriteCompactBytes(stream, rawBlk)

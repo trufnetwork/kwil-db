@@ -76,6 +76,7 @@ func newTestStatesyncer(ctx context.Context, t *testing.T, mn mock.Mocknet, root
 		P2PService:    &P2PService{host: h, dht: dht, discovery: discover},
 		SnapshotStore: st,
 		BlockStore:    bs,
+		BlockSyncCfg:  &config.BlockSyncConfig{}, // Use default config for tests
 		Logger:        log.DiscardLogger,
 	}
 

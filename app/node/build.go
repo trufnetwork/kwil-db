@@ -217,6 +217,7 @@ func initializeStatesyncService(ctx context.Context, d *coreDependencies, p2p *n
 		RcvdSnapsDir:  rcvdSnapsDir,
 		StateSyncCfg:  &d.cfg.StateSync,
 		DBConfig:      d.cfg.DB,
+		BlockSyncCfg:  &d.cfg.BlockSync,
 		Logger:        d.logger.New("STATESYNC"),
 		SnapshotStore: snapshotter,
 		BlockStore:    bs,

@@ -200,7 +200,7 @@ func (n *Node) announceBlkProp(ctx context.Context, blk *ktypes.Block, senderPub
 		// resID := annPropMsgPrefix + strconv.Itoa(int(height)) + ":" + prevHash + ":" + blkid
 		propID, _ := prop.MarshalBinary()
 		err := n.advertiseToPeer(ctx, peerID, ProtocolIDBlockPropose, contentAnn{prop.String(), propID, rawBlk},
-			blkSendTimeout)
+			defaultBlkSendTimeout)
 		if err != nil {
 			n.log.Infof(err.Error())
 			continue

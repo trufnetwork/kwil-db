@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kwilteam/kwil-db/config"
 	"github.com/kwilteam/kwil-db/core/crypto"
 	"github.com/kwilteam/kwil-db/core/log"
 	ktypes "github.com/kwilteam/kwil-db/core/types"
@@ -125,7 +126,8 @@ type Node struct {
 	pubkey crypto.PublicKey
 	dir    string
 	// pf *prefetch
-	chainID string
+	chainID      string
+	blockSyncCfg *config.BlockSyncConfig
 
 	// interfaces
 	bki types.BlockStore
@@ -176,15 +178,16 @@ func NewNode(cfg *Config, opts ...Option) (*Node, error) {
 	pubkey := cfg.PrivKey.Public()
 
 	node := &Node{
-		log:     logger,
-		pubkey:  pubkey,
-		mp:      cfg.Mempool,
-		bki:     cfg.BlockStore,
-		ce:      cfg.Consensus,
-		dir:     cfg.RootDir,
-		chainID: cfg.ChainID,
-		ss:      cfg.Snapshotter,
-		bp:      cfg.BlockProc,
+		log:          logger,
+		pubkey:       pubkey,
+		mp:           cfg.Mempool,
+		bki:          cfg.BlockStore,
+		ce:           cfg.Consensus,
+		dir:          cfg.RootDir,
+		chainID:      cfg.ChainID,
+		blockSyncCfg: cfg.BlockSync,
+		ss:           cfg.Snapshotter,
+		bp:           cfg.BlockProc,
 
 		ackChan:         make(chan AckRes, 1),
 		resetMsg:        make(chan ConsensusReset, 1),

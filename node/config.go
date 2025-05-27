@@ -17,6 +17,7 @@ type Config struct {
 	P2P       *config.PeerConfig
 	DBConfig  *config.DBConfig
 	Statesync *config.StateSyncConfig
+	BlockSync *config.BlockSyncConfig
 
 	Mempool     types.MemPool
 	BlockStore  types.BlockStore

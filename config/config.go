@@ -354,6 +354,17 @@ func DefaultConfig() *Config {
 			ChunkTimeout:     types.Duration(120 * time.Second),
 			MetadataTimeout:  types.Duration(60 * time.Second),
 		},
+		BlockSync: BlockSyncConfig{
+			BlockGetTimeout:      types.Duration(180 * time.Second),
+			BlockSendTimeout:     types.Duration(90 * time.Second),
+			RequestTimeout:       types.Duration(10 * time.Second),
+			ResponseTimeout:      types.Duration(60 * time.Second),
+			IdleTimeout:          types.Duration(2 * time.Second),
+			AnnounceWriteTimeout: types.Duration(10 * time.Second),
+			AnnounceRespTimeout:  types.Duration(10 * time.Second),
+			TxGetTimeout:         types.Duration(60 * time.Second),
+			TxAnnTimeout:         types.Duration(10 * time.Second),
+		},
 		Extensions: make(map[string]map[string]string),
 		Checkpoint: Checkpoint{
 			Height: 0,
@@ -392,6 +403,7 @@ type Config struct {
 	Migrations   MigrationConfig              `toml:"migrations" comment:"zero downtime migration configuration"`
 	Checkpoint   Checkpoint                   `toml:"checkpoint" comment:"checkpoint info for the leader to sync to before proposing a new block"`
 	Erc20Bridge  ERC20BridgeConfig            `toml:"erc20_bridge" comment:"ERC20 bridge configuration"`
+	BlockSync    BlockSyncConfig              `toml:"block_sync" comment:"Block synchronization configuration"`
 
 	SkipDependencyVerification bool `toml:"skip_dependency_verification" comment:"skip runtime dependency verification (the pg_dump and psql binaries)"`
 	// PGDump: used by the snapshot and the migration module for producing snapshots.
@@ -523,6 +535,26 @@ type StateSyncConfig struct {
 	CatalogTimeout  types.Duration `toml:"catalog_timeout" comment:"timeout for requesting snapshot catalogs from peers"`
 	ChunkTimeout    types.Duration `toml:"chunk_timeout" comment:"timeout for downloading individual snapshot chunks"`
 	MetadataTimeout types.Duration `toml:"metadata_timeout" comment:"timeout for requesting snapshot metadata"`
+}
+
+// BlockSyncConfig contains configuration for block synchronization timeouts
+type BlockSyncConfig struct {
+	// Block fetching timeouts
+	BlockGetTimeout  types.Duration `toml:"block_get_timeout" comment:"overall timeout for fetching a block"`
+	BlockSendTimeout types.Duration `toml:"block_send_timeout" comment:"timeout for sending a block to a peer"`
+
+	// Request/response timeouts
+	RequestTimeout  types.Duration `toml:"request_timeout" comment:"timeout for writing block requests"`
+	ResponseTimeout types.Duration `toml:"response_timeout" comment:"timeout for reading block responses"`
+	IdleTimeout     types.Duration `toml:"idle_timeout" comment:"timeout between reading chunks of a block"`
+
+	// Protocol timeouts
+	AnnounceWriteTimeout types.Duration `toml:"announce_write_timeout" comment:"timeout for writing block announcements"`
+	AnnounceRespTimeout  types.Duration `toml:"announce_resp_timeout" comment:"timeout for announcement responses"`
+
+	// Transaction timeouts
+	TxGetTimeout types.Duration `toml:"tx_get_timeout" comment:"timeout for fetching transactions"`
+	TxAnnTimeout types.Duration `toml:"tx_ann_timeout" comment:"timeout for transaction announcements"`
 }
 
 type MigrationConfig struct {
