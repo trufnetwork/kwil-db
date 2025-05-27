@@ -146,7 +146,7 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		providers = append(providers, s.snapshotPool.getPeers()...)
 	}
 
-	const chunkFetchers = 10 // limit the number of concurrent chunk fetches
+	const chunkFetchers = 5 // limit the number of concurrent chunk fetches (reduced from 10 to reduce network pressure)
 
 	errChan := make(chan error, snapshot.Chunks)
 	tasks := make(chan uint32, snapshot.Chunks) // channel to send tasks to chunk fetchers
@@ -244,13 +244,20 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 		return err
 	}
 
-	// Read the response
+	// Read the response to temporary file first
 	chunkFile := filepath.Join(s.snapshotDir, fmt.Sprintf("chunk-%d.sql.gz", index))
-	file, err := os.Create(chunkFile)
+	tempFile := chunkFile + ".tmp"
+	file, err := os.Create(tempFile)
 	if err != nil {
-		return fmt.Errorf("failed to create chunk file: %w", err)
+		return fmt.Errorf("failed to create temp chunk file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		file.Close()
+		// Clean up temp file if we don't rename it
+		if _, err := os.Stat(tempFile); err == nil {
+			os.Remove(tempFile)
+		}
+	}()
 
 	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 	hasher := sha256.New()
@@ -259,15 +266,32 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 		return fmt.Errorf("failed to read snapshot chunk: %w", err)
 	}
 
-	hash := hasher.Sum(nil)
-	if !bytes.Equal(hash, snap.ChunkHashes[index][:]) {
-		// delete the file
-		if err := os.Remove(chunkFile); err != nil {
-			s.log.Warn("failed to delete chunk file", "file", chunkFile, "error", err)
-		}
-		return fmt.Errorf("chunk hash mismatch: expected %x, got %x", snap.ChunkHashes[index][:], hash)
+	// Get file size for validation
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get chunk file info: %w", err)
+	}
+	actualSize := fileInfo.Size()
+
+	// Size validation - quick check before expensive hash validation
+	// Note: We need to add expected size to chunk metadata in the future
+	// For now, we can at least check if the file is suspiciously small
+	if actualSize < 1024 { // Less than 1KB is definitely wrong for these chunks
+		return fmt.Errorf("chunk too small: got %d bytes, minimum expected 1KB", actualSize)
 	}
 
+	hash := hasher.Sum(nil)
+	if !bytes.Equal(hash, snap.ChunkHashes[index][:]) {
+		return fmt.Errorf("chunk hash mismatch: expected %x, got %x (size: %d bytes)", snap.ChunkHashes[index][:], hash, actualSize)
+	}
+
+	// All validations passed - atomically move temp file to final location
+	file.Close() // Close before rename
+	if err := os.Rename(tempFile, chunkFile); err != nil {
+		return fmt.Errorf("failed to finalize chunk file: %w", err)
+	}
+
+	s.log.Debug("Chunk validation passed", "index", index, "size", actualSize, "hash", fmt.Sprintf("%x", hash[:8]))
 	return nil
 }
 
