@@ -21,7 +21,7 @@ const (
 	DiscoverSnapshotsMsg    = "discover_snapshots"
 	reqRWTimeout            = 15 * time.Second
 	catalogSendTimeout      = 15 * time.Second
-	defaultChunkSendTimeout = 300 * time.Second // Default 5 minutes, matching client StreamTimeout
+	defaultChunkSendTimeout = 300 * time.Second // good to match client StreamTimeout
 	chunkGetTimeout         = 45 * time.Second
 	snapshotGetTimeout      = 45 * time.Second
 

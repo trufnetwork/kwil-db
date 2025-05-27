@@ -347,14 +347,15 @@ func DefaultConfig() *Config {
 			ChunkSendTimeout: types.Duration(300 * time.Second),
 		},
 		StateSync: StateSyncConfig{
-			Enable:           false,
-			DiscoveryTimeout: types.Duration(15 * time.Second),
-			MaxRetries:       3,
-			PsqlPath:         "psql",
-			CatalogTimeout:   types.Duration(30 * time.Second),
-			ChunkTimeout:     types.Duration(120 * time.Second),
-			MetadataTimeout:  types.Duration(60 * time.Second),
-			StreamTimeout:    types.Duration(300 * time.Second),
+			Enable:                  false,
+			DiscoveryTimeout:        types.Duration(15 * time.Second),
+			MaxRetries:              3,
+			PsqlPath:                "psql",
+			CatalogTimeout:          types.Duration(30 * time.Second),
+			ChunkTimeout:            types.Duration(120 * time.Second),
+			MetadataTimeout:         types.Duration(60 * time.Second),
+			StreamTimeout:           types.Duration(300 * time.Second),
+			ConcurrentChunkFetchers: 5,
 		},
 		BlockSync: BlockSyncConfig{
 			BlockGetTimeout:      types.Duration(90 * time.Second),
@@ -539,6 +540,23 @@ type StateSyncConfig struct {
 	ChunkTimeout    types.Duration `toml:"chunk_timeout" comment:"timeout for downloading individual snapshot chunks"`
 	MetadataTimeout types.Duration `toml:"metadata_timeout" comment:"timeout for requesting snapshot metadata"`
 	StreamTimeout   types.Duration `toml:"stream_timeout" comment:"timeout for libp2p stream creation and operations"`
+
+	// Concurrency control
+	ConcurrentChunkFetchers uint32 `toml:"concurrent_chunk_fetchers" comment:"number of concurrent chunk downloads during state sync (1-20)"`
+}
+
+// Validate validates the StateSyncConfig and sets defaults for unspecified values
+func (cfg *StateSyncConfig) Validate() error {
+	// Set default for ConcurrentChunkFetchers if not specified
+	if cfg.ConcurrentChunkFetchers == 0 {
+		cfg.ConcurrentChunkFetchers = 5 // Default value
+	}
+
+	if cfg.ConcurrentChunkFetchers < 1 || cfg.ConcurrentChunkFetchers > 20 {
+		return fmt.Errorf("state_sync.concurrent_chunk_fetchers: must be between 1 and 20, got %d", cfg.ConcurrentChunkFetchers)
+	}
+
+	return nil
 }
 
 // BlockSyncConfig contains configuration for block synchronization timeouts
@@ -665,6 +683,11 @@ func LoadConfig(filename string) (*Config, error) {
 		if !isValidRPCNamespace(ns) {
 			return nil, fmt.Errorf("rpc.disable_services: invalid namespace %s", ns)
 		}
+	}
+
+	// Validate StateSyncConfig
+	if err := nc.StateSync.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &nc, nil

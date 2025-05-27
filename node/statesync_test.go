@@ -94,13 +94,14 @@ func newTestStatesyncer(ctx context.Context, t *testing.T, mn mock.Mocknet, root
 
 func testSSConfig(enable bool, providers []string) *config.StateSyncConfig {
 	return &config.StateSyncConfig{
-		Enable:           enable,
-		TrustedProviders: providers,
-		DiscoveryTimeout: ktypes.Duration(5 * time.Second),
-		MaxRetries:       3,
-		CatalogTimeout:   ktypes.Duration(10 * time.Second),
-		ChunkTimeout:     ktypes.Duration(30 * time.Second),
-		MetadataTimeout:  ktypes.Duration(15 * time.Second),
+		Enable:                  enable,
+		TrustedProviders:        providers,
+		DiscoveryTimeout:        ktypes.Duration(5 * time.Second),
+		MaxRetries:              3,
+		CatalogTimeout:          ktypes.Duration(10 * time.Second),
+		ChunkTimeout:            ktypes.Duration(30 * time.Second),
+		MetadataTimeout:         ktypes.Duration(15 * time.Second),
+		ConcurrentChunkFetchers: 3, // Use a smaller value for tests
 	}
 }
 

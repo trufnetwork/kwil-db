@@ -55,7 +55,7 @@ type SnapshotConfig struct {
 	MaxSnapshots     int
 	RecurringHeight  uint64
 	DBConfig         *config.DBConfig
-	ChunkSendTimeout time.Duration // Timeout for sending chunks to peers (default 300s)
+	ChunkSendTimeout time.Duration
 }
 
 type BlockStore interface {
@@ -213,6 +213,7 @@ func (s *SnapshotStore) deleteOldestSnapshot() error {
 // LoadSnapshotChunk loads a snapshot chunk at the given height and chunk index of given format.
 // It returns the snapshot chunk as a byte slice of max size 16MB.
 // errors if the chunk of chunkIndex corresponding to snapshot at given height and format does not exist.
+// TODO: revaluate if we're able to remove this function
 func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunkIdx uint32) ([]byte, error) {
 	s.snapshotsMtx.RLock()
 	defer s.snapshotsMtx.RUnlock()
@@ -249,7 +250,7 @@ func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunkIdx
 }
 
 // GetSnapshotChunkFile returns the file path for a snapshot chunk for streaming.
-// This is more efficient than LoadSnapshotChunk as it doesn't load the entire chunk into memory.
+// TODO: tech debt, this is not tested as previous implementations were
 func (s *SnapshotStore) GetSnapshotChunkFile(height uint64, format uint32, chunkIdx uint32) (string, error) {
 	s.snapshotsMtx.RLock()
 	defer s.snapshotsMtx.RUnlock()
