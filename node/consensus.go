@@ -12,6 +12,7 @@ import (
 	"io"
 	"slices"
 	"sync"
+	"time"
 
 	ktypes "github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/node/peers"
@@ -199,8 +200,12 @@ func (n *Node) announceBlkProp(ctx context.Context, blk *ktypes.Block, senderPub
 		n.log.Debugf("advertising block proposal %s (height %d / txs %d) to peer %v from sender %v", blkHash, height, len(blk.Txns), peerID, hex.EncodeToString(senderPubKey))
 		// resID := annPropMsgPrefix + strconv.Itoa(int(height)) + ":" + prevHash + ":" + blkid
 		propID, _ := prop.MarshalBinary()
+		blkSendTimeout := defaultBlkSendTimeout
+		if n.blockSyncCfg != nil {
+			blkSendTimeout = time.Duration(n.blockSyncCfg.BlockSendTimeout)
+		}
 		err := n.advertiseToPeer(ctx, peerID, ProtocolIDBlockPropose, contentAnn{prop.String(), propID, rawBlk},
-			defaultBlkSendTimeout)
+			blkSendTimeout)
 		if err != nil {
 			n.log.Infof(err.Error())
 			continue

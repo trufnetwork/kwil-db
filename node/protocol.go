@@ -47,7 +47,7 @@ func requestFrom(ctx context.Context, host host.Host, peer peer.ID, resID []byte
 
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		deadline = time.Now().Add(txGetTimeout)
+		deadline = time.Now().Add(defaultTxGetTimeout)
 	}
 
 	txStream.SetDeadline(deadline)
@@ -91,17 +91,15 @@ func readResp(rd io.Reader, limit int64) ([]byte, error) {
 }
 
 const (
-	// annWriteTimeout the content announcement write timeout when sending
-	// the resource identifier, which is very small.
-	annWriteTimeout = 5 * time.Second
+	defaultAnnWriteTimeout = 5 * time.Second
+	defaultAnnRespTimeout  = 5 * time.Second
+	defaultTxGetTimeout    = 20 * time.Second
+)
 
+var (
 	// reqRWTimeout is the timeout for either writing or reading a resource ID,
 	// which is generally short and probably a packet or two.
-	reqRWTimeout = annWriteTimeout
-
-	// annRespTimeout is the timeout for the response to the resource
-	// announcement, which is also small e.g. "get".
-	annRespTimeout = 5 * time.Second
+	reqRWTimeout = defaultAnnWriteTimeout
 )
 
 type contentAnn struct {
@@ -123,6 +121,10 @@ func (n *Node) advertiseToPeer(ctx context.Context, peerID peer.ID, proto protoc
 		return fmt.Errorf("failed to open stream to peer: %w", peers.CompressDialError(err))
 	}
 
+	annWriteTimeout := defaultAnnWriteTimeout
+	if n.blockSyncCfg != nil {
+		annWriteTimeout = time.Duration(n.blockSyncCfg.AnnounceWriteTimeout)
+	}
 	s.SetWriteDeadline(time.Now().Add(annWriteTimeout))
 
 	// Send a lightweight advertisement with the object ID
@@ -137,6 +139,10 @@ func (n *Node) advertiseToPeer(ctx context.Context, peerID peer.ID, proto protoc
 	go func() {
 		defer s.Close()
 
+		annRespTimeout := defaultAnnRespTimeout
+		if n.blockSyncCfg != nil {
+			annRespTimeout = time.Duration(n.blockSyncCfg.AnnounceRespTimeout)
+		}
 		s.SetReadDeadline(time.Now().Add(annRespTimeout))
 
 		req := make([]byte, len(getMsg))

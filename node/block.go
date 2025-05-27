@@ -99,8 +99,17 @@ func (n *Node) blkAnnStreamHandler(s network.Stream) {
 		return
 	}
 
-	s.SetDeadline(time.Now().Add(defaultBlkGetTimeout + annRespTimeout + annWriteTimeout)) // combined
-	ctx, cancel := context.WithTimeout(context.Background(), defaultBlkGetTimeout)
+	// Get configurable timeouts
+	blkGetTimeout := defaultBlkGetTimeout
+	annRespTimeout := defaultAnnRespTimeout
+	annWriteTimeout := defaultAnnWriteTimeout
+	if n.blockSyncCfg != nil {
+		blkGetTimeout = time.Duration(n.blockSyncCfg.BlockGetTimeout)
+		annRespTimeout = time.Duration(n.blockSyncCfg.AnnounceRespTimeout)
+		annWriteTimeout = time.Duration(n.blockSyncCfg.AnnounceWriteTimeout)
+	}
+	s.SetDeadline(time.Now().Add(blkGetTimeout + annRespTimeout + annWriteTimeout)) // combined
+	ctx, cancel := context.WithTimeout(context.Background(), blkGetTimeout)
 	defer cancel()
 
 	var reqMsg blockAnnMsg
@@ -243,7 +252,11 @@ func (n *Node) announceRawBlk(ctx context.Context, blkHash types.Hash, height in
 			continue
 		}
 		ann := contentAnn{cType: "block announce", ann: resID, content: rawBlk}
-		err = n.advertiseToPeer(ctx, peerID, ProtocolIDBlkAnn, ann, defaultBlkSendTimeout)
+		blkSendTimeout := defaultBlkSendTimeout
+		if n.blockSyncCfg != nil {
+			blkSendTimeout = time.Duration(n.blockSyncCfg.BlockSendTimeout)
+		}
+		err = n.advertiseToPeer(ctx, peerID, ProtocolIDBlkAnn, ann, blkSendTimeout)
 		if err != nil {
 			n.log.Warn("Failed to advertise block", "peer", peerID, "error", err)
 			continue
