@@ -238,7 +238,7 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 	}
 
 	// Send the request
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 	if _, err := stream.Write(reqBts); err != nil {
 		s.log.Warn("failed to send snapshot chunk request", "error", err)
 		return err
@@ -252,7 +252,7 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 	}
 	defer file.Close()
 
-	stream.SetReadDeadline(time.Now().Add(1 * time.Minute)) // TODO: set appropriate timeout
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 	hasher := sha256.New()
 	writer := io.MultiWriter(file, hasher)
 	if _, err := io.Copy(writer, stream); err != nil {
@@ -281,14 +281,14 @@ func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer pee
 	}
 	defer stream.Close()
 
-	stream.SetWriteDeadline(time.Now().Add(catalogSendTimeout)) // TODO: set appropriate timeout
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.CatalogTimeout)))
 	if _, err := stream.Write([]byte(discoverSnapshotsMsg)); err != nil {
 		return fmt.Errorf("failed to send discover snapshot catalog request: %w", err)
 	}
 
 	// read catalogs from the stream
 	snapshots := make([]*snapshotMetadata, 0)
-	stream.SetReadDeadline(time.Now().Add(1 * time.Minute)) // TODO: set appropriate timeout
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.CatalogTimeout)))
 	if err := json.NewDecoder(stream).Decode(&snapshots); err != nil {
 		return fmt.Errorf("failed to read snapshot catalogs: %w", err)
 	}

@@ -350,6 +350,9 @@ func DefaultConfig() *Config {
 			DiscoveryTimeout: types.Duration(15 * time.Second),
 			MaxRetries:       3,
 			PsqlPath:         "psql",
+			CatalogTimeout:   types.Duration(30 * time.Second),
+			ChunkTimeout:     types.Duration(120 * time.Second),
+			MetadataTimeout:  types.Duration(60 * time.Second),
 		},
 		Extensions: make(map[string]map[string]string),
 		Checkpoint: Checkpoint{
@@ -515,6 +518,11 @@ type StateSyncConfig struct {
 	DiscoveryTimeout types.Duration `toml:"discovery_time" comment:"how long to discover snapshots before selecting one to use"`
 	MaxRetries       uint64         `toml:"max_retries" comment:"how many times to try after failing to apply a snapshot before switching to blocksync"`
 	PsqlPath         string         `toml:"psql_path" comment:"path to the PSQL binary for applying snapshots"`
+
+	// Network timeouts for remote regions
+	CatalogTimeout  types.Duration `toml:"catalog_timeout" comment:"timeout for requesting snapshot catalogs from peers"`
+	ChunkTimeout    types.Duration `toml:"chunk_timeout" comment:"timeout for downloading individual snapshot chunks"`
+	MetadataTimeout types.Duration `toml:"metadata_timeout" comment:"timeout for requesting snapshot metadata"`
 }
 
 type MigrationConfig struct {

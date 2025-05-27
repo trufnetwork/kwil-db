@@ -23,12 +23,6 @@ import (
 )
 
 const (
-	// TODO: set appropriate limits
-	catalogSendTimeout = 15 * time.Second
-	chunkSendTimeout   = 45 * time.Second
-	chunkGetTimeout    = 45 * time.Second
-	snapshotGetTimeout = 45 * time.Second
-
 	snapshotCatalogNS    = "snapshot-catalog" // namespace on which snapshot catalogs are advertised
 	discoverSnapshotsMsg = "discover_snapshots"
 )
@@ -225,7 +219,7 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 			Format: snap.Format,
 		}
 		reqBts, _ := req.MarshalBinary()
-		stream.SetWriteDeadline(time.Now().Add(catalogSendTimeout))
+		stream.SetWriteDeadline(time.Now().Add(time.Duration(ss.cfg.CatalogTimeout)))
 
 		if _, err := stream.Write(reqBts); err != nil {
 			ss.log.Warn("failed to send snapshot request", "provider", provider.ID.String(), "error", err)
@@ -233,7 +227,7 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 			continue
 		}
 
-		stream.SetReadDeadline(time.Now().Add(snapshotGetTimeout))
+		stream.SetReadDeadline(time.Now().Add(time.Duration(ss.cfg.MetadataTimeout)))
 		var meta snapshotMetadata
 		if err := json.NewDecoder(stream).Decode(&meta); err != nil {
 			ss.log.Warn("failed to decode snapshot metadata", "provider", provider.ID.String(), "error", err)
