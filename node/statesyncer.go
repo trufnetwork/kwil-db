@@ -146,7 +146,7 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		providers = append(providers, s.snapshotPool.getPeers()...)
 	}
 
-	const chunkFetchers = 5 // limit the number of concurrent chunk fetches (reduced from 10 to reduce network pressure)
+	const chunkFetchers = 10 // limit the number of concurrent chunk fetches
 
 	errChan := make(chan error, snapshot.Chunks)
 	tasks := make(chan uint32, snapshot.Chunks) // channel to send tasks to chunk fetchers
