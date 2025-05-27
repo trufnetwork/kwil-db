@@ -341,9 +341,10 @@ func DefaultConfig() *Config {
 			NoTLS:         false,
 		},
 		Snapshots: SnapshotConfig{
-			Enable:          false,
-			RecurringHeight: 14400,
-			MaxSnapshots:    3,
+			Enable:           false,
+			RecurringHeight:  14400,
+			MaxSnapshots:     3,
+			ChunkSendTimeout: types.Duration(300 * time.Second),
 		},
 		StateSync: StateSyncConfig{
 			Enable:           false,
@@ -519,9 +520,10 @@ type AdminConfig struct {
 }
 
 type SnapshotConfig struct {
-	Enable          bool   `toml:"enable" comment:"enable creating and providing snapshots for peers using statesync"`
-	RecurringHeight uint64 `toml:"recurring_height" comment:"snapshot creation period in blocks"`
-	MaxSnapshots    uint64 `toml:"max_snapshots" comment:"number of snapshots to keep, after the oldest is removed when creating a new one"`
+	Enable           bool           `toml:"enable" comment:"enable creating and providing snapshots for peers using statesync"`
+	RecurringHeight  uint64         `toml:"recurring_height" comment:"snapshot creation period in blocks"`
+	MaxSnapshots     uint64         `toml:"max_snapshots" comment:"number of snapshots to keep, after the oldest is removed when creating a new one"`
+	ChunkSendTimeout types.Duration `toml:"chunk_send_timeout" comment:"timeout for sending snapshot chunks to peers"`
 }
 
 type StateSyncConfig struct {
