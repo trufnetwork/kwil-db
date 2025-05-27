@@ -161,7 +161,7 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 			defer wg.Done()
 
 			for chunkIdx := range tasks {
-				success := true
+				success := false
 				for _, provider := range providers {
 					select {
 					case <-chunkCtx.Done():
@@ -265,7 +265,7 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 		if err := os.Remove(chunkFile); err != nil {
 			s.log.Warn("failed to delete chunk file", "file", chunkFile, "error", err)
 		}
-		return errors.New("chunk hash mismatch")
+		return fmt.Errorf("chunk hash mismatch: expected %x, got %x", snap.ChunkHashes[index][:], hash)
 	}
 
 	return nil
@@ -450,7 +450,8 @@ func (s *Streamer) Next() error {
 
 	file, err := os.Open(s.files[s.currentChunkIndex])
 	if err != nil {
-		return fmt.Errorf("failed to open chunk file: %w", err)
+		return fmt.Errorf("failed to open chunk file %s (chunk %d of %d): %w",
+			s.files[s.currentChunkIndex], s.currentChunkIndex, s.numChunks, err)
 	}
 
 	s.currentChunk = file
