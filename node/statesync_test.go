@@ -97,6 +97,9 @@ func testSSConfig(enable bool, providers []string) *config.StateSyncConfig {
 		TrustedProviders: providers,
 		DiscoveryTimeout: ktypes.Duration(5 * time.Second),
 		MaxRetries:       3,
+		CatalogTimeout:   ktypes.Duration(10 * time.Second),
+		ChunkTimeout:     ktypes.Duration(30 * time.Second),
+		MetadataTimeout:  ktypes.Duration(15 * time.Second),
 	}
 }
 
@@ -317,7 +320,7 @@ func (s *snapshotStore) snapshotCatalogRequestHandler(stream network.Stream) {
 	}
 
 	encoder := json.NewEncoder(stream)
-	stream.SetWriteDeadline(time.Now().Add(catalogSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(15 * time.Second)) // Use fixed timeout for tests
 	if err := encoder.Encode(catalogs); err != nil {
 		return
 	}
@@ -325,7 +328,7 @@ func (s *snapshotStore) snapshotCatalogRequestHandler(stream network.Stream) {
 
 func (s *snapshotStore) snapshotChunkRequestHandler(stream network.Stream) {
 	defer stream.Close()
-	stream.SetReadDeadline(time.Now().Add(chunkGetTimeout))
+	stream.SetReadDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	var req snapshotter.SnapshotChunkReq
 	if _, err := req.ReadFrom(stream); err != nil {
 		return
@@ -336,13 +339,13 @@ func (s *snapshotStore) snapshotChunkRequestHandler(stream network.Stream) {
 		stream.Write(noData)
 		return
 	}
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	stream.Write(chunk)
 }
 
 func (s *snapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 	defer stream.Close()
-	stream.SetReadDeadline(time.Now().Add(chunkGetTimeout))
+	stream.SetReadDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	var req snapshotter.SnapshotReq
 	if _, err := req.ReadFrom(stream); err != nil {
 		return
@@ -368,7 +371,7 @@ func (s *snapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 	// send the snapshot data
 	encoder := json.NewEncoder(stream)
 
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	if err := encoder.Encode(meta); err != nil {
 		return
 	}
