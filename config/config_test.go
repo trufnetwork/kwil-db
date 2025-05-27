@@ -475,3 +475,24 @@ func TestConfigFromTOML(t *testing.T) {
 		})
 	}
 }
+
+func TestStateSyncStreamTimeout(t *testing.T) {
+	// Test default configuration
+	cfg := DefaultConfig()
+
+	expectedDefault := 300 * time.Second
+	actualDefault := time.Duration(cfg.StateSync.StreamTimeout)
+
+	if actualDefault != expectedDefault {
+		t.Errorf("Expected default StreamTimeout to be %v, got %v", expectedDefault, actualDefault)
+	}
+
+	// Test custom configuration
+	cfg.StateSync.StreamTimeout = types.Duration(600 * time.Second)
+	actualCustom := time.Duration(cfg.StateSync.StreamTimeout)
+	expectedCustom := 600 * time.Second
+
+	if actualCustom != expectedCustom {
+		t.Errorf("Expected custom StreamTimeout to be %v, got %v", expectedCustom, actualCustom)
+	}
+}

@@ -353,6 +353,7 @@ func DefaultConfig() *Config {
 			CatalogTimeout:   types.Duration(30 * time.Second),
 			ChunkTimeout:     types.Duration(120 * time.Second),
 			MetadataTimeout:  types.Duration(60 * time.Second),
+			StreamTimeout:    types.Duration(300 * time.Second),
 		},
 		BlockSync: BlockSyncConfig{
 			BlockGetTimeout:      types.Duration(90 * time.Second),
@@ -535,6 +536,7 @@ type StateSyncConfig struct {
 	CatalogTimeout  types.Duration `toml:"catalog_timeout" comment:"timeout for requesting snapshot catalogs from peers"`
 	ChunkTimeout    types.Duration `toml:"chunk_timeout" comment:"timeout for downloading individual snapshot chunks"`
 	MetadataTimeout types.Duration `toml:"metadata_timeout" comment:"timeout for requesting snapshot metadata"`
+	StreamTimeout   types.Duration `toml:"stream_timeout" comment:"timeout for libp2p stream creation and operations"`
 }
 
 // BlockSyncConfig contains configuration for block synchronization timeouts

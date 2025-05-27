@@ -208,8 +208,12 @@ func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
 func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (bool, []byte) {
 	// verify the snapshot
 	for _, provider := range ss.trustedProviders {
+		// Create a context with stream timeout for libp2p operations
+		streamCtx, cancel := context.WithTimeout(ctx, time.Duration(ss.cfg.StreamTimeout))
+		defer cancel()
+
 		// request the snapshot from the provider and verify the contents of the snapshot
-		stream, err := ss.host.NewStream(ctx, provider.ID, snapshotter.ProtocolIDSnapshotMeta)
+		stream, err := ss.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotMeta)
 		if err != nil {
 			ss.log.Warn("failed to request snapshot meta", "provider", provider.ID.String(),
 				"error", peers.CompressDialError(err))

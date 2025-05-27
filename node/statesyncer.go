@@ -15,12 +15,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/kwilteam/kwil-db/config"
 	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/node/meta"
 	"github.com/kwilteam/kwil-db/node/peers"
 	"github.com/kwilteam/kwil-db/node/snapshotter"
@@ -146,7 +148,7 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		providers = append(providers, s.snapshotPool.getPeers()...)
 	}
 
-	const chunkFetchers = 10 // limit the number of concurrent chunk fetches
+	const chunkFetchers = 1 // limit the number of concurrent chunk fetches
 
 	errChan := make(chan error, snapshot.Chunks)
 	tasks := make(chan uint32, snapshot.Chunks) // channel to send tasks to chunk fetchers
@@ -216,90 +218,256 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 // The chunk is written to <chunk-idx.sql.gz> file in the snapshot directory.
 // This also ensures that the hash of the received chunk matches the expected hash
 func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32) error {
-	stream, err := s.host.NewStream(ctx, provider.ID, snapshotter.ProtocolIDSnapshotChunk)
+	const maxRetries = 3
+	const retryDelay = 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		startTime := time.Now()
+		s.log.Info("Starting chunk download", "chunk", index, "provider", provider.ID.String(),
+			"attempt", attempt, "max_retries", maxRetries, "start_time", startTime.Format(time.RFC3339Nano))
+
+		err := s.downloadChunkAttempt(ctx, snap, provider, index, startTime)
+		if err == nil {
+			s.log.Info("Chunk download successful", "chunk", index, "provider", provider.ID.String(), "attempt", attempt)
+			return nil // Success
+		}
+
+		// Check if this is a retryable error
+		if isRetryableError(err) && attempt < maxRetries {
+			s.log.Warn("Retryable error encountered, will retry", "chunk", index, "provider", provider.ID.String(),
+				"attempt", attempt, "error", err, "retry_delay", retryDelay)
+
+			// Wait before retrying
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+				continue
+			}
+		}
+
+		// Non-retryable error or max retries exceeded
+		s.log.Warn("Chunk download failed", "chunk", index, "provider", provider.ID.String(),
+			"attempt", attempt, "error", err, "retryable", isRetryableError(err))
+		return err
+	}
+
+	return fmt.Errorf("failed to download chunk %d after %d attempts", index, maxRetries)
+}
+
+// isRetryableError determines if an error is worth retrying
+func isRetryableError(err error) bool {
+	errStr := err.Error()
+	// Stream reset errors are typically retryable (provider-side issues)
+	if strings.Contains(errStr, "stream reset") {
+		return true
+	}
+	// Connection errors are retryable
+	if strings.Contains(errStr, "connection reset") {
+		return true
+	}
+	// EOF during transfer might be retryable
+	if strings.Contains(errStr, "EOF") {
+		return true
+	}
+	// Timeout errors are retryable
+	if strings.Contains(errStr, "timeout") {
+		return true
+	}
+	// Hash mismatches are not retryable (data corruption)
+	if strings.Contains(errStr, "hash mismatch") {
+		return false
+	}
+	return false
+}
+
+// downloadChunkAttempt performs a single attempt to download a chunk
+func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
+	// Create a context with stream timeout for libp2p operations
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
+	defer cancel()
+
+	streamStartTime := time.Now()
+	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotChunk)
 	if err != nil {
+		streamDuration := time.Since(streamStartTime)
 		s.log.Warn("failed to create stream to provider", "provider", provider.ID.String(),
-			"error", peers.CompressDialError(err))
+			"error", peers.CompressDialError(err), "chunk", index, "stream_creation_duration", streamDuration)
 		return err
 	}
 	defer stream.Close()
 
+	streamCreationDuration := time.Since(streamStartTime)
+	s.log.Info("Stream created successfully", "chunk", index, "provider", provider.ID.String(),
+		"stream_creation_duration", streamCreationDuration)
+
+	// Set deadlines for the stream operations
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+
+	// Send the chunk request
+	writeStartTime := time.Now()
+
 	// Create the request for the snapshot chunk
-	req := snapshotChunkReq{
+	snapHash, err := types.NewHashFromBytes(snap.Hash)
+	if err != nil {
+		s.log.Warn("failed to convert snapshot hash", "error", err, "chunk", index)
+		return err
+	}
+
+	req := snapshotter.SnapshotChunkReq{
 		Height: snap.Height,
 		Format: snap.Format,
 		Index:  index,
-		Hash:   snap.ChunkHashes[index],
+		Hash:   snapHash,
 	}
 	reqBts, err := req.MarshalBinary()
 	if err != nil {
-		s.log.Warn("failed to marshal snapshot chunk request", "error", err)
+		s.log.Warn("failed to marshal snapshot chunk request", "error", err, "chunk", index)
 		return err
 	}
 
-	// Send the request
-	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 	if _, err := stream.Write(reqBts); err != nil {
-		s.log.Warn("failed to send snapshot chunk request", "error", err)
+		writeDuration := time.Since(writeStartTime)
+		s.log.Warn("failed to write chunk request", "provider", provider.ID.String(),
+			"error", err, "chunk", index, "write_duration", writeDuration)
 		return err
 	}
 
-	// Read the response to temporary file first
-	chunkFile := filepath.Join(s.snapshotDir, fmt.Sprintf("chunk-%d.sql.gz", index))
-	tempFile := chunkFile + ".tmp"
-	file, err := os.Create(tempFile)
+	writeDuration := time.Since(writeStartTime)
+	s.log.Debug("Chunk request sent", "chunk", index, "write_duration", writeDuration)
+
+	// Create temporary file for atomic write
+	tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", index)
+	tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
+	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
+	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+	tempFile, err := os.Create(tempFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to create temp chunk file: %w", err)
+		s.log.Warn("failed to create temporary chunk file", "error", err, "chunk", index, "temp_path", tempFilePath)
+		return err
 	}
 	defer func() {
-		file.Close()
-		// Clean up temp file if we don't rename it
-		if _, err := os.Stat(tempFile); err == nil {
-			os.Remove(tempFile)
+		tempFile.Close()
+		// Clean up temp file if something goes wrong
+		if _, err := os.Stat(tempFilePath); err == nil {
+			os.Remove(tempFilePath)
 		}
 	}()
 
-	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
-	hasher := sha256.New()
-	writer := io.MultiWriter(file, hasher)
-	if _, err := io.Copy(writer, stream); err != nil {
-		return fmt.Errorf("failed to read snapshot chunk: %w", err)
+	// Copy data from stream to temporary file with progress logging
+	copyStartTime := time.Now()
+	s.log.Info("Starting data copy", "chunk", index, "copy_start_time", copyStartTime.Format(time.RFC3339Nano))
+
+	// Create a progress reader to log transfer progress
+	progressReader := &progressReader{
+		reader:      stream,
+		logger:      s.log,
+		chunk:       index,
+		startTime:   copyStartTime,
+		lastLogTime: copyStartTime,
 	}
 
-	// Get file size for validation
-	fileInfo, err := file.Stat()
+	bytesWritten, err := io.Copy(tempFile, progressReader)
+	copyDuration := time.Since(copyStartTime)
+
 	if err != nil {
-		return fmt.Errorf("failed to get chunk file info: %w", err)
-	}
-	actualSize := fileInfo.Size()
-
-	// Size validation - quick check before expensive hash validation
-	// Note: We need to add expected size to chunk metadata in the future
-	// For now, we can at least check if the file is suspiciously small
-	if actualSize < 1024 { // Less than 1KB is definitely wrong for these chunks
-		return fmt.Errorf("chunk too small: got %d bytes, minimum expected 1KB", actualSize)
+		s.log.Warn("failed to copy chunk data", "provider", provider.ID.String(),
+			"error", err, "chunk", index, "bytes_written", bytesWritten,
+			"copy_duration", copyDuration, "total_duration", time.Since(startTime))
+		return err
 	}
 
-	hash := hasher.Sum(nil)
-	if !bytes.Equal(hash, snap.ChunkHashes[index][:]) {
-		return fmt.Errorf("chunk hash mismatch: expected %x, got %x (size: %d bytes)", snap.ChunkHashes[index][:], hash, actualSize)
+	s.log.Info("Data copy completed", "chunk", index, "bytes_written", bytesWritten,
+		"copy_duration", copyDuration)
+
+	// Close temp file before validation
+	if err := tempFile.Close(); err != nil {
+		s.log.Warn("failed to close temporary chunk file", "error", err, "chunk", index)
+		return err
 	}
 
-	// All validations passed - atomically move temp file to final location
-	file.Close() // Close before rename
-	if err := os.Rename(tempFile, chunkFile); err != nil {
-		return fmt.Errorf("failed to finalize chunk file: %w", err)
+	// Validate file size before hash validation (quick check)
+	fileInfo, err := os.Stat(tempFilePath)
+	if err != nil {
+		s.log.Warn("failed to stat temporary chunk file", "error", err, "chunk", index)
+		return err
 	}
 
-	s.log.Debug("Chunk validation passed", "index", index, "size", actualSize, "hash", fmt.Sprintf("%x", hash[:8]))
+	fileSize := fileInfo.Size()
+	s.log.Info("File size validation", "chunk", index, "file_size", fileSize, "bytes_written", bytesWritten)
+
+	if fileSize != bytesWritten {
+		s.log.Warn("file size mismatch", "chunk", index, "file_size", fileSize, "bytes_written", bytesWritten)
+		return fmt.Errorf("file size mismatch: file=%d, written=%d", fileSize, bytesWritten)
+	}
+
+	// Validate chunk hash
+	hashStartTime := time.Now()
+	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
+		hashDuration := time.Since(hashStartTime)
+		s.log.Warn("chunk hash validation failed", "provider", provider.ID.String(),
+			"error", err, "chunk", index, "file_size", fileSize,
+			"hash_duration", hashDuration, "total_duration", time.Since(startTime))
+		return err
+	}
+
+	hashDuration := time.Since(hashStartTime)
+	s.log.Info("Hash validation successful", "chunk", index, "hash_duration", hashDuration)
+
+	// Atomically move temp file to final location
+	if err := os.Rename(tempFilePath, finalFilePath); err != nil {
+		s.log.Warn("failed to rename temporary chunk file", "error", err, "chunk", index)
+		return err
+	}
+
+	totalDuration := time.Since(startTime)
+	s.log.Info("Chunk download completed successfully", "chunk", index, "provider", provider.ID.String(),
+		"file_size", fileSize, "total_duration", totalDuration,
+		"stream_creation", streamCreationDuration, "copy_duration", copyDuration, "hash_duration", hashDuration)
+
 	return nil
+}
+
+// progressReader wraps a reader to log progress during large transfers
+type progressReader struct {
+	reader      io.Reader
+	logger      log.Logger
+	chunk       uint32
+	startTime   time.Time
+	lastLogTime time.Time
+	totalBytes  int64
+}
+
+func (pr *progressReader) Read(p []byte) (n int, err error) {
+	n, err = pr.reader.Read(p)
+	pr.totalBytes += int64(n)
+
+	now := time.Now()
+	// Log progress every 10 seconds
+	if now.Sub(pr.lastLogTime) >= 10*time.Second {
+		duration := now.Sub(pr.startTime)
+		rate := float64(pr.totalBytes) / duration.Seconds()
+		pr.logger.Info("Download progress", "chunk", pr.chunk,
+			"bytes_downloaded", pr.totalBytes, "duration", duration,
+			"rate_bytes_per_sec", int64(rate))
+		pr.lastLogTime = now
+	}
+
+	return n, err
 }
 
 // requestSnapshotCatalogs requests the available snapshots from a peer.
 func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer peer.AddrInfo) error {
 	// request snapshot catalogs from the discovered peer
 	s.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.PermanentAddrTTL)
-	stream, err := s.host.NewStream(ctx, peer.ID, snapshotter.ProtocolIDSnapshotCatalog)
+
+	// Create a context with stream timeout for libp2p operations
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
+	defer cancel()
+
+	stream, err := s.host.NewStream(streamCtx, peer.ID, snapshotter.ProtocolIDSnapshotCatalog)
 	if err != nil {
 		return peers.CompressDialError(err)
 	}
@@ -522,4 +690,25 @@ func filterLocalPeer(peers []peer.AddrInfo, localID peer.ID) []peer.AddrInfo {
 		}
 	}
 	return filteredPeers
+}
+
+// validateChunkHash validates the SHA256 hash of a chunk file
+func (s *StateSyncService) validateChunkHash(filePath string, expectedHash [32]byte) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open chunk file for validation: %w", err)
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return fmt.Errorf("failed to hash chunk file: %w", err)
+	}
+
+	actualHash := hasher.Sum(nil)
+	if !bytes.Equal(actualHash, expectedHash[:]) {
+		return fmt.Errorf("chunk hash mismatch: expected %x, got %x", expectedHash[:], actualHash)
+	}
+
+	return nil
 }

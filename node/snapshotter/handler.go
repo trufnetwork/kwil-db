@@ -1,8 +1,11 @@
 package snapshotter
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
+	"os"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/discovery"
@@ -10,15 +13,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/discovery/util"
+
+	"github.com/kwilteam/kwil-db/core/log"
 )
 
 const (
-	DiscoverSnapshotsMsg = "discover_snapshots"
-	reqRWTimeout         = 15 * time.Second
-	catalogSendTimeout   = 15 * time.Second
-	chunkSendTimeout     = 45 * time.Second
-	chunkGetTimeout      = 45 * time.Second
-	snapshotGetTimeout   = 45 * time.Second
+	DiscoverSnapshotsMsg    = "discover_snapshots"
+	reqRWTimeout            = 15 * time.Second
+	catalogSendTimeout      = 15 * time.Second
+	defaultChunkSendTimeout = 300 * time.Second // Default 5 minutes, matching client StreamTimeout
+	chunkGetTimeout         = 45 * time.Second
+	snapshotGetTimeout      = 45 * time.Second
 
 	ProtocolIDSnapshotCatalog protocol.ID = "/kwil/snapcat/1.0.0"
 	ProtocolIDSnapshotChunk   protocol.ID = "/kwil/snapchunk/1.0.0"
@@ -113,26 +118,88 @@ func (s *SnapshotStore) snapshotChunkRequestHandler(stream network.Stream) {
 	// send snapshot chunk
 	defer stream.Close()
 
+	startTime := time.Now()
+	peerID := stream.Conn().RemotePeer().String()
+
 	stream.SetReadDeadline(time.Now().Add(chunkGetTimeout))
 	var req SnapshotChunkReq
 	if _, err := req.ReadFrom(stream); err != nil {
-		s.log.Warn("failed to read snapshot chunk request", "error", err)
+		s.log.Warn("failed to read snapshot chunk request", "error", err, "peer", peerID)
 		return
 	}
 
-	// read the snapshot chunk from the store
-	chunk, err := s.LoadSnapshotChunk(req.Height, req.Format, req.Index)
+	s.log.Info("starting chunk transmission", "chunk", req.Index, "height", req.Height,
+		"peer", peerID, "start_time", startTime.Format(time.RFC3339Nano))
+
+	// get the snapshot chunk file path for streaming
+	chunkFile, err := s.GetSnapshotChunkFile(req.Height, req.Format, req.Index)
 	if err != nil {
+		s.log.Warn("failed to get chunk file", "error", err, "chunk", req.Index, "peer", peerID)
 		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
 		stream.Write(noData)
 		return
 	}
 
-	// send the snapshot chunk
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
-	stream.Write(chunk)
+	// open the chunk file for streaming
+	file, err := os.Open(chunkFile)
+	if err != nil {
+		s.log.Warn("failed to open chunk file", "error", err, "chunk", req.Index, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+	defer file.Close()
 
-	s.log.Info("sent snapshot chunk to remote peer", "peer", stream.Conn().RemotePeer(), "height", req.Height, "index", req.Index)
+	// get file size for logging
+	fileInfo, err := file.Stat()
+	if err != nil {
+		s.log.Warn("failed to stat chunk file", "error", err, "chunk", req.Index, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+	fileSize := fileInfo.Size()
+
+	// set write deadline for the entire transmission
+	stream.SetWriteDeadline(time.Now().Add(s.getChunkSendTimeout()))
+
+	// create buffered writer for better network efficiency
+	bufWriter := bufio.NewWriterSize(stream, 64*1024) // 64KB buffer
+
+	// create progress writer for monitoring
+	progressWriter := &progressWriter{
+		writer:      bufWriter,
+		logger:      s.log,
+		chunk:       req.Index,
+		peer:        peerID,
+		startTime:   startTime,
+		lastLogTime: startTime,
+	}
+
+	// stream the chunk data
+	copyStartTime := time.Now()
+	bytesWritten, err := io.Copy(progressWriter, file)
+	copyDuration := time.Since(copyStartTime)
+
+	if err != nil {
+		s.log.Warn("failed to stream chunk data", "error", err, "chunk", req.Index,
+			"peer", peerID, "bytes_written", bytesWritten, "file_size", fileSize,
+			"copy_duration", copyDuration, "total_duration", time.Since(startTime))
+		return
+	}
+
+	// flush the buffer
+	if err := bufWriter.Flush(); err != nil {
+		s.log.Warn("failed to flush chunk data", "error", err, "chunk", req.Index, "peer", peerID)
+		return
+	}
+
+	totalDuration := time.Since(startTime)
+	rate := float64(bytesWritten) / totalDuration.Seconds() / 1024 // KB/s
+
+	s.log.Info("successfully sent snapshot chunk", "chunk", req.Index, "height", req.Height,
+		"peer", peerID, "bytes_sent", bytesWritten, "file_size", fileSize,
+		"copy_duration", copyDuration, "total_duration", totalDuration, "rate_kbps", rate)
 }
 
 // SnapshotMetadataRequestHandler handles the incoming snapshot metadata request and
@@ -182,11 +249,51 @@ func (s *SnapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 	// send the snapshot data
 	encoder := json.NewEncoder(stream)
 
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(s.getChunkSendTimeout()))
 	if err := encoder.Encode(meta); err != nil {
 		s.log.Warn("failed to send snapshot metadata", "error", err)
 		return
 	}
 
 	s.log.Info("sent snapshot metadata to remote peer", "peer", stream.Conn().RemotePeer(), "height", req.Height, "format", req.Format, "appHash", ci.AppHash.String())
+}
+
+// getChunkSendTimeout returns the configured chunk send timeout or default
+func (s *SnapshotStore) getChunkSendTimeout() time.Duration {
+	if s.cfg.ChunkSendTimeout > 0 {
+		return s.cfg.ChunkSendTimeout
+	}
+	return defaultChunkSendTimeout
+}
+
+// progressWriter wraps a writer to log transmission progress
+type progressWriter struct {
+	writer      io.Writer
+	logger      log.Logger
+	chunk       uint32
+	peer        string
+	startTime   time.Time
+	lastLogTime time.Time
+	totalBytes  int64
+}
+
+func (pw *progressWriter) Write(p []byte) (n int, err error) {
+	n, err = pw.writer.Write(p)
+	pw.totalBytes += int64(n)
+
+	now := time.Now()
+	// Log progress every 10 seconds
+	if now.Sub(pw.lastLogTime) >= 10*time.Second {
+		elapsed := now.Sub(pw.startTime)
+		rate := float64(pw.totalBytes) / elapsed.Seconds() / 1024 // KB/s
+		pw.logger.Info("chunk transmission progress",
+			"chunk", pw.chunk,
+			"peer", pw.peer,
+			"bytes_sent", pw.totalBytes,
+			"elapsed", elapsed,
+			"rate_kbps", rate)
+		pw.lastLogTime = now
+	}
+
+	return n, err
 }
