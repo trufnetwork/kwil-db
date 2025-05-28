@@ -27,6 +27,7 @@ const (
 
 	ProtocolIDSnapshotCatalog protocol.ID = "/kwil/snapcat/1.0.0"
 	ProtocolIDSnapshotChunk   protocol.ID = "/kwil/snapchunk/1.0.0"
+	ProtocolIDSnapshotRange   protocol.ID = "/kwil/snaprange/1.0.0"
 	ProtocolIDSnapshotMeta    protocol.ID = "/kwil/snapmeta/1.0.0"
 
 	SnapshotCatalogNS = "snapshot-catalog" // namespace on which snapshot catalogs are advertised
@@ -44,6 +45,7 @@ func (s *SnapshotStore) RegisterSnapshotStreamHandlers(ctx context.Context, host
 	// Register snapshot stream handlers
 	host.SetStreamHandler(ProtocolIDSnapshotCatalog, s.snapshotCatalogRequestHandler)
 	host.SetStreamHandler(ProtocolIDSnapshotChunk, s.snapshotChunkRequestHandler)
+	host.SetStreamHandler(ProtocolIDSnapshotRange, s.snapshotChunkRangeRequestHandler)
 	host.SetStreamHandler(ProtocolIDSnapshotMeta, s.snapshotMetadataRequestHandler)
 
 	// Advertise the snapshotcatalog service if snapshots are enabled
@@ -199,6 +201,120 @@ func (s *SnapshotStore) snapshotChunkRequestHandler(stream network.Stream) {
 
 	s.log.Info("successfully sent snapshot chunk", "chunk", req.Index, "height", req.Height,
 		"peer", peerID, "bytes_sent", bytesWritten, "file_size", fileSize,
+		"copy_duration", copyDuration, "total_duration", totalDuration, "rate_kbps", rate)
+}
+
+// SnapshotChunkRangeRequestHandler handles range-based chunk requests for resumable downloads
+func (s *SnapshotStore) snapshotChunkRangeRequestHandler(stream network.Stream) {
+	defer stream.Close()
+
+	startTime := time.Now()
+	peerID := stream.Conn().RemotePeer().String()
+
+	stream.SetReadDeadline(time.Now().Add(chunkGetTimeout))
+	var req SnapshotChunkRangeReq
+	if _, err := req.ReadFrom(stream); err != nil {
+		s.log.Warn("failed to read snapshot chunk range request", "error", err, "peer", peerID)
+		return
+	}
+
+	s.log.Info("starting range chunk transmission", "chunk", req.Index, "height", req.Height,
+		"offset", req.Offset, "length", req.Length, "peer", peerID, "start_time", startTime.Format(time.RFC3339Nano))
+
+	// get the snapshot chunk file path for streaming
+	chunkFile, err := s.GetSnapshotChunkFile(req.Height, req.Format, req.Index)
+	if err != nil {
+		s.log.Warn("failed to get chunk file", "error", err, "chunk", req.Index, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+
+	// open the chunk file for streaming
+	file, err := os.Open(chunkFile)
+	if err != nil {
+		s.log.Warn("failed to open chunk file", "error", err, "chunk", req.Index, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+	defer file.Close()
+
+	// get file size for validation
+	fileInfo, err := file.Stat()
+	if err != nil {
+		s.log.Warn("failed to stat chunk file", "error", err, "chunk", req.Index, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+	fileSize := fileInfo.Size()
+
+	// Validate range request
+	if req.Offset >= uint64(fileSize) {
+		s.log.Warn("invalid range request: offset beyond file size", "chunk", req.Index,
+			"offset", req.Offset, "file_size", fileSize, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+
+	// Seek to the requested offset
+	if _, err := file.Seek(int64(req.Offset), io.SeekStart); err != nil {
+		s.log.Warn("failed to seek to offset", "error", err, "chunk", req.Index,
+			"offset", req.Offset, "peer", peerID)
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+
+	// Calculate actual length to read
+	remainingBytes := uint64(fileSize) - req.Offset
+	lengthToRead := req.Length
+	if req.Length == 0 || req.Length > remainingBytes {
+		lengthToRead = remainingBytes
+	}
+
+	// set write deadline for the entire transmission
+	stream.SetWriteDeadline(time.Now().Add(s.getChunkSendTimeout()))
+
+	// create buffered writer for better network efficiency
+	bufWriter := bufio.NewWriterSize(stream, 64*1024) // 64KB buffer
+
+	// create progress writer for monitoring
+	progressWriter := &progressWriter{
+		writer:      bufWriter,
+		logger:      s.log,
+		chunk:       req.Index,
+		peer:        peerID,
+		startTime:   startTime,
+		lastLogTime: startTime,
+	}
+
+	// stream the chunk data with limited reader
+	limitedReader := io.LimitReader(file, int64(lengthToRead))
+	copyStartTime := time.Now()
+	bytesWritten, err := io.Copy(progressWriter, limitedReader)
+	copyDuration := time.Since(copyStartTime)
+
+	if err != nil {
+		s.log.Warn("failed to stream range chunk data", "error", err, "chunk", req.Index,
+			"peer", peerID, "bytes_written", bytesWritten, "requested_length", lengthToRead,
+			"copy_duration", copyDuration, "total_duration", time.Since(startTime))
+		return
+	}
+
+	// flush the buffer
+	if err := bufWriter.Flush(); err != nil {
+		s.log.Warn("failed to flush range chunk data", "error", err, "chunk", req.Index, "peer", peerID)
+		return
+	}
+
+	totalDuration := time.Since(startTime)
+	rate := float64(bytesWritten) / totalDuration.Seconds() / 1024 // KB/s
+
+	s.log.Info("successfully sent snapshot chunk range", "chunk", req.Index, "height", req.Height,
+		"peer", peerID, "offset", req.Offset, "bytes_sent", bytesWritten, "requested_length", lengthToRead,
 		"copy_duration", copyDuration, "total_duration", totalDuration, "rate_kbps", rate)
 }
 

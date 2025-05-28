@@ -285,179 +285,98 @@ func isRetryableError(err error) bool {
 
 // downloadChunkAttempt performs a single attempt to download a chunk
 func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
+	// Try resumable download for large chunks, fall back to legacy for small ones
+	const resumableThreshold = 2 * 1024 * 1024 // 2MB - only use resumable for large chunks
+
+	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
+	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+	// Check if we have a partial download
+	var bytesDownloaded uint64 = 0
+	if fileInfo, err := os.Stat(finalFilePath); err == nil {
+		bytesDownloaded = uint64(fileInfo.Size())
+
+		// If file exists and is small, or if we don't support range requests, use legacy
+		if bytesDownloaded < resumableThreshold {
+			os.Remove(finalFilePath) // Remove partial file and start fresh
+			return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+		}
+
+		// Try to resume the download
+		s.log.Info("Attempting to resume chunk download", "chunk", index, "bytes_downloaded", bytesDownloaded)
+		err := s.downloadChunkResumable(ctx, snap, provider, index, bytesDownloaded, finalFilePath)
+		if err != nil {
+			s.log.Debug("Resumable download failed, falling back to legacy", "chunk", index, "error", err)
+			os.Remove(finalFilePath) // Clean up and start fresh
+			return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+		}
+		return nil
+	}
+
+	// No existing file, start with legacy download
+	return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+}
+
+// downloadChunkResumable resumes a download from a specific offset
+func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, bytesDownloaded uint64, filePath string) error {
 	// Create a context with stream timeout for libp2p operations
 	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
 	defer cancel()
 
-	streamStartTime := time.Now()
-	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotChunk)
+	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotRange)
 	if err != nil {
-		streamDuration := time.Since(streamStartTime)
-		s.log.Warn("failed to create stream to provider", "provider", provider.ID.String(),
-			"error", peers.CompressDialError(err), "chunk", index, "stream_creation_duration", streamDuration)
-		return err
+		return fmt.Errorf("failed to create range stream: %w", err)
 	}
 	defer stream.Close()
-
-	streamCreationDuration := time.Since(streamStartTime)
-	s.log.Info("Stream created successfully", "chunk", index, "provider", provider.ID.String(),
-		"stream_creation_duration", streamCreationDuration)
 
 	// Set deadlines for the stream operations
 	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 
-	// Send the chunk request
-	writeStartTime := time.Now()
-
-	// Create the request for the snapshot chunk
+	// Create the range request to resume from where we left off
 	snapHash, err := types.NewHashFromBytes(snap.Hash)
 	if err != nil {
-		s.log.Warn("failed to convert snapshot hash", "error", err, "chunk", index)
 		return err
 	}
 
-	req := snapshotter.SnapshotChunkReq{
+	req := snapshotter.SnapshotChunkRangeReq{
 		Height: snap.Height,
 		Format: snap.Format,
 		Index:  index,
 		Hash:   snapHash,
+		Offset: bytesDownloaded,
+		Length: 0, // 0 means read to end
 	}
+
 	reqBts, err := req.MarshalBinary()
 	if err != nil {
-		s.log.Warn("failed to marshal snapshot chunk request", "error", err, "chunk", index)
 		return err
 	}
 
 	if _, err := stream.Write(reqBts); err != nil {
-		writeDuration := time.Since(writeStartTime)
-		s.log.Warn("failed to write chunk request", "provider", provider.ID.String(),
-			"error", err, "chunk", index, "write_duration", writeDuration)
-		return err
+		return fmt.Errorf("failed to write range request: %w", err)
 	}
 
-	writeDuration := time.Since(writeStartTime)
-	s.log.Debug("Chunk request sent", "chunk", index, "write_duration", writeDuration)
-
-	// Create temporary file for atomic write
-	tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", index)
-	tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
-	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
-	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
-
-	tempFile, err := os.Create(tempFilePath)
+	// Open file for appending
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		s.log.Warn("failed to create temporary chunk file", "error", err, "chunk", index, "temp_path", tempFilePath)
 		return err
 	}
-	defer func() {
-		tempFile.Close()
-		// Clean up temp file if something goes wrong
-		if _, err := os.Stat(tempFilePath); err == nil {
-			os.Remove(tempFilePath)
-		}
-	}()
+	defer file.Close()
 
-	// Copy data from stream to temporary file with progress logging
+	// Copy remaining data from stream
 	copyStartTime := time.Now()
-	s.log.Info("Starting data copy", "chunk", index, "copy_start_time", copyStartTime.Format(time.RFC3339Nano))
-
-	// Create a progress reader to log transfer progress
-	progressReader := &progressReader{
-		reader:      stream,
-		logger:      s.log,
-		chunk:       index,
-		startTime:   copyStartTime,
-		lastLogTime: copyStartTime,
-	}
-
-	bytesWritten, err := io.Copy(tempFile, progressReader)
-	copyDuration := time.Since(copyStartTime)
-
+	bytesWritten, err := io.Copy(file, stream)
 	if err != nil {
-		s.log.Warn("failed to copy chunk data", "provider", provider.ID.String(),
-			"error", err, "chunk", index, "bytes_written", bytesWritten,
-			"copy_duration", copyDuration, "total_duration", time.Since(startTime))
-		return err
+		return fmt.Errorf("failed to copy remaining chunk data: %w", err)
 	}
 
-	s.log.Info("Data copy completed", "chunk", index, "bytes_written", bytesWritten,
-		"copy_duration", copyDuration)
+	s.log.Info("Resumed chunk download completed", "chunk", index,
+		"resumed_from", bytesDownloaded, "additional_bytes", bytesWritten,
+		"copy_duration", time.Since(copyStartTime))
 
-	// Close temp file before validation
-	if err := tempFile.Close(); err != nil {
-		s.log.Warn("failed to close temporary chunk file", "error", err, "chunk", index)
-		return err
-	}
-
-	// Validate file size before hash validation (quick check)
-	fileInfo, err := os.Stat(tempFilePath)
-	if err != nil {
-		s.log.Warn("failed to stat temporary chunk file", "error", err, "chunk", index)
-		return err
-	}
-
-	fileSize := fileInfo.Size()
-	s.log.Info("File size validation", "chunk", index, "file_size", fileSize, "bytes_written", bytesWritten)
-
-	if fileSize != bytesWritten {
-		s.log.Warn("file size mismatch", "chunk", index, "file_size", fileSize, "bytes_written", bytesWritten)
-		return fmt.Errorf("file size mismatch: file=%d, written=%d", fileSize, bytesWritten)
-	}
-
-	// Validate chunk hash
-	hashStartTime := time.Now()
-	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
-		hashDuration := time.Since(hashStartTime)
-		s.log.Warn("chunk hash validation failed", "provider", provider.ID.String(),
-			"error", err, "chunk", index, "file_size", fileSize,
-			"hash_duration", hashDuration, "total_duration", time.Since(startTime))
-		return err
-	}
-
-	hashDuration := time.Since(hashStartTime)
-	s.log.Info("Hash validation successful", "chunk", index, "hash_duration", hashDuration)
-
-	// Atomically move temp file to final location
-	if err := os.Rename(tempFilePath, finalFilePath); err != nil {
-		s.log.Warn("failed to rename temporary chunk file", "error", err, "chunk", index)
-		return err
-	}
-
-	totalDuration := time.Since(startTime)
-	s.log.Info("Chunk download completed successfully", "chunk", index, "provider", provider.ID.String(),
-		"file_size", fileSize, "total_duration", totalDuration,
-		"stream_creation", streamCreationDuration, "copy_duration", copyDuration, "hash_duration", hashDuration)
-
-	return nil
-}
-
-// progressReader wraps a reader to log progress during large transfers
-type progressReader struct {
-	reader      io.Reader
-	logger      log.Logger
-	chunk       uint32
-	startTime   time.Time
-	lastLogTime time.Time
-	totalBytes  int64
-}
-
-func (pr *progressReader) Read(p []byte) (n int, err error) {
-	n, err = pr.reader.Read(p)
-	pr.totalBytes += int64(n)
-
-	now := time.Now()
-	// Log progress every 10 seconds
-	if now.Sub(pr.lastLogTime) >= 10*time.Second {
-		duration := now.Sub(pr.startTime)
-		rate := float64(pr.totalBytes) / duration.Seconds()
-		pr.logger.Info("Download progress", "chunk", pr.chunk,
-			"bytes_downloaded", pr.totalBytes, "duration", duration,
-			"rate_bytes_per_sec", int64(rate))
-		pr.lastLogTime = now
-	}
-
-	return n, err
+	// Validate the complete chunk
+	return s.validateChunkHash(filePath, snap.ChunkHashes[index])
 }
 
 // requestSnapshotCatalogs requests the available snapshots from a peer.
@@ -711,6 +630,90 @@ func (s *StateSyncService) validateChunkHash(filePath string, expectedHash [32]b
 	if !bytes.Equal(actualHash, expectedHash[:]) {
 		return fmt.Errorf("chunk hash mismatch: expected %x, got %x", expectedHash[:], actualHash)
 	}
+
+	return nil
+}
+
+// downloadChunkLegacy performs a legacy download (original implementation)
+func (s *StateSyncService) downloadChunkLegacy(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
+	// Create a context with stream timeout for libp2p operations
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
+	defer cancel()
+
+	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotChunk)
+	if err != nil {
+		s.log.Warn("failed to create stream to provider", "provider", provider.ID.String(),
+			"error", peers.CompressDialError(err), "chunk", index)
+		return err
+	}
+	defer stream.Close()
+
+	// Set deadlines for the stream operations
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+
+	// Create the request for the snapshot chunk
+	snapHash, err := types.NewHashFromBytes(snap.Hash)
+	if err != nil {
+		return err
+	}
+
+	req := snapshotter.SnapshotChunkReq{
+		Height: snap.Height,
+		Format: snap.Format,
+		Index:  index,
+		Hash:   snapHash,
+	}
+	reqBts, err := req.MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.Write(reqBts); err != nil {
+		return fmt.Errorf("failed to write chunk request: %w", err)
+	}
+
+	// Create temporary file for atomic write
+	tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", index)
+	tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
+	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
+	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+	tempFile, err := os.Create(tempFilePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		tempFile.Close()
+		// Clean up temp file if something goes wrong
+		if _, err := os.Stat(tempFilePath); err == nil {
+			os.Remove(tempFilePath)
+		}
+	}()
+
+	// Copy data from stream to temporary file
+	bytesWritten, err := io.Copy(tempFile, stream)
+	if err != nil {
+		return fmt.Errorf("failed to copy chunk data: %w", err)
+	}
+
+	// Close temp file before validation
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+
+	// Validate chunk hash
+	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
+		return err
+	}
+
+	// Atomically move temp file to final location
+	if err := os.Rename(tempFilePath, finalFilePath); err != nil {
+		return err
+	}
+
+	s.log.Info("Chunk download completed successfully", "chunk", index, "provider", provider.ID.String(),
+		"bytes_written", bytesWritten, "total_duration", time.Since(startTime))
 
 	return nil
 }
