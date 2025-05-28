@@ -285,7 +285,7 @@ func isRetryableError(err error) bool {
 
 // downloadChunkAttempt performs a single attempt to download a chunk
 func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
-	// Try resumable download for all chunks, fall back to legacy if not supported
+	// Try resumable download for all chunks, fall back to legacy only if protocol not supported
 	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
 	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
 
@@ -307,18 +307,44 @@ func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snaps
 
 	err := s.downloadChunkResumable(ctx, snap, provider, index, bytesDownloaded, finalFilePath)
 	if err != nil {
-		if isResume {
-			s.log.Debug("Resumable download failed, falling back to legacy", "chunk", index, "error", err)
-		} else {
-			s.log.Debug("Range protocol failed, falling back to legacy", "chunk", index, "error", err)
-		}
+		// Only fallback to legacy if the range protocol is not supported by the server
+		// Network issues (stream resets, timeouts) should be retried with range protocol
+		if isProtocolNotSupportedError(err) {
+			if isResume {
+				s.log.Debug("Range protocol not supported by server, falling back to legacy (will lose resume capability)", "chunk", index, "error", err)
+			} else {
+				s.log.Debug("Range protocol not supported by server, falling back to legacy", "chunk", index, "error", err)
+			}
 
-		// Clean up any partial file and start fresh with legacy
-		os.Remove(finalFilePath)
-		return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+			// Clean up any partial file since legacy doesn't support resume
+			os.Remove(finalFilePath)
+			return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+		} else {
+			// Network/transport error - don't fallback, let retry logic handle it
+			// The partial file will be preserved for resuming on next attempt
+			if isResume {
+				s.log.Debug("Range protocol failed due to network issue, will retry resume on next attempt", "chunk", index, "error", err)
+			} else {
+				s.log.Debug("Range protocol failed due to network issue, will retry", "chunk", index, "error", err)
+			}
+			return err
+		}
 	}
 
 	return nil
+}
+
+// isProtocolNotSupportedError determines if an error indicates the server doesn't support the range protocol
+func isProtocolNotSupportedError(err error) bool {
+	errStr := err.Error()
+
+	// Check for actual libp2p protocol negotiation failures
+	if strings.Contains(errStr, "failed to negotiate protocol") &&
+		strings.Contains(errStr, "protocols not supported") {
+		return true
+	}
+
+	return false
 }
 
 // downloadChunkResumable resumes a download from a specific offset
