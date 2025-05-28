@@ -116,9 +116,19 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 
 		s.log.Info("Requesting contents of the snapshot", "height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
 
-		// Clean up temp files from any previous snapshot attempts before starting new one
-		if err := s.cleanupTempFiles(bestSnapshot, 0); err != nil {
-			s.log.Warn("Failed to cleanup temp files before new snapshot", "error", err)
+		// Clean up temp files only if this is a different snapshot than what we were previously working on
+		if s.currentSnapshot == nil ||
+			bestSnapshot.Height != s.currentSnapshot.Height ||
+			!bytes.Equal(bestSnapshot.Hash, s.currentSnapshot.Hash) {
+			s.log.Info("Starting new snapshot download, cleaning up temp files from previous attempts",
+				"new_height", bestSnapshot.Height, "new_hash", hex.EncodeToString(bestSnapshot.Hash))
+			if err := s.cleanupTempFiles(bestSnapshot, 0); err != nil {
+				s.log.Warn("Failed to cleanup temp files before new snapshot", "error", err)
+			}
+			s.currentSnapshot = bestSnapshot
+		} else {
+			s.log.Info("Retrying same snapshot, preserving temp files for resume capability",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
 		}
 
 		// Verify the correctness of the snapshot with the trusted providers
@@ -144,6 +154,7 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 		}
 
 		// retrieved all chunks successfully
+		s.currentSnapshot = nil // Clear tracking since this snapshot is complete
 		return true, bestSnapshot, nil
 	}
 }
@@ -891,15 +902,10 @@ func (s *StateSyncService) cleanupTempFiles(currentSnapshot *snapshotMetadata, m
 			reason = fmt.Sprintf("older than %v", maxAge)
 		}
 
-		// Check if temp file belongs to different snapshot
-		if currentSnapshot != nil && !shouldClean {
-			// Extract chunk number from filename
-			matches := tempFilePattern.FindStringSubmatch(entry.Name())
-			if len(matches) > 1 {
-				// This temp file is for a different snapshot context, clean it
-				shouldClean = true
-				reason = "from different snapshot context"
-			}
+		// When maxAge is 0, clean all temp files (used when starting new snapshot)
+		if maxAge == 0 {
+			shouldClean = true
+			reason = "cleaning all temp files for new snapshot"
 		}
 
 		if shouldClean {

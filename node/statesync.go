@@ -69,7 +69,8 @@ type StateSyncService struct {
 	blockStore    blockStore
 
 	// statesync operation specific fields
-	snapshotPool *snapshotPool // resets with every discovery
+	snapshotPool    *snapshotPool     // resets with every discovery
+	currentSnapshot *snapshotMetadata // track current snapshot to avoid unnecessary cleanup
 
 	// Logger
 	log log.Logger
