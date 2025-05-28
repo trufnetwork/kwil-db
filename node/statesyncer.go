@@ -378,6 +378,13 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 		Length: 0, // 0 means read to end
 	}
 
+	// Log the request details for debugging
+	if bytesDownloaded == 0 {
+		s.log.Debug("Sending range request for fresh download", "chunk", index, "offset", 0, "provider", provider.ID.String())
+	} else {
+		s.log.Debug("Sending range request for resume", "chunk", index, "offset", bytesDownloaded, "provider", provider.ID.String())
+	}
+
 	reqBts, err := req.MarshalBinary()
 	if err != nil {
 		return err
@@ -393,9 +400,11 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 
 	if bytesDownloaded == 0 {
 		// Fresh download - create new temp file
+		s.log.Debug("Creating new temp file for fresh download", "chunk", index, "temp_path", tempFilePath)
 		file, err = os.Create(tempFilePath)
 	} else {
 		// Resume download - copy existing partial file to temp, then append
+		s.log.Debug("Preparing temp file for resume", "chunk", index, "existing_bytes", bytesDownloaded, "temp_path", tempFilePath)
 		if err := s.copyFileForResume(filePath, tempFilePath); err != nil {
 			return fmt.Errorf("failed to prepare temp file for resume: %w", err)
 		}
@@ -405,11 +414,15 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 	if err != nil {
 		return err
 	}
+
+	var cleanupTempFile bool = true // Flag to control temp file cleanup
 	defer func() {
 		file.Close()
-		// Clean up temp file if something goes wrong
-		if _, err := os.Stat(tempFilePath); err == nil {
-			os.Remove(tempFilePath)
+		// Only clean up temp file if we should (success or non-retryable error)
+		if cleanupTempFile {
+			if _, err := os.Stat(tempFilePath); err == nil {
+				os.Remove(tempFilePath)
+			}
 		}
 	}()
 
@@ -417,23 +430,32 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 	copyStartTime := time.Now()
 	bytesWritten, err := io.Copy(file, stream)
 	if err != nil {
+		// Don't clean up temp file on network errors - preserve for resume
+		cleanupTempFile = false
 		return fmt.Errorf("failed to copy chunk data: %w", err)
 	}
 
 	// Close temp file before validation
 	if err := file.Close(); err != nil {
+		cleanupTempFile = false
 		return err
 	}
 
 	// Validate the complete chunk
 	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
+		// Hash validation failed - this is not retryable, clean up temp file
+		cleanupTempFile = true
 		return err
 	}
 
 	// Atomically move temp file to final location
 	if err := os.Rename(tempFilePath, filePath); err != nil {
+		cleanupTempFile = true
 		return err
 	}
+
+	// Success - temp file was moved, no cleanup needed
+	cleanupTempFile = false
 
 	if bytesDownloaded == 0 {
 		s.log.Info("Fresh chunk download completed using range protocol", "chunk", index,
