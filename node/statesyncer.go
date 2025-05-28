@@ -127,17 +127,19 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 		if !valid {
 			// invalid snapshots are blacklisted
 			s.snapshotPool.blacklistSnapshot(bestSnapshot)
-			// Clean up any temp files for this blacklisted snapshot
-			s.cleanupSnapshotTempFiles(bestSnapshot)
+			// Clean up any temp files for this blacklisted snapshot and remove final files
+			// since this snapshot is fundamentally invalid
+			s.cleanupInvalidSnapshot(bestSnapshot)
 			continue
 		}
 		bestSnapshot.AppHash = appHash
 
 		// fetch snapshot chunks
 		if err := s.chunkFetcher(ctx, bestSnapshot); err != nil {
-			// remove the chunks and retry
-			os.RemoveAll(s.snapshotDir)
-			os.MkdirAll(s.snapshotDir, 0755)
+			s.log.Warn("Chunk fetcher failed for snapshot", "height", bestSnapshot.Height,
+				"error", err, "will_retry_same_snapshot", true)
+			// Don't remove chunks directory - preserve any completed chunks and temp files
+			// The next iteration will resume from where we left off
 			continue
 		}
 
@@ -151,7 +153,6 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotMetadata) error {
 	// fetch snapshot chunks and write them to the snapshot directory
 	var wg sync.WaitGroup
-	// errCh := make(chan error, snapshot.Chunks)
 
 	key := snapshot.Key()
 	providers := s.snapshotPool.keyProviders(key)
@@ -168,6 +169,33 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 
 	chunkCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Check which chunks we still need to download
+	chunksNeeded := make([]uint32, 0, snapshot.Chunks)
+	chunksAlreadyComplete := 0
+
+	for i := uint32(0); i < snapshot.Chunks; i++ {
+		finalFileName := fmt.Sprintf("chunk-%d.sql.gz", i)
+		finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+		if _, err := os.Stat(finalFilePath); err == nil {
+			// Chunk already complete, skip it
+			chunksAlreadyComplete++
+			s.log.Debug("Chunk already complete, skipping", "chunk", i)
+			continue
+		}
+		chunksNeeded = append(chunksNeeded, i)
+	}
+
+	if chunksAlreadyComplete > 0 {
+		s.log.Info("Resuming chunk download", "chunks_already_complete", chunksAlreadyComplete,
+			"chunks_remaining", len(chunksNeeded), "total_chunks", snapshot.Chunks)
+	}
+
+	if len(chunksNeeded) == 0 {
+		s.log.Info("All chunks already downloaded, skipping chunk fetcher")
+		return nil // All chunks already complete
+	}
 
 	// start chunk fetchers
 	for range chunkFetchers {
@@ -210,9 +238,9 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		}()
 	}
 
-	// send chunk indexes to chunk fetchers
-	for chunk := range snapshot.Chunks {
-		tasks <- chunk
+	// send chunk indexes to chunk fetchers (only chunks we still need)
+	for _, chunkIdx := range chunksNeeded {
+		tasks <- chunkIdx
 	}
 	close(tasks) // close the tasks channel to signal the end of chunks to fetch
 
@@ -221,8 +249,9 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 	// check if any of the chunk fetches failed
 	select {
 	case err := <-errChan:
-		return err
+		return fmt.Errorf("chunk download incomplete: %w", err)
 	default:
+		s.log.Info("All chunks downloaded successfully", "total_chunks", snapshot.Chunks)
 		return nil
 	}
 }
@@ -893,8 +922,19 @@ func (s *StateSyncService) cleanupTempFiles(currentSnapshot *snapshotMetadata, m
 	return nil
 }
 
-// cleanupSnapshotTempFiles removes temp files specifically for a given snapshot
-func (s *StateSyncService) cleanupSnapshotTempFiles(snapshot *snapshotMetadata) error {
+// performStartupCleanup performs cleanup of old temp files on service startup
+func (s *StateSyncService) performStartupCleanup() {
+	const defaultMaxAge = 24 * time.Hour // Clean temp files older than 24 hours
+
+	s.log.Info("Performing startup cleanup of temp files", "max_age", defaultMaxAge)
+
+	if err := s.cleanupTempFiles(nil, defaultMaxAge); err != nil {
+		s.log.Warn("Startup cleanup failed", "error", err)
+	}
+}
+
+// cleanupInvalidSnapshot removes all files (temp and final) for an invalid snapshot
+func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) error {
 	if snapshot == nil {
 		return nil
 	}
@@ -902,8 +942,9 @@ func (s *StateSyncService) cleanupSnapshotTempFiles(snapshot *snapshotMetadata) 
 	cleanedCount := 0
 	var totalSizeCleaned int64
 
-	// Clean temp files for all chunks of this snapshot
+	// Clean both temp files and final files for all chunks of this invalid snapshot
 	for i := uint32(0); i < snapshot.Chunks; i++ {
+		// Clean temp file
 		tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", i)
 		tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
 
@@ -916,23 +957,26 @@ func (s *StateSyncService) cleanupSnapshotTempFiles(snapshot *snapshotMetadata) 
 				s.log.Debug("Cleaned up snapshot temp file", "file", tempFileName, "size", fileInfo.Size())
 			}
 		}
+
+		// Clean final file (in case some chunks were completed before we discovered the snapshot was invalid)
+		finalFileName := fmt.Sprintf("chunk-%d.sql.gz", i)
+		finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+		if fileInfo, err := os.Stat(finalFilePath); err == nil {
+			if err := os.Remove(finalFilePath); err != nil {
+				s.log.Warn("Failed to remove snapshot final file", "file", finalFileName, "error", err)
+			} else {
+				cleanedCount++
+				totalSizeCleaned += fileInfo.Size()
+				s.log.Debug("Cleaned up snapshot final file", "file", finalFileName, "size", fileInfo.Size())
+			}
+		}
 	}
 
 	if cleanedCount > 0 {
-		s.log.Info("Snapshot temp file cleanup completed", "snapshot_height", snapshot.Height,
+		s.log.Info("Invalid snapshot cleanup completed", "snapshot_height", snapshot.Height,
 			"files_cleaned", cleanedCount, "total_size_cleaned", totalSizeCleaned)
 	}
 
 	return nil
-}
-
-// performStartupCleanup performs cleanup of old temp files on service startup
-func (s *StateSyncService) performStartupCleanup() {
-	const defaultMaxAge = 24 * time.Hour // Clean temp files older than 24 hours
-
-	s.log.Info("Performing startup cleanup of temp files", "max_age", defaultMaxAge)
-
-	if err := s.cleanupTempFiles(nil, defaultMaxAge); err != nil {
-		s.log.Warn("Startup cleanup failed", "error", err)
-	}
 }
