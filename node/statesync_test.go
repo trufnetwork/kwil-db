@@ -101,6 +101,7 @@ func testSSConfig(enable bool, providers []string) *config.StateSyncConfig {
 		CatalogTimeout:          ktypes.Duration(10 * time.Second),
 		ChunkTimeout:            ktypes.Duration(30 * time.Second),
 		MetadataTimeout:         ktypes.Duration(15 * time.Second),
+		StreamTimeout:           ktypes.Duration(10 * time.Second),
 		ConcurrentChunkFetchers: 3, // Use a smaller value for tests
 	}
 }
@@ -175,14 +176,14 @@ func TestStateSyncService(t *testing.T) {
 	assert.Equal(t, snap1.Hash, bestSnap.Hash)
 
 	// Validate the snapshot should fail as the trusted provider does not have the snapshot
-	valid, _ := ss3.VerifySnapshot(ctx, snap1)
-	assert.False(t, valid)
+	verificationResult, _ := ss3.VerifySnapshot(ctx, snap1)
+	assert.Equal(t, VerificationFailed, verificationResult)
 
 	// add snap1 to the trusted provider
 	st1.addSnapshot(snap1)
 
-	valid, _ = ss3.VerifySnapshot(ctx, snap1)
-	assert.True(t, valid)
+	verificationResult, _ = ss3.VerifySnapshot(ctx, snap1)
+	assert.Equal(t, VerificationValid, verificationResult)
 
 	// add snap2 to the trusted provider
 	st1.addSnapshot(snap2)
@@ -197,8 +198,8 @@ func TestStateSyncService(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, snap2.Height, bestSnap.Height)
 
-	valid, _ = ss3.VerifySnapshot(ctx, bestSnap)
-	assert.True(t, valid)
+	verificationResult, _ = ss3.VerifySnapshot(ctx, bestSnap)
+	assert.Equal(t, VerificationValid, verificationResult)
 }
 
 type mockBS struct {

@@ -133,16 +133,28 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 
 		// Verify the correctness of the snapshot with the trusted providers
 		// and request the providers for the appHash at the snapshot height
-		valid, appHash := s.VerifySnapshot(ctx, bestSnapshot)
-		if !valid {
-			// invalid snapshots are blacklisted
+		verificationResult, appHash := s.VerifySnapshot(ctx, bestSnapshot)
+		switch verificationResult {
+		case VerificationInvalid:
+			// Snapshot is definitively invalid - blacklist it
+			s.log.Warn("Snapshot rejected by trusted providers, blacklisting",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
 			s.snapshotPool.blacklistSnapshot(bestSnapshot)
 			// Clean up any temp files for this blacklisted snapshot and remove final files
 			// since this snapshot is fundamentally invalid
 			s.cleanupInvalidSnapshot(bestSnapshot)
 			continue
+		case VerificationFailed:
+			// Verification failed due to network issues - don't blacklist, just retry
+			s.log.Warn("Failed to verify snapshot due to network issues, will retry without blacklisting",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+			continue
+		case VerificationValid:
+			// Snapshot is valid, proceed with download
+			s.log.Info("Snapshot verified successfully",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+			bestSnapshot.AppHash = appHash
 		}
-		bestSnapshot.AppHash = appHash
 
 		// fetch snapshot chunks
 		if err := s.chunkFetcher(ctx, bestSnapshot); err != nil {

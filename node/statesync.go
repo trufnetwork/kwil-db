@@ -76,6 +76,15 @@ type StateSyncService struct {
 	log log.Logger
 }
 
+// VerificationResult represents the result of snapshot verification
+type VerificationResult int
+
+const (
+	VerificationValid   VerificationResult = iota // Snapshot is verified as valid
+	VerificationInvalid                           // Snapshot is confirmed invalid (should blacklist)
+	VerificationFailed                            // Verification failed due to network issues (should retry, not blacklist)
+)
+
 func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncService, error) {
 	if cfg.StateSyncCfg.Enable && cfg.StateSyncCfg.TrustedProviders == nil {
 		return nil, fmt.Errorf("at least one trusted provider is required for state sync")
@@ -205,8 +214,13 @@ func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
 	}
 }
 
-// verifySnapshot verifies the snapshot with the trusted provider and returns the app hash if the snapshot is valid.
-func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (bool, []byte) {
+// verifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
+// Returns VerificationValid with app hash if valid, VerificationInvalid if rejected by provider,
+// or VerificationFailed if unable to verify due to network issues.
+func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (VerificationResult, []byte) {
+	networkErrorCount := 0
+	totalProviders := len(ss.trustedProviders)
+
 	// verify the snapshot
 	for _, provider := range ss.trustedProviders {
 		// Create a context with stream timeout for libp2p operations
@@ -218,6 +232,7 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		if err != nil {
 			ss.log.Warn("failed to request snapshot meta", "provider", provider.ID.String(),
 				"error", peers.CompressDialError(err))
+			networkErrorCount++
 			continue
 		}
 
@@ -232,6 +247,7 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		if _, err := stream.Write(reqBts); err != nil {
 			ss.log.Warn("failed to send snapshot request", "provider", provider.ID.String(), "error", err)
 			stream.Close()
+			networkErrorCount++
 			continue
 		}
 
@@ -240,6 +256,7 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		if err := json.NewDecoder(stream).Decode(&meta); err != nil {
 			ss.log.Warn("failed to decode snapshot metadata", "provider", provider.ID.String(), "error", err)
 			stream.Close()
+			networkErrorCount++
 			continue
 		}
 		stream.Close()
@@ -247,28 +264,41 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		// verify the snapshot metadata
 		if snap.Height != meta.Height || snap.Format != meta.Format || snap.Chunks != meta.Chunks {
 			ss.log.Warnf("snapshot metadata mismatch: expected %v, got %v", snap, meta)
-			continue
+			// This is a definitive rejection - snapshot is invalid
+			return VerificationInvalid, nil
 		}
 
 		// snapshot hashes should match
 		if !bytes.Equal(snap.Hash, meta.Hash) {
 			ss.log.Warnf("snapshot metadata mismatch: expected %v, got %v", snap, meta)
-			continue
+			// This is a definitive rejection - snapshot is invalid
+			return VerificationInvalid, nil
 		}
 
 		// chunk hashes should match
 		for i, chunkHash := range snap.ChunkHashes {
 			if !bytes.Equal(chunkHash[:], meta.ChunkHashes[i][:]) {
 				ss.log.Warnf("snapshot metadata mismatch: expected %v, got %v", snap, meta)
-				continue
+				// This is a definitive rejection - snapshot is invalid
+				return VerificationInvalid, nil
 			}
 		}
 
 		ss.log.Info("verified snapshot with trusted provider", "provider", provider.ID.String(), "snapshot", snap,
 			"appHash", hex.EncodeToString(meta.AppHash))
-		return true, meta.AppHash
+		return VerificationValid, meta.AppHash
 	}
-	return false, nil
+
+	// If we got here, we couldn't verify with any provider
+	if networkErrorCount == totalProviders {
+		// All providers had network errors - this is likely a connectivity issue, not snapshot invalidity
+		ss.log.Warn("Failed to verify snapshot due to network connectivity issues with all trusted providers",
+			"snapshot_height", snap.Height, "providers_tried", totalProviders)
+		return VerificationFailed, nil
+	} else {
+		// Some providers were reachable but rejected the snapshot - it's invalid
+		return VerificationInvalid, nil
+	}
 }
 
 // snapshotPool keeps track of snapshots that have been discovered from the snapshot providers.
