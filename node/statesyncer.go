@@ -335,8 +335,11 @@ func isRetryableError(err error) bool {
 	if strings.Contains(errStr, "EOF") {
 		return true
 	}
-	// Timeout errors are retryable
+	// Timeout errors are retryable (both generic "timeout" and Go context errors)
 	if strings.Contains(errStr, "timeout") {
+		return true
+	}
+	if strings.Contains(errStr, "context deadline exceeded") {
 		return true
 	}
 	// Hash mismatches are not retryable (data corruption)

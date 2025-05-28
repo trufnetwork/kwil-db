@@ -488,3 +488,88 @@ func TestIsProtocolNotSupportedError(t *testing.T) {
 		}
 	})
 }
+
+// TestErrorClassification tests the critical error classification logic with better ROI
+func TestErrorClassification(t *testing.T) {
+	t.Run("stream reset errors should be retryable, not protocol failures", func(t *testing.T) {
+		streamResetErrors := []error{
+			errors.New("stream reset"),
+			errors.New("connection reset by peer"),
+			fmt.Errorf("failed to copy chunk data: %w", errors.New("stream reset")),
+			errors.New("EOF"),
+			errors.New("context deadline exceeded"),
+		}
+
+		for _, err := range streamResetErrors {
+			t.Run(err.Error(), func(t *testing.T) {
+				// These should be retryable (preserve temp files)
+				assert.True(t, isRetryableError(err), "Error should be retryable: %v", err)
+				// These should NOT trigger legacy fallback
+				assert.False(t, isProtocolNotSupportedError(err), "Error should not be treated as protocol failure: %v", err)
+			})
+		}
+	})
+
+	t.Run("protocol not supported errors should trigger fallback", func(t *testing.T) {
+		protocolErrors := []error{
+			// This is the ACTUAL libp2p error format (from integration test)
+			errors.New("failed to negotiate protocol: protocols not supported: [/kwil/snaprange/1.0.0]"),
+			errors.New("failed to negotiate protocol: protocols not supported"),
+		}
+
+		for _, err := range protocolErrors {
+			t.Run(err.Error(), func(t *testing.T) {
+				// These should trigger legacy fallback
+				assert.True(t, isProtocolNotSupportedError(err), "Error should be treated as protocol failure: %v", err)
+				// Protocol errors are not retryable (should fallback immediately)
+				assert.False(t, isRetryableError(err), "Protocol errors should trigger fallback, not retry: %v", err)
+			})
+		}
+	})
+
+	t.Run("hash mismatch should not be retryable", func(t *testing.T) {
+		hashErr := errors.New("chunk hash mismatch: expected abc, got def")
+		assert.False(t, isRetryableError(hashErr), "Hash mismatch should not be retryable")
+		assert.False(t, isProtocolNotSupportedError(hashErr), "Hash mismatch is not protocol failure")
+	})
+}
+
+// TestRealErrorCapture captures actual errors from integration scenarios for unit test validation
+func TestRealErrorCapture(t *testing.T) {
+	t.Run("capture real libp2p errors for unit test validation", func(t *testing.T) {
+		ctx := context.Background()
+		mn := mock.New()
+		tempDir := t.TempDir()
+
+		// Create hosts to capture real errors
+		h1, _, st1, _, _, err := newTestStatesyncer(ctx, t, mn, filepath.Join(tempDir, "n1"), testSSConfig(false, nil))
+		require.NoError(t, err)
+
+		h2, _, _, _, _, err := newTestStatesyncer(ctx, t, mn, filepath.Join(tempDir, "n2"), testSSConfig(false, nil))
+		require.NoError(t, err)
+
+		err = mn.LinkAll()
+		require.NoError(t, err)
+		err = mn.ConnectAllButSelf()
+		require.NoError(t, err)
+
+		// h1 supports range, h2 does not
+		h1.SetStreamHandler(snapshotter.ProtocolIDSnapshotRange, st1.snapshotChunkRangeRequestHandler)
+		time.Sleep(100 * time.Millisecond)
+
+		// Capture real protocol not supported error
+		streamCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		_, realProtocolErr := h1.NewStream(streamCtx, h2.ID(), snapshotter.ProtocolIDSnapshotRange)
+		require.Error(t, realProtocolErr)
+
+		t.Logf("Real protocol error: %v", realProtocolErr)
+
+		// Test that our classification works with the REAL error
+		assert.True(t, isProtocolNotSupportedError(realProtocolErr), "Real protocol error should be classified correctly")
+		assert.False(t, isRetryableError(realProtocolErr), "Real protocol error should not be retryable")
+
+		// TODO: Add real stream reset capture when we can simulate it reliably
+		// For now, we know that errors from io.Copy() during stream resets typically contain "stream reset"
+	})
+}
