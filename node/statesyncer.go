@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,9 @@ var (
 // If snapshots and their chunks are successfully fetched, the DB is restored from the snapshot and the
 // application state is verified.
 func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error) {
+	// Perform startup cleanup on first discovery attempt
+	s.performStartupCleanup()
+
 	retry := uint64(0)
 	for {
 		if retry > s.cfg.MaxRetries {
@@ -112,12 +116,19 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 
 		s.log.Info("Requesting contents of the snapshot", "height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
 
+		// Clean up temp files from any previous snapshot attempts before starting new one
+		if err := s.cleanupTempFiles(bestSnapshot, 0); err != nil {
+			s.log.Warn("Failed to cleanup temp files before new snapshot", "error", err)
+		}
+
 		// Verify the correctness of the snapshot with the trusted providers
 		// and request the providers for the appHash at the snapshot height
 		valid, appHash := s.VerifySnapshot(ctx, bestSnapshot)
 		if !valid {
 			// invalid snapshots are blacklisted
 			s.snapshotPool.blacklistSnapshot(bestSnapshot)
+			// Clean up any temp files for this blacklisted snapshot
+			s.cleanupSnapshotTempFiles(bestSnapshot)
 			continue
 		}
 		bestSnapshot.AppHash = appHash
@@ -812,4 +823,116 @@ func (s *StateSyncService) downloadChunkLegacy(ctx context.Context, snap *snapsh
 		"bytes_written", bytesWritten, "total_duration", time.Since(startTime))
 
 	return nil
+}
+
+// cleanupTempFiles removes temporary files based on various criteria
+func (s *StateSyncService) cleanupTempFiles(currentSnapshot *snapshotMetadata, maxAge time.Duration) error {
+	entries, err := os.ReadDir(s.snapshotDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, nothing to clean
+		}
+		return fmt.Errorf("failed to read snapshot directory: %w", err)
+	}
+
+	// Pattern to match temp files: chunk-{number}.sql.gz.tmp
+	tempFilePattern := regexp.MustCompile(`^chunk-(\d+)\.sql\.gz\.tmp$`)
+	now := time.Now()
+	cleanedCount := 0
+	var totalSizeCleaned int64
+
+	for _, entry := range entries {
+		if !tempFilePattern.MatchString(entry.Name()) {
+			continue // Not a temp file
+		}
+
+		filePath := filepath.Join(s.snapshotDir, entry.Name())
+		fileInfo, err := entry.Info()
+		if err != nil {
+			s.log.Warn("Failed to get file info for temp file", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		shouldClean := false
+		reason := ""
+
+		// Check age-based cleanup
+		if maxAge > 0 && now.Sub(fileInfo.ModTime()) > maxAge {
+			shouldClean = true
+			reason = fmt.Sprintf("older than %v", maxAge)
+		}
+
+		// Check if temp file belongs to different snapshot
+		if currentSnapshot != nil && !shouldClean {
+			// Extract chunk number from filename
+			matches := tempFilePattern.FindStringSubmatch(entry.Name())
+			if len(matches) > 1 {
+				// This temp file is for a different snapshot context, clean it
+				shouldClean = true
+				reason = "from different snapshot context"
+			}
+		}
+
+		if shouldClean {
+			if err := os.Remove(filePath); err != nil {
+				s.log.Warn("Failed to remove temp file", "file", entry.Name(), "error", err)
+			} else {
+				cleanedCount++
+				totalSizeCleaned += fileInfo.Size()
+				s.log.Debug("Cleaned up temp file", "file", entry.Name(), "reason", reason,
+					"size", fileInfo.Size(), "age", now.Sub(fileInfo.ModTime()))
+			}
+		}
+	}
+
+	if cleanedCount > 0 {
+		s.log.Info("Temp file cleanup completed", "files_cleaned", cleanedCount,
+			"total_size_cleaned", totalSizeCleaned, "cleanup_reason", "maintenance")
+	}
+
+	return nil
+}
+
+// cleanupSnapshotTempFiles removes temp files specifically for a given snapshot
+func (s *StateSyncService) cleanupSnapshotTempFiles(snapshot *snapshotMetadata) error {
+	if snapshot == nil {
+		return nil
+	}
+
+	cleanedCount := 0
+	var totalSizeCleaned int64
+
+	// Clean temp files for all chunks of this snapshot
+	for i := uint32(0); i < snapshot.Chunks; i++ {
+		tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", i)
+		tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
+
+		if fileInfo, err := os.Stat(tempFilePath); err == nil {
+			if err := os.Remove(tempFilePath); err != nil {
+				s.log.Warn("Failed to remove snapshot temp file", "file", tempFileName, "error", err)
+			} else {
+				cleanedCount++
+				totalSizeCleaned += fileInfo.Size()
+				s.log.Debug("Cleaned up snapshot temp file", "file", tempFileName, "size", fileInfo.Size())
+			}
+		}
+	}
+
+	if cleanedCount > 0 {
+		s.log.Info("Snapshot temp file cleanup completed", "snapshot_height", snapshot.Height,
+			"files_cleaned", cleanedCount, "total_size_cleaned", totalSizeCleaned)
+	}
+
+	return nil
+}
+
+// performStartupCleanup performs cleanup of old temp files on service startup
+func (s *StateSyncService) performStartupCleanup() {
+	const defaultMaxAge = 24 * time.Hour // Clean temp files older than 24 hours
+
+	s.log.Info("Performing startup cleanup of temp files", "max_age", defaultMaxAge)
+
+	if err := s.cleanupTempFiles(nil, defaultMaxAge); err != nil {
+		s.log.Warn("Startup cleanup failed", "error", err)
+	}
 }
