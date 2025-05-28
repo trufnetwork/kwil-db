@@ -285,36 +285,40 @@ func isRetryableError(err error) bool {
 
 // downloadChunkAttempt performs a single attempt to download a chunk
 func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
-	// Try resumable download for large chunks, fall back to legacy for small ones
-	const resumableThreshold = 2 * 1024 * 1024 // 2MB - only use resumable for large chunks
-
+	// Try resumable download for all chunks, fall back to legacy if not supported
 	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
 	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
 
 	// Check if we have a partial download
 	var bytesDownloaded uint64 = 0
+	var isResume bool = false
+
 	if fileInfo, err := os.Stat(finalFilePath); err == nil {
 		bytesDownloaded = uint64(fileInfo.Size())
-
-		// If file exists and is small, or if we don't support range requests, use legacy
-		if bytesDownloaded < resumableThreshold {
-			os.Remove(finalFilePath) // Remove partial file and start fresh
-			return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
-		}
-
-		// Try to resume the download
-		s.log.Info("Attempting to resume chunk download", "chunk", index, "bytes_downloaded", bytesDownloaded)
-		err := s.downloadChunkResumable(ctx, snap, provider, index, bytesDownloaded, finalFilePath)
-		if err != nil {
-			s.log.Debug("Resumable download failed, falling back to legacy", "chunk", index, "error", err)
-			os.Remove(finalFilePath) // Clean up and start fresh
-			return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
-		}
-		return nil
+		isResume = true
 	}
 
-	// No existing file, start with legacy download
-	return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+	// Try range protocol first (for both fresh downloads and resumes)
+	if isResume {
+		s.log.Info("Attempting to resume chunk download", "chunk", index, "bytes_downloaded", bytesDownloaded)
+	} else {
+		s.log.Debug("Starting fresh download with range protocol", "chunk", index)
+	}
+
+	err := s.downloadChunkResumable(ctx, snap, provider, index, bytesDownloaded, finalFilePath)
+	if err != nil {
+		if isResume {
+			s.log.Debug("Resumable download failed, falling back to legacy", "chunk", index, "error", err)
+		} else {
+			s.log.Debug("Range protocol failed, falling back to legacy", "chunk", index, "error", err)
+		}
+
+		// Clean up any partial file and start fresh with legacy
+		os.Remove(finalFilePath)
+		return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+	}
+
+	return nil
 }
 
 // downloadChunkResumable resumes a download from a specific offset
@@ -333,7 +337,7 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
 
-	// Create the range request to resume from where we left off
+	// Create the range request to resume from where we left off (or start fresh if offset=0)
 	snapHash, err := types.NewHashFromBytes(snap.Hash)
 	if err != nil {
 		return err
@@ -357,26 +361,82 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 		return fmt.Errorf("failed to write range request: %w", err)
 	}
 
-	// Open file for appending
-	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0644)
+	// Use atomic writes with temp file for safety
+	tempFilePath := filePath + ".tmp"
+	var file *os.File
+
+	if bytesDownloaded == 0 {
+		// Fresh download - create new temp file
+		file, err = os.Create(tempFilePath)
+	} else {
+		// Resume download - copy existing partial file to temp, then append
+		if err := s.copyFileForResume(filePath, tempFilePath); err != nil {
+			return fmt.Errorf("failed to prepare temp file for resume: %w", err)
+		}
+		file, err = os.OpenFile(tempFilePath, os.O_WRONLY|os.O_APPEND, 0644)
+	}
+
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		file.Close()
+		// Clean up temp file if something goes wrong
+		if _, err := os.Stat(tempFilePath); err == nil {
+			os.Remove(tempFilePath)
+		}
+	}()
 
 	// Copy remaining data from stream
 	copyStartTime := time.Now()
 	bytesWritten, err := io.Copy(file, stream)
 	if err != nil {
-		return fmt.Errorf("failed to copy remaining chunk data: %w", err)
+		return fmt.Errorf("failed to copy chunk data: %w", err)
 	}
 
-	s.log.Info("Resumed chunk download completed", "chunk", index,
-		"resumed_from", bytesDownloaded, "additional_bytes", bytesWritten,
-		"copy_duration", time.Since(copyStartTime))
+	// Close temp file before validation
+	if err := file.Close(); err != nil {
+		return err
+	}
 
 	// Validate the complete chunk
-	return s.validateChunkHash(filePath, snap.ChunkHashes[index])
+	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
+		return err
+	}
+
+	// Atomically move temp file to final location
+	if err := os.Rename(tempFilePath, filePath); err != nil {
+		return err
+	}
+
+	if bytesDownloaded == 0 {
+		s.log.Info("Fresh chunk download completed using range protocol", "chunk", index,
+			"bytes_written", bytesWritten, "copy_duration", time.Since(copyStartTime))
+	} else {
+		s.log.Info("Resumed chunk download completed", "chunk", index,
+			"resumed_from", bytesDownloaded, "additional_bytes", bytesWritten,
+			"copy_duration", time.Since(copyStartTime))
+	}
+
+	return nil
+}
+
+// copyFileForResume copies an existing partial file to a temp file for atomic resume
+func (s *StateSyncService) copyFileForResume(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, src)
+	return err
 }
 
 // requestSnapshotCatalogs requests the available snapshots from a peer.

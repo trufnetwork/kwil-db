@@ -12,6 +12,10 @@ import (
 )
 
 // SnapshotChunkReq is for ProtocolIDSnapshotChunk "/kwil/snapchunk/1.0.0"
+//
+// This message type requests complete snapshot chunks. For resumable downloads
+// and partial chunk fetching, see SnapshotChunkRangeReq which supports
+// range-based requests with offset and length parameters.
 type SnapshotChunkReq struct {
 	Height uint64
 	Format uint32

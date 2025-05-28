@@ -219,7 +219,8 @@ func (s *SnapshotStore) snapshotChunkRangeRequestHandler(stream network.Stream) 
 	}
 
 	s.log.Info("starting range chunk transmission", "chunk", req.Index, "height", req.Height,
-		"offset", req.Offset, "length", req.Length, "peer", peerID, "start_time", startTime.Format(time.RFC3339Nano))
+		"offset", req.Offset, "length", req.Length, "peer", peerID, "start_time", startTime.Format(time.RFC3339Nano),
+		"is_resume", req.Offset > 0)
 
 	// get the snapshot chunk file path for streaming
 	chunkFile, err := s.GetSnapshotChunkFile(req.Height, req.Format, req.Index)
@@ -315,7 +316,7 @@ func (s *SnapshotStore) snapshotChunkRangeRequestHandler(stream network.Stream) 
 
 	s.log.Info("successfully sent snapshot chunk range", "chunk", req.Index, "height", req.Height,
 		"peer", peerID, "offset", req.Offset, "bytes_sent", bytesWritten, "requested_length", lengthToRead,
-		"copy_duration", copyDuration, "total_duration", totalDuration, "rate_kbps", rate)
+		"copy_duration", copyDuration, "total_duration", totalDuration, "rate_kbps", rate, "is_resume", req.Offset > 0)
 }
 
 // SnapshotMetadataRequestHandler handles the incoming snapshot metadata request and
