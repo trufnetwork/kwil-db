@@ -289,13 +289,22 @@ func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snaps
 	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
 	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
 
-	// Check if we have a partial download
+	// Check if we have a partial download from temp file of failed attempt
 	var bytesDownloaded uint64 = 0
 	var isResume bool = false
+	tempFilePath := finalFilePath + ".tmp"
 
-	if fileInfo, err := os.Stat(finalFilePath); err == nil {
+	// Check if final file already exists (complete download)
+	if _, err := os.Stat(finalFilePath); err == nil {
+		s.log.Debug("Final file already exists, skipping download", "chunk", index, "file", finalFilePath)
+		return nil // File already complete
+	}
+
+	// Check for temp file from previous failed attempt
+	if fileInfo, err := os.Stat(tempFilePath); err == nil {
 		bytesDownloaded = uint64(fileInfo.Size())
 		isResume = true
+		s.log.Debug("Found partial download from previous failed attempt", "chunk", index, "temp_file_size", bytesDownloaded)
 	}
 
 	// Try range protocol first (for both fresh downloads and resumes)
@@ -403,11 +412,8 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 		s.log.Debug("Creating new temp file for fresh download", "chunk", index, "temp_path", tempFilePath)
 		file, err = os.Create(tempFilePath)
 	} else {
-		// Resume download - copy existing partial file to temp, then append
-		s.log.Debug("Preparing temp file for resume", "chunk", index, "existing_bytes", bytesDownloaded, "temp_path", tempFilePath)
-		if err := s.copyFileForResume(filePath, tempFilePath); err != nil {
-			return fmt.Errorf("failed to prepare temp file for resume: %w", err)
-		}
+		// Resume download from existing temp file
+		s.log.Debug("Resuming from existing temp file", "chunk", index, "existing_bytes", bytesDownloaded, "temp_path", tempFilePath)
 		file, err = os.OpenFile(tempFilePath, os.O_WRONLY|os.O_APPEND, 0644)
 	}
 
@@ -467,24 +473,6 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 	}
 
 	return nil
-}
-
-// copyFileForResume copies an existing partial file to a temp file for atomic resume
-func (s *StateSyncService) copyFileForResume(srcPath, dstPath string) error {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-
-	_, err = io.Copy(dst, src)
-	return err
 }
 
 // requestSnapshotCatalogs requests the available snapshots from a peer.
