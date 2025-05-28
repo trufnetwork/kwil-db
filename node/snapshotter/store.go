@@ -213,7 +213,6 @@ func (s *SnapshotStore) deleteOldestSnapshot() error {
 // LoadSnapshotChunk loads a snapshot chunk at the given height and chunk index of given format.
 // It returns the snapshot chunk as a byte slice of max size 16MB.
 // errors if the chunk of chunkIndex corresponding to snapshot at given height and format does not exist.
-// TODO: revaluate if we're able to remove this function
 func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunkIdx uint32) ([]byte, error) {
 	s.snapshotsMtx.RLock()
 	defer s.snapshotsMtx.RUnlock()
@@ -250,7 +249,6 @@ func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunkIdx
 }
 
 // GetSnapshotChunkFile returns the file path for a snapshot chunk for streaming.
-// TODO: tech debt, this is not tested as previous implementations were
 func (s *SnapshotStore) GetSnapshotChunkFile(height uint64, format uint32, chunkIdx uint32) (string, error) {
 	s.snapshotsMtx.RLock()
 	defer s.snapshotsMtx.RUnlock()

@@ -376,6 +376,7 @@ func (s *SnapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 }
 
 // getChunkSendTimeout returns the configured chunk send timeout or default
+// Timeout should match client's StreamTimeout to prevent asymmetric disconnections
 func (s *SnapshotStore) getChunkSendTimeout() time.Duration {
 	if s.cfg.ChunkSendTimeout > 0 {
 		return s.cfg.ChunkSendTimeout
@@ -399,7 +400,8 @@ func (pw *progressWriter) Write(p []byte) (n int, err error) {
 	pw.totalBytes += int64(n)
 
 	now := time.Now()
-	// Log progress every 10 seconds
+	// Log progress every 10 seconds to balance observability with log volume
+	// Large chunks can take minutes to transfer, so users need progress feedback
 	if now.Sub(pw.lastLogTime) >= 10*time.Second {
 		elapsed := now.Sub(pw.startTime)
 		rate := float64(pw.totalBytes) / elapsed.Seconds() / 1024 // KB/s

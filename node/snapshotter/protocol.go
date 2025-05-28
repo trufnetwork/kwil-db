@@ -157,14 +157,16 @@ func (s *SnapshotMetadata) Key() SnapshotKey {
 	return key
 }
 
-// SnapshotChunkRangeReq is for range-based chunk requests to support resumable downloads
+// SnapshotChunkRangeReq is a request for a range of bytes from a snapshot chunk.
+// Enables resumable downloads by allowing clients to request partial chunks,
+// critical for large chunks over unreliable networks where full re-download is expensive.
 type SnapshotChunkRangeReq struct {
-	Height uint64
-	Format uint32
-	Index  uint32
-	Hash   types.Hash
-	Offset uint64 // Starting byte offset
-	Length uint64 // Number of bytes to read (0 means read to end)
+	Height uint64     `json:"height"`
+	Format uint32     `json:"format"`
+	Index  uint32     `json:"index"`
+	Hash   types.Hash `json:"hash"`
+	Offset uint64     `json:"offset"` // Starting byte offset for partial download
+	Length uint64     `json:"length"` // Number of bytes to read (0 = read to end)
 }
 
 var _ encoding.BinaryMarshaler = SnapshotChunkRangeReq{}

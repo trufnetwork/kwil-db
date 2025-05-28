@@ -352,17 +352,17 @@ func DefaultConfig() *Config {
 			MaxRetries:              3,
 			PsqlPath:                "psql",
 			CatalogTimeout:          types.Duration(30 * time.Second),
-			ChunkTimeout:            types.Duration(120 * time.Second),
+			ChunkTimeout:            types.Duration(120 * time.Second), // Generous timeout for large chunks over slow networks
 			MetadataTimeout:         types.Duration(60 * time.Second),
-			StreamTimeout:           types.Duration(300 * time.Second),
-			ConcurrentChunkFetchers: 5,
+			StreamTimeout:           types.Duration(300 * time.Second), // Matches chunk send timeout for protocol symmetry
+			ConcurrentChunkFetchers: 5,                                 // Balanced concurrency: reduces network congestion while improving throughput
 		},
 		BlockSync: BlockSyncConfig{
-			BlockGetTimeout:      types.Duration(90 * time.Second),
-			BlockSendTimeout:     types.Duration(45 * time.Second),
-			RequestTimeout:       types.Duration(2 * time.Second),
+			BlockGetTimeout:      types.Duration(90 * time.Second), // Accommodates large blocks in slow network conditions
+			BlockSendTimeout:     types.Duration(45 * time.Second), // Half of get timeout to prevent sender timeout before receiver
+			RequestTimeout:       types.Duration(2 * time.Second),  // Short timeout for lightweight request messages
 			ResponseTimeout:      types.Duration(20 * time.Second),
-			IdleTimeout:          types.Duration(500 * time.Millisecond),
+			IdleTimeout:          types.Duration(500 * time.Millisecond), // Quick detection of stalled transfers
 			AnnounceWriteTimeout: types.Duration(5 * time.Second),
 			AnnounceRespTimeout:  types.Duration(5 * time.Second),
 			TxGetTimeout:         types.Duration(20 * time.Second),
@@ -552,6 +552,7 @@ func (cfg *StateSyncConfig) Validate() error {
 		cfg.ConcurrentChunkFetchers = 5 // Default value
 	}
 
+	// Range 1-20: Below 1 eliminates concurrency benefits, above 20 can overwhelm network/disk I/O
 	if cfg.ConcurrentChunkFetchers < 1 || cfg.ConcurrentChunkFetchers > 20 {
 		return fmt.Errorf("state_sync.concurrent_chunk_fetchers: must be between 1 and 20, got %d", cfg.ConcurrentChunkFetchers)
 	}

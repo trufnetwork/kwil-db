@@ -321,6 +321,8 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 }
 
 // isRetryableError determines if an error is worth retrying
+// Network-level errors (resets, timeouts, EOF) are typically transient and worth retrying.
+// Data integrity errors (hash mismatches) indicate corruption and should not be retried.
 func isRetryableError(err error) bool {
 	errStr := err.Error()
 	// Stream reset errors are typically retryable (provider-side issues)
@@ -428,6 +430,8 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
 	defer cancel()
 
+	// Use range protocol for resumable downloads - allows partial chunk retrieval
+	// which is critical for large chunks over unreliable networks
 	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotRange)
 	if err != nil {
 		return fmt.Errorf("failed to create range stream: %w", err)
