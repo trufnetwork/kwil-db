@@ -197,7 +197,7 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 	chunksNeeded := make([]uint32, 0, snapshot.Chunks)
 	chunksAlreadyComplete := 0
 
-	for i := uint32(0); i < snapshot.Chunks; i++ {
+	for i := range snapshot.Chunks {
 		finalFileName := fmt.Sprintf("chunk-%d.sql.gz", i)
 		finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
 
@@ -968,7 +968,7 @@ func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) er
 	var totalSizeCleaned int64
 
 	// Clean both temp files and final files for all chunks of this invalid snapshot
-	for i := uint32(0); i < snapshot.Chunks; i++ {
+	for i := range snapshot.Chunks {
 		// Clean temp file
 		tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", i)
 		tempFilePath := filepath.Join(s.snapshotDir, tempFileName)

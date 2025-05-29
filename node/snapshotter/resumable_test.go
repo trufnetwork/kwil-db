@@ -161,7 +161,7 @@ func BenchmarkSimpleProgressOperations(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = progress.IsComplete()
 		_ = progress.RemainingBytes()
 	}
