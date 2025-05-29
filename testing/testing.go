@@ -339,15 +339,19 @@ func (e *TestCase) runExecution(ctx context.Context, platform *Platform) error {
 	// but there are times where it might be returned as a separate error
 	// (e.g. in case of an extension erroring).
 	// Therefore, we need to check both.
-	var receivedErr error
+
+	var (
+		receivedErr    error
+		expectsErr     bool
+		expectsErrText string
+	)
+
 	if err != nil {
 		receivedErr = err
 	} else if res.Error != nil {
 		receivedErr = res.Error
 	}
 
-	expectsErr := false
-	expectsErrText := ""
 	if e.Err != nil {
 		expectsErr = true
 		expectsErrText = e.Err.Error()
