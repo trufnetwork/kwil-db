@@ -28,6 +28,7 @@ func Test_Impl_1(t *testing.T) {
 				Namespace: "users",
 				Action:    "create_user",
 				Args:      []any{1, "gilgamesh"},
+				Caller:    "0xOtherAddress",
 			},
 			{
 				// conflicting with the name "satoshi" in the "name" column,

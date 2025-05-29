@@ -3,7 +3,7 @@ CREATE NAMESPACE users;
 {users}CREATE TABLE users (
   id INT8 PRIMARY KEY,
   name TEXT UNIQUE,
-  owner_address TEXT NOT NULL
+  owner_address TEXT NOT NULL UNIQUE
 );
 
 {users}CREATE ACTION create_user($id int, $name TEXT) public {
