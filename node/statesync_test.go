@@ -76,6 +76,7 @@ func newTestStatesyncer(ctx context.Context, t *testing.T, mn mock.Mocknet, root
 		P2PService:    &P2PService{host: h, dht: dht, discovery: discover},
 		SnapshotStore: st,
 		BlockStore:    bs,
+		BlockSyncCfg:  &config.BlockSyncConfig{}, // Use default config for tests
 		Logger:        log.DiscardLogger,
 	}
 
@@ -93,10 +94,15 @@ func newTestStatesyncer(ctx context.Context, t *testing.T, mn mock.Mocknet, root
 
 func testSSConfig(enable bool, providers []string) *config.StateSyncConfig {
 	return &config.StateSyncConfig{
-		Enable:           enable,
-		TrustedProviders: providers,
-		DiscoveryTimeout: ktypes.Duration(5 * time.Second),
-		MaxRetries:       3,
+		Enable:                  enable,
+		TrustedProviders:        providers,
+		DiscoveryTimeout:        ktypes.Duration(5 * time.Second),
+		MaxRetries:              3,
+		CatalogTimeout:          ktypes.Duration(10 * time.Second),
+		ChunkTimeout:            ktypes.Duration(30 * time.Second),
+		MetadataTimeout:         ktypes.Duration(15 * time.Second),
+		StreamTimeout:           ktypes.Duration(10 * time.Second),
+		ConcurrentChunkFetchers: 3, // Use a smaller value for tests
 	}
 }
 
@@ -170,14 +176,14 @@ func TestStateSyncService(t *testing.T) {
 	assert.Equal(t, snap1.Hash, bestSnap.Hash)
 
 	// Validate the snapshot should fail as the trusted provider does not have the snapshot
-	valid, _ := ss3.VerifySnapshot(ctx, snap1)
-	assert.False(t, valid)
+	verificationResult, _ := ss3.VerifySnapshot(ctx, snap1)
+	assert.Equal(t, VerificationFailed, verificationResult)
 
 	// add snap1 to the trusted provider
 	st1.addSnapshot(snap1)
 
-	valid, _ = ss3.VerifySnapshot(ctx, snap1)
-	assert.True(t, valid)
+	verificationResult, _ = ss3.VerifySnapshot(ctx, snap1)
+	assert.Equal(t, VerificationValid, verificationResult)
 
 	// add snap2 to the trusted provider
 	st1.addSnapshot(snap2)
@@ -192,8 +198,8 @@ func TestStateSyncService(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, snap2.Height, bestSnap.Height)
 
-	valid, _ = ss3.VerifySnapshot(ctx, bestSnap)
-	assert.True(t, valid)
+	verificationResult, _ = ss3.VerifySnapshot(ctx, bestSnap)
+	assert.Equal(t, VerificationValid, verificationResult)
 }
 
 type mockBS struct {
@@ -317,7 +323,7 @@ func (s *snapshotStore) snapshotCatalogRequestHandler(stream network.Stream) {
 	}
 
 	encoder := json.NewEncoder(stream)
-	stream.SetWriteDeadline(time.Now().Add(catalogSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(15 * time.Second)) // Use fixed timeout for tests
 	if err := encoder.Encode(catalogs); err != nil {
 		return
 	}
@@ -325,7 +331,7 @@ func (s *snapshotStore) snapshotCatalogRequestHandler(stream network.Stream) {
 
 func (s *snapshotStore) snapshotChunkRequestHandler(stream network.Stream) {
 	defer stream.Close()
-	stream.SetReadDeadline(time.Now().Add(chunkGetTimeout))
+	stream.SetReadDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	var req snapshotter.SnapshotChunkReq
 	if _, err := req.ReadFrom(stream); err != nil {
 		return
@@ -336,13 +342,13 @@ func (s *snapshotStore) snapshotChunkRequestHandler(stream network.Stream) {
 		stream.Write(noData)
 		return
 	}
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	stream.Write(chunk)
 }
 
 func (s *snapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 	defer stream.Close()
-	stream.SetReadDeadline(time.Now().Add(chunkGetTimeout))
+	stream.SetReadDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	var req snapshotter.SnapshotReq
 	if _, err := req.ReadFrom(stream); err != nil {
 		return
@@ -368,10 +374,29 @@ func (s *snapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 	// send the snapshot data
 	encoder := json.NewEncoder(stream)
 
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
+	stream.SetWriteDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
 	if err := encoder.Encode(meta); err != nil {
 		return
 	}
+}
+
+func (s *snapshotStore) snapshotChunkRangeRequestHandler(stream network.Stream) {
+	defer stream.Close()
+	stream.SetReadDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
+	var req snapshotter.SnapshotChunkRangeReq
+	if _, err := req.ReadFrom(stream); err != nil {
+		return
+	}
+	chunk, err := s.LoadSnapshotChunk(req.Height, req.Format, req.Index)
+	if err != nil {
+		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
+		stream.Write(noData)
+		return
+	}
+
+	// For testing, just send the chunk data (ignoring offset/length for simplicity)
+	stream.SetWriteDeadline(time.Now().Add(45 * time.Second)) // Use fixed timeout for tests
+	stream.Write(chunk)
 }
 
 func snapshotToMetadata(s *snapshotter.Snapshot) *snapshotter.SnapshotMetadata {
@@ -389,4 +414,162 @@ func snapshotToMetadata(s *snapshotter.Snapshot) *snapshotter.SnapshotMetadata {
 	}
 
 	return meta
+}
+
+func TestIsProtocolNotSupportedError(t *testing.T) {
+	ctx := context.Background()
+	mn := mock.New()
+	tempDir := t.TempDir()
+
+	// Create two hosts - one with range protocol support, one without
+	h1, _, st1, _, _, err := newTestStatesyncer(ctx, t, mn, filepath.Join(tempDir, "n1"), testSSConfig(false, nil))
+	require.NoError(t, err, "Failed to create statesyncer 1")
+
+	h2, _, _, _, _, err := newTestStatesyncer(ctx, t, mn, filepath.Join(tempDir, "n2"), testSSConfig(false, nil))
+	require.NoError(t, err, "Failed to create statesyncer 2")
+
+	// Link and connect the hosts
+	err = mn.LinkAll()
+	require.NoError(t, err, "Failed to link hosts")
+
+	err = mn.ConnectAllButSelf()
+	require.NoError(t, err, "Failed to connect hosts")
+
+	// h1 has range protocol handler, h2 does not
+	h1.SetStreamHandler(snapshotter.ProtocolIDSnapshotRange, st1.snapshotChunkRangeRequestHandler)
+	// h2 deliberately does NOT have the range protocol handler
+
+	time.Sleep(100 * time.Millisecond) // Allow connections to establish
+
+	// Test 1: Real protocol not supported error
+	t.Run("real protocol not supported error", func(t *testing.T) {
+		streamCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		_, err := h1.NewStream(streamCtx, h2.ID(), snapshotter.ProtocolIDSnapshotRange)
+		require.Error(t, err, "Expected error when connecting to peer without range protocol")
+
+		t.Logf("Actual libp2p protocol error: %v", err)
+
+		// Test our function with the real error
+		result := isProtocolNotSupportedError(err)
+		assert.True(t, result, "isProtocolNotSupportedError should return true for real protocol not supported error: %v", err)
+	})
+
+	// Test 2: Protocol supported - should succeed
+	t.Run("protocol supported - no error", func(t *testing.T) {
+		streamCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		stream, err := h2.NewStream(streamCtx, h1.ID(), snapshotter.ProtocolIDSnapshotRange)
+		require.NoError(t, err, "Expected no error when connecting to peer with range protocol")
+		stream.Close()
+	})
+
+	// Test 3: Verify that other errors return false
+	t.Run("other errors should return false", func(t *testing.T) {
+		tests := []struct {
+			name string
+			err  error
+		}{
+			{"stream reset", errors.New("stream reset")},
+			{"connection reset", errors.New("connection reset by peer")},
+			{"timeout", errors.New("context deadline exceeded")},
+			{"EOF", errors.New("EOF")},
+			{"hash mismatch", errors.New("chunk hash mismatch")},
+			{"random error", errors.New("some random error")},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := isProtocolNotSupportedError(tt.err)
+				assert.False(t, result, "isProtocolNotSupportedError should return false for: %v", tt.err)
+			})
+		}
+	})
+}
+
+// TestErrorClassification tests the critical error classification logic with better ROI
+func TestErrorClassification(t *testing.T) {
+	t.Run("stream reset errors should be retryable, not protocol failures", func(t *testing.T) {
+		streamResetErrors := []error{
+			errors.New("stream reset"),
+			errors.New("connection reset by peer"),
+			fmt.Errorf("failed to copy chunk data: %w", errors.New("stream reset")),
+			errors.New("EOF"),
+			errors.New("context deadline exceeded"),
+		}
+
+		for _, err := range streamResetErrors {
+			t.Run(err.Error(), func(t *testing.T) {
+				// These should be retryable (preserve temp files)
+				assert.True(t, isRetryableError(err), "Error should be retryable: %v", err)
+				// These should NOT trigger legacy fallback
+				assert.False(t, isProtocolNotSupportedError(err), "Error should not be treated as protocol failure: %v", err)
+			})
+		}
+	})
+
+	t.Run("protocol not supported errors should trigger fallback", func(t *testing.T) {
+		protocolErrors := []error{
+			// This is the ACTUAL libp2p error format (from integration test)
+			errors.New("failed to negotiate protocol: protocols not supported: [/kwil/snaprange/1.0.0]"),
+			errors.New("failed to negotiate protocol: protocols not supported"),
+		}
+
+		for _, err := range protocolErrors {
+			t.Run(err.Error(), func(t *testing.T) {
+				// These should trigger legacy fallback
+				assert.True(t, isProtocolNotSupportedError(err), "Error should be treated as protocol failure: %v", err)
+				// Protocol errors are not retryable (should fallback immediately)
+				assert.False(t, isRetryableError(err), "Protocol errors should trigger fallback, not retry: %v", err)
+			})
+		}
+	})
+
+	t.Run("hash mismatch should not be retryable", func(t *testing.T) {
+		hashErr := errors.New("chunk hash mismatch: expected abc, got def")
+		assert.False(t, isRetryableError(hashErr), "Hash mismatch should not be retryable")
+		assert.False(t, isProtocolNotSupportedError(hashErr), "Hash mismatch is not protocol failure")
+	})
+}
+
+// TestRealErrorCapture captures actual errors from integration scenarios for unit test validation
+func TestRealErrorCapture(t *testing.T) {
+	t.Run("capture real libp2p errors for unit test validation", func(t *testing.T) {
+		ctx := context.Background()
+		mn := mock.New()
+		tempDir := t.TempDir()
+
+		// Create hosts to capture real errors
+		h1, _, st1, _, _, err := newTestStatesyncer(ctx, t, mn, filepath.Join(tempDir, "n1"), testSSConfig(false, nil))
+		require.NoError(t, err)
+
+		h2, _, _, _, _, err := newTestStatesyncer(ctx, t, mn, filepath.Join(tempDir, "n2"), testSSConfig(false, nil))
+		require.NoError(t, err)
+
+		err = mn.LinkAll()
+		require.NoError(t, err)
+		err = mn.ConnectAllButSelf()
+		require.NoError(t, err)
+
+		// h1 supports range, h2 does not
+		h1.SetStreamHandler(snapshotter.ProtocolIDSnapshotRange, st1.snapshotChunkRangeRequestHandler)
+		time.Sleep(100 * time.Millisecond)
+
+		// Capture real protocol not supported error
+		streamCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		_, realProtocolErr := h1.NewStream(streamCtx, h2.ID(), snapshotter.ProtocolIDSnapshotRange)
+		require.Error(t, realProtocolErr)
+
+		t.Logf("Real protocol error: %v", realProtocolErr)
+
+		// Test that our classification works with the REAL error
+		assert.True(t, isProtocolNotSupportedError(realProtocolErr), "Real protocol error should be classified correctly")
+		assert.False(t, isRetryableError(realProtocolErr), "Real protocol error should not be retryable")
+
+		// TODO: Add real stream reset capture when we can simulate it reliably
+		// For now, we know that errors from io.Copy() during stream resets typically contain "stream reset"
+	})
 }

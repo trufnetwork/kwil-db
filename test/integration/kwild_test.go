@@ -317,6 +317,9 @@ func TestStatesync(t *testing.T) {
 							nc.Validator = false
 							nc.Configure = func(conf *config.Config) {
 								conf.StateSync.Enable = true
+								conf.StateSync.CatalogTimeout = types.Duration(10 * time.Second)
+								conf.StateSync.ChunkTimeout = types.Duration(30 * time.Second)
+								conf.StateSync.MetadataTimeout = types.Duration(15 * time.Second)
 								// conf.StateSync.TrustedProviders = conf.P2P.BootNodes
 							}
 						}),
@@ -390,12 +393,18 @@ func TestStatesyncWithValidatorUpdates(t *testing.T) {
 							nc.Validator = false
 							nc.Configure = func(conf *config.Config) {
 								conf.StateSync.Enable = true
+								conf.StateSync.CatalogTimeout = types.Duration(10 * time.Second)
+								conf.StateSync.ChunkTimeout = types.Duration(30 * time.Second)
+								conf.StateSync.MetadataTimeout = types.Duration(15 * time.Second)
 							}
 						}),
 						setup.CustomNodeConfig(func(nc *setup.NodeConfig) {
 							nc.Validator = false
 							nc.Configure = func(conf *config.Config) {
 								conf.StateSync.Enable = true
+								conf.StateSync.CatalogTimeout = types.Duration(10 * time.Second)
+								conf.StateSync.ChunkTimeout = types.Duration(30 * time.Second)
+								conf.StateSync.MetadataTimeout = types.Duration(15 * time.Second)
 							}
 						}),
 					},
@@ -642,6 +651,9 @@ func TestLongRunningNetworkMigrations(t *testing.T) {
 
 								conf.StateSync.Enable = true
 								conf.StateSync.DiscoveryTimeout = types.Duration(5 * time.Second)
+								conf.StateSync.CatalogTimeout = types.Duration(10 * time.Second)
+								conf.StateSync.ChunkTimeout = types.Duration(30 * time.Second)
+								conf.StateSync.MetadataTimeout = types.Duration(15 * time.Second)
 							}
 							nc.Validator = false
 						}),

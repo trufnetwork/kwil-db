@@ -23,10 +23,12 @@ var (
 )
 
 const (
-	txReadLimit      = 30_000_000
-	txAnnTimeout     = 5 * time.Second // time to Write tx ann to peer
-	txAnnRespTimeout = txAnnTimeout    // time to wait for get response or a hangup
-	txGetTimeout     = 20 * time.Second
+	txReadLimit         = 30_000_000
+	defaultTxAnnTimeout = 5 * time.Second // time to Write tx ann to peer
+)
+
+var (
+	defaultTxAnnRespTimeout = defaultTxAnnTimeout // time to wait for get response or a hangup
 )
 
 func getTx(ctx context.Context, txHash types.Hash, peer peer.ID, host host.Host) ([]byte, error) {

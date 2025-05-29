@@ -217,6 +217,7 @@ func initializeStatesyncService(ctx context.Context, d *coreDependencies, p2p *n
 		RcvdSnapsDir:  rcvdSnapsDir,
 		StateSyncCfg:  &d.cfg.StateSync,
 		DBConfig:      d.cfg.DB,
+		BlockSyncCfg:  &d.cfg.BlockSync,
 		Logger:        d.logger.New("STATESYNC"),
 		SnapshotStore: snapshotter,
 		BlockStore:    bs,
@@ -470,11 +471,12 @@ func buildMigrator(d *coreDependencies, ctx context.Context, db *pg.DB, accounts
 	}
 
 	ss, err := snapshotter.NewSnapshotStore(&snapshotter.SnapshotConfig{
-		SnapshotDir:     snapshotDir,
-		MaxSnapshots:    int(d.cfg.Snapshots.MaxSnapshots),
-		RecurringHeight: d.cfg.Snapshots.RecurringHeight,
-		Enable:          d.cfg.Snapshots.Enable,
-		DBConfig:        &d.cfg.DB,
+		SnapshotDir:      snapshotDir,
+		MaxSnapshots:     int(d.cfg.Snapshots.MaxSnapshots),
+		RecurringHeight:  d.cfg.Snapshots.RecurringHeight,
+		Enable:           d.cfg.Snapshots.Enable,
+		DBConfig:         &d.cfg.DB,
+		ChunkSendTimeout: time.Duration(d.cfg.Snapshots.ChunkSendTimeout),
 	}, nil, d.namespaceManager, d.logger.New("SNAP"))
 	if err != nil {
 		failBuild(err, "failed to create migration's snapshot store")
@@ -611,11 +613,12 @@ func buildEngine(d *coreDependencies, ctx context.Context, db *pg.DB, accounts c
 func buildSnapshotStore(d *coreDependencies, bs *store.BlockStore) *snapshotter.SnapshotStore {
 	snapshotDir := config.LocalSnapshotsDir(d.rootDir)
 	cfg := &snapshotter.SnapshotConfig{
-		SnapshotDir:     snapshotDir,
-		MaxSnapshots:    int(d.cfg.Snapshots.MaxSnapshots),
-		RecurringHeight: d.cfg.Snapshots.RecurringHeight,
-		Enable:          d.cfg.Snapshots.Enable,
-		DBConfig:        &d.cfg.DB,
+		SnapshotDir:      snapshotDir,
+		MaxSnapshots:     int(d.cfg.Snapshots.MaxSnapshots),
+		RecurringHeight:  d.cfg.Snapshots.RecurringHeight,
+		Enable:           d.cfg.Snapshots.Enable,
+		DBConfig:         &d.cfg.DB,
+		ChunkSendTimeout: time.Duration(d.cfg.Snapshots.ChunkSendTimeout),
 	}
 
 	if err := os.MkdirAll(snapshotDir, 0755); err != nil {

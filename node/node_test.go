@@ -596,7 +596,7 @@ func TestStreamsBlockFetch(t *testing.T) {
 	t.Run("request by height using requestFrom, unknown", func(t *testing.T) {
 		// t.Parallel()
 		var height int64
-		_, err := requestBlockHeight(ctx, h2, h1.ID(), height, 1e4)
+		_, err := requestBlockHeight(ctx, h2, h1.ID(), height, 1e4, 2*time.Second, 20*time.Second, 500*time.Millisecond)
 		if err == nil {
 			t.Errorf("expected error but got none")
 		} else if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrBlkNotFound) {
@@ -629,7 +629,7 @@ func TestStreamsBlockFetch(t *testing.T) {
 	t.Run("request by height using requestFrom, known", func(t *testing.T) {
 		// t.Parallel()
 		var height int64 = 1
-		resp, err := requestBlockHeight(ctx, h2, h1.ID(), height, 1e4)
+		resp, err := requestBlockHeight(ctx, h2, h1.ID(), height, 1e4, 2*time.Second, 20*time.Second, 500*time.Millisecond)
 		if err != nil {
 			t.Errorf("ReadAll: %v", err)
 		} else if bytes.Equal(resp, noData) {

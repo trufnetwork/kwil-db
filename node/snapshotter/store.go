@@ -50,11 +50,12 @@ import (
 
 type SnapshotConfig struct {
 	// Snapshot store configuration
-	Enable          bool
-	SnapshotDir     string
-	MaxSnapshots    int
-	RecurringHeight uint64
-	DBConfig        *config.DBConfig
+	Enable           bool
+	SnapshotDir      string
+	MaxSnapshots     int
+	RecurringHeight  uint64
+	DBConfig         *config.DBConfig
+	ChunkSendTimeout time.Duration
 }
 
 type BlockStore interface {
@@ -245,6 +246,41 @@ func (s *SnapshotStore) LoadSnapshotChunk(height uint64, format uint32, chunkIdx
 	// many peers don't force us to load the same chunk into memory many times.
 
 	return bts, nil
+}
+
+// GetSnapshotChunkFile returns the file path for a snapshot chunk for streaming.
+func (s *SnapshotStore) GetSnapshotChunkFile(height uint64, format uint32, chunkIdx uint32) (string, error) {
+	s.snapshotsMtx.RLock()
+	defer s.snapshotsMtx.RUnlock()
+
+	// Check if snapshot format is supported
+	if format != DefaultSnapshotFormat {
+		return "", fmt.Errorf("unsupported snapshot format %d", format)
+	}
+
+	// Check if snapshot exists
+	snapshot, ok := s.snapshots[height]
+	if !ok {
+		return "", fmt.Errorf("snapshot at height %d does not exist", height)
+	}
+
+	// Check if chunk exists
+	if chunkIdx >= snapshot.ChunkCount {
+		return "", fmt.Errorf("chunk %d does not exist in snapshot at height %d", chunkIdx, height)
+	}
+
+	// Get the chunk file path
+	chunkFile := snapshotChunkFile(s.cfg.SnapshotDir, height, format, chunkIdx)
+
+	// Verify file exists
+	if _, err := os.Stat(chunkFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("chunk %d does not exist in snapshot at height %d", chunkIdx, height)
+		}
+		return "", fmt.Errorf("failed to access chunk %d at height %d: %w", chunkIdx, height, err)
+	}
+
+	return chunkFile, nil
 }
 
 // LoadSnapshotHeader loads the snapshots from the snapshotDir

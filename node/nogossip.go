@@ -22,6 +22,10 @@ func (n *Node) txAnnStreamHandler(s network.Stream) {
 		return
 	}
 
+	txGetTimeout := defaultTxGetTimeout
+	if n.blockSyncCfg != nil {
+		txGetTimeout = time.Duration(n.blockSyncCfg.TxGetTimeout)
+	}
 	s.SetDeadline(time.Now().Add(txGetTimeout))
 
 	var ann txHashAnn
@@ -241,6 +245,10 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 		}
 		defer s.Close()
 
+		txAnnTimeout := defaultTxAnnTimeout
+		if n.blockSyncCfg != nil {
+			txAnnTimeout = time.Duration(n.blockSyncCfg.TxAnnTimeout)
+		}
 		roundTripDeadline := time.Now().Add(txAnnTimeout)
 		s.SetWriteDeadline(roundTripDeadline)
 
@@ -255,6 +263,10 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 
 		// n.log.Infof("advertised tx content %s to peer %s", txid, peerID)
 
+		txAnnRespTimeout := defaultTxAnnRespTimeout
+		if n.blockSyncCfg != nil {
+			txAnnRespTimeout = time.Duration(n.blockSyncCfg.TxAnnTimeout) // Use same timeout as announcement
+		}
 		s.SetReadDeadline(time.Now().Add(txAnnRespTimeout))
 
 		// wait to hear for a get request, otherwise peer will simply hang up
@@ -275,6 +287,10 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 
 		// we could queue at this level too
 
+		txGetTimeout := defaultTxGetTimeout
+		if n.blockSyncCfg != nil {
+			txGetTimeout = time.Duration(n.blockSyncCfg.TxGetTimeout)
+		}
 		s.SetWriteDeadline(time.Now().Add(txGetTimeout))
 		s.Write(rawTx)
 
