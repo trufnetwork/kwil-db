@@ -30,7 +30,6 @@ const (
 type snapshotKey = snapshotter.SnapshotKey
 type snapshotMetadata = snapshotter.SnapshotMetadata
 type snapshotReq = snapshotter.SnapshotReq
-type snapshotChunkReq = snapshotter.SnapshotChunkReq
 
 type blockStore interface {
 	GetByHeight(height int64) (types.Hash, *ktypes.Block, *ktypes.CommitInfo, error)
