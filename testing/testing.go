@@ -339,37 +339,51 @@ func (e *TestCase) runExecution(ctx context.Context, platform *Platform) error {
 	// but there are times where it might be returned as a separate error
 	// (e.g. in case of an extension erroring).
 	// Therefore, we need to check both.
-	var receivedErr error
+
+	var (
+		receivedErr    error
+		expectsErr     bool
+		expectsErrText string
+	)
+
 	if err != nil {
 		receivedErr = err
 	} else if res.Error != nil {
 		receivedErr = res.Error
 	}
 
+	if e.Err != nil {
+		expectsErr = true
+		expectsErrText = e.Err.Error()
+	} else if e.ErrMsg != "" {
+		expectsErr = true
+		expectsErrText = e.ErrMsg
+	}
 	// check for an execution error
 	if receivedErr != nil {
 		// if error is not nil, the test should only pass if either
 		// Err or ErrMsg or both is set
-		expectsErr := false
 		if e.Err != nil {
-			expectsErr = true
 			errTypeName := reflect.TypeOf(e.Err).Elem().Name()
-			if !errors.Is(err, e.Err) {
-				return fmt.Errorf(`expected error of type "%s", received error: %w`, errTypeName, err)
+			if !errors.Is(receivedErr, e.Err) {
+				return fmt.Errorf(`expected error of type "%s", received error: %w`, errTypeName, receivedErr)
 			}
 		}
 		if e.ErrMsg != "" {
-			expectsErr = true
 			if !strings.Contains(receivedErr.Error(), e.ErrMsg) {
-				return fmt.Errorf(`expected error message to contain substring "%s", received error: %w`, e.ErrMsg, err)
+				return fmt.Errorf(`expected error message to contain substring "%s", received error: %w`, e.ErrMsg, receivedErr)
 			}
 		}
 
 		if !expectsErr {
-			return fmt.Errorf(`unexpected error: %w`, err)
+			return fmt.Errorf(`unexpected error: %w`, receivedErr)
 		}
 
 		return nil
+	}
+
+	if expectsErr {
+		return fmt.Errorf(`expected error message to contain substring "%s", but the error didn't happen`, expectsErrText)
 	}
 
 	if len(results) != len(e.Returns) {
