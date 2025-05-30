@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kwilteam/kwil-db/config"
 	"github.com/kwilteam/kwil-db/core/log"
 	ktypes "github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/node/peers"
@@ -20,9 +21,9 @@ import (
 )
 
 const (
-	blkReadLimit   = 300_000_000
-	blkGetTimeout  = 90 * time.Second
-	blkSendTimeout = 45 * time.Second
+	blkReadLimit          = 300_000_000
+	defaultBlkGetTimeout  = 90 * time.Second
+	defaultBlkSendTimeout = 45 * time.Second
 )
 
 func (n *Node) blkGetStreamHandler(s network.Stream) {
@@ -44,7 +45,7 @@ func (n *Node) blkGetStreamHandler(s network.Stream) {
 	} else {
 		rawBlk := ktypes.EncodeBlock(blk)
 		ciBytes, _ := ci.MarshalBinary()
-		s.SetWriteDeadline(time.Now().Add(blkSendTimeout))
+		s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
 		binary.Write(s, binary.LittleEndian, blk.Header.Height)
 		ktypes.WriteCompactBytes(s, ciBytes)
 		ktypes.WriteCompactBytes(s, rawBlk)
@@ -79,7 +80,7 @@ func (n *Node) blkGetHeightStreamHandler(s network.Stream) {
 		ciBytes, _ := ci.MarshalBinary()
 		// maybe we remove hash from the protocol, was thinking receiver could
 		// hang up earlier depending...
-		s.SetWriteDeadline(time.Now().Add(blkSendTimeout))
+		s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
 		s.Write(withData)
 		s.Write(hash[:])
 		ktypes.WriteCompactBytes(s, ciBytes)
@@ -98,6 +99,15 @@ func (n *Node) blkAnnStreamHandler(s network.Stream) {
 		return
 	}
 
+	// Get configurable timeouts
+	blkGetTimeout := defaultBlkGetTimeout
+	annRespTimeout := defaultAnnRespTimeout
+	annWriteTimeout := defaultAnnWriteTimeout
+	if n.blockSyncCfg != nil {
+		blkGetTimeout = time.Duration(n.blockSyncCfg.BlockGetTimeout)
+		annRespTimeout = time.Duration(n.blockSyncCfg.AnnounceRespTimeout)
+		annWriteTimeout = time.Duration(n.blockSyncCfg.AnnounceWriteTimeout)
+	}
 	s.SetDeadline(time.Now().Add(blkGetTimeout + annRespTimeout + annWriteTimeout)) // combined
 	ctx, cancel := context.WithTimeout(context.Background(), blkGetTimeout)
 	defer cancel()
@@ -242,6 +252,10 @@ func (n *Node) announceRawBlk(ctx context.Context, blkHash types.Hash, height in
 			continue
 		}
 		ann := contentAnn{cType: "block announce", ann: resID, content: rawBlk}
+		blkSendTimeout := defaultBlkSendTimeout
+		if n.blockSyncCfg != nil {
+			blkSendTimeout = time.Duration(n.blockSyncCfg.BlockSendTimeout)
+		}
 		err = n.advertiseToPeer(ctx, peerID, ProtocolIDBlkAnn, ann, blkSendTimeout)
 		if err != nil {
 			n.log.Warn("Failed to advertise block", "peer", peerID, "error", err)
@@ -331,13 +345,7 @@ func (n *Node) getBlk(ctx context.Context, blkHash types.Hash) (int64, []byte, *
 }
 
 func requestBlockHeight(ctx context.Context, host host.Host, peer peer.ID,
-	height, readLimit int64) ([]byte, error) {
-
-	const (
-		reqTimeout  = 2 * time.Second        // stream.Write(resID), sending the request
-		recvTimeout = 20 * time.Second       // allowed time to read entire response with readAll
-		idleTimeout = 500 * time.Millisecond // read timeout before each stream.Read(chunk)
-	)
+	height, readLimit int64, reqTimeout, recvTimeout, idleTimeout time.Duration) ([]byte, error) {
 
 	resID, _ := blockHeightReq{Height: height}.MarshalBinary()
 	stream, err := host.NewStream(ctx, peer, ProtocolIDBlockHeight)
@@ -421,10 +429,10 @@ func readAll(s network.Stream, limit int64, deadline time.Time, idleTimeout time
 }
 
 func (n *Node) getBlkHeight(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-	return getBlkHeight(ctx, height, n.host, n.log)
+	return getBlkHeight(ctx, height, n.host, n.log, n.blockSyncCfg)
 }
 
-func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Logger) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Logger, blockSyncCfg *config.BlockSyncConfig) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
 	availablePeers := peerHosts(host)
 	if len(availablePeers) == 0 {
 		return types.Hash{}, nil, nil, 0, types.ErrPeersNotFound
@@ -447,7 +455,15 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		}
 
 		t0 := time.Now()
-		resp, err := requestBlockHeight(ctx, host, peer, height, blkReadLimit)
+		reqTimeout := 2 * time.Second
+		recvTimeout := 20 * time.Second
+		idleTimeout := 500 * time.Millisecond
+		if blockSyncCfg != nil {
+			reqTimeout = time.Duration(blockSyncCfg.RequestTimeout)
+			recvTimeout = time.Duration(blockSyncCfg.ResponseTimeout)
+			idleTimeout = time.Duration(blockSyncCfg.IdleTimeout)
+		}
+		resp, err := requestBlockHeight(ctx, host, peer, height, blkReadLimit, reqTimeout, recvTimeout, idleTimeout)
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrBlkNotFound) {
 			notFoundCount++
 			be := new(ErrNotFoundWithBestHeight)

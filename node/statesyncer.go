@@ -15,12 +15,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/kwilteam/kwil-db/config"
 	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/node/meta"
 	"github.com/kwilteam/kwil-db/node/peers"
 	"github.com/kwilteam/kwil-db/node/snapshotter"
@@ -40,6 +43,9 @@ var (
 // If snapshots and their chunks are successfully fetched, the DB is restored from the snapshot and the
 // application state is verified.
 func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error) {
+	// Perform startup cleanup on first discovery attempt
+	s.performStartupCleanup()
+
 	retry := uint64(0)
 	for {
 		if retry > s.cfg.MaxRetries {
@@ -110,25 +116,57 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 
 		s.log.Info("Requesting contents of the snapshot", "height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
 
+		// Clean up temp files only if this is a different snapshot than what we were previously working on
+		if s.currentSnapshot == nil ||
+			bestSnapshot.Height != s.currentSnapshot.Height ||
+			!bytes.Equal(bestSnapshot.Hash, s.currentSnapshot.Hash) {
+			s.log.Info("Starting new snapshot download, cleaning up temp files from previous attempts",
+				"new_height", bestSnapshot.Height, "new_hash", hex.EncodeToString(bestSnapshot.Hash))
+			if err := s.cleanupTempFiles(bestSnapshot, 0); err != nil {
+				s.log.Warn("Failed to cleanup temp files before new snapshot", "error", err)
+			}
+			s.currentSnapshot = bestSnapshot
+		} else {
+			s.log.Info("Retrying same snapshot, preserving temp files for resume capability",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+		}
+
 		// Verify the correctness of the snapshot with the trusted providers
 		// and request the providers for the appHash at the snapshot height
-		valid, appHash := s.VerifySnapshot(ctx, bestSnapshot)
-		if !valid {
-			// invalid snapshots are blacklisted
+		verificationResult, appHash := s.VerifySnapshot(ctx, bestSnapshot)
+		switch verificationResult {
+		case VerificationInvalid:
+			// Snapshot is definitively invalid - blacklist it
+			s.log.Warn("Snapshot rejected by trusted providers, blacklisting",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
 			s.snapshotPool.blacklistSnapshot(bestSnapshot)
+			// Clean up any temp files for this blacklisted snapshot and remove final files
+			// since this snapshot is fundamentally invalid
+			s.cleanupInvalidSnapshot(bestSnapshot)
 			continue
+		case VerificationFailed:
+			// Verification failed due to network issues - don't blacklist, just retry
+			s.log.Warn("Failed to verify snapshot due to network issues, will retry without blacklisting",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+			continue
+		case VerificationValid:
+			// Snapshot is valid, proceed with download
+			s.log.Info("Snapshot verified successfully",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+			bestSnapshot.AppHash = appHash
 		}
-		bestSnapshot.AppHash = appHash
 
 		// fetch snapshot chunks
 		if err := s.chunkFetcher(ctx, bestSnapshot); err != nil {
-			// remove the chunks and retry
-			os.RemoveAll(s.snapshotDir)
-			os.MkdirAll(s.snapshotDir, 0755)
+			s.log.Warn("Chunk fetcher failed for snapshot", "height", bestSnapshot.Height,
+				"error", err, "will_retry_same_snapshot", true)
+			// Don't remove chunks directory - preserve any completed chunks and temp files
+			// The next iteration will resume from where we left off
 			continue
 		}
 
 		// retrieved all chunks successfully
+		s.currentSnapshot = nil // Clear tracking since this snapshot is complete
 		return true, bestSnapshot, nil
 	}
 }
@@ -138,7 +176,6 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotMetadata) error {
 	// fetch snapshot chunks and write them to the snapshot directory
 	var wg sync.WaitGroup
-	// errCh := make(chan error, snapshot.Chunks)
 
 	key := snapshot.Key()
 	providers := s.snapshotPool.keyProviders(key)
@@ -146,13 +183,42 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		providers = append(providers, s.snapshotPool.getPeers()...)
 	}
 
-	const chunkFetchers = 10 // limit the number of concurrent chunk fetches
+	chunkFetchers := s.cfg.ConcurrentChunkFetchers // configurable number of concurrent chunk fetches
+
+	s.log.Info("Starting chunk download", "total_chunks", snapshot.Chunks, "concurrent_fetchers", chunkFetchers, "providers", len(providers))
 
 	errChan := make(chan error, snapshot.Chunks)
 	tasks := make(chan uint32, snapshot.Chunks) // channel to send tasks to chunk fetchers
 
 	chunkCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Check which chunks we still need to download
+	chunksNeeded := make([]uint32, 0, snapshot.Chunks)
+	chunksAlreadyComplete := 0
+
+	for i := range snapshot.Chunks {
+		finalFileName := fmt.Sprintf("chunk-%d.sql.gz", i)
+		finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+		if _, err := os.Stat(finalFilePath); err == nil {
+			// Chunk already complete, skip it
+			chunksAlreadyComplete++
+			s.log.Debug("Chunk already complete, skipping", "chunk", i)
+			continue
+		}
+		chunksNeeded = append(chunksNeeded, i)
+	}
+
+	if chunksAlreadyComplete > 0 {
+		s.log.Info("Resuming chunk download", "chunks_already_complete", chunksAlreadyComplete,
+			"chunks_remaining", len(chunksNeeded), "total_chunks", snapshot.Chunks)
+	}
+
+	if len(chunksNeeded) == 0 {
+		s.log.Info("All chunks already downloaded, skipping chunk fetcher")
+		return nil // All chunks already complete
+	}
 
 	// start chunk fetchers
 	for range chunkFetchers {
@@ -161,7 +227,7 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 			defer wg.Done()
 
 			for chunkIdx := range tasks {
-				success := true
+				success := false
 				for _, provider := range providers {
 					select {
 					case <-chunkCtx.Done():
@@ -195,9 +261,9 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 		}()
 	}
 
-	// send chunk indexes to chunk fetchers
-	for chunk := range snapshot.Chunks {
-		tasks <- chunk
+	// send chunk indexes to chunk fetchers (only chunks we still need)
+	for _, chunkIdx := range chunksNeeded {
+		tasks <- chunkIdx
 	}
 	close(tasks) // close the tasks channel to signal the end of chunks to fetch
 
@@ -206,8 +272,9 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 	// check if any of the chunk fetches failed
 	select {
 	case err := <-errChan:
-		return err
+		return fmt.Errorf("chunk download incomplete: %w", err)
 	default:
+		s.log.Info("All chunks downloaded successfully", "total_chunks", snapshot.Chunks)
 		return nil
 	}
 }
@@ -216,56 +283,263 @@ func (s *StateSyncService) chunkFetcher(ctx context.Context, snapshot *snapshotM
 // The chunk is written to <chunk-idx.sql.gz> file in the snapshot directory.
 // This also ensures that the hash of the received chunk matches the expected hash
 func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32) error {
-	stream, err := s.host.NewStream(ctx, provider.ID, snapshotter.ProtocolIDSnapshotChunk)
-	if err != nil {
-		s.log.Warn("failed to create stream to provider", "provider", provider.ID.String(),
-			"error", peers.CompressDialError(err))
+	const maxRetries = 3
+	const retryDelay = 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		startTime := time.Now()
+		s.log.Info("Starting chunk download", "chunk", index, "provider", provider.ID.String(),
+			"attempt", attempt, "max_retries", maxRetries, "start_time", startTime.Format(time.RFC3339Nano))
+
+		err := s.downloadChunkAttempt(ctx, snap, provider, index, startTime)
+		if err == nil {
+			s.log.Info("Chunk download successful", "chunk", index, "provider", provider.ID.String(), "attempt", attempt)
+			return nil // Success
+		}
+
+		// Check if this is a retryable error
+		if isRetryableError(err) && attempt < maxRetries {
+			s.log.Warn("Retryable error encountered, will retry", "chunk", index, "provider", provider.ID.String(),
+				"attempt", attempt, "error", err, "retry_delay", retryDelay)
+
+			// Wait before retrying
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+				continue
+			}
+		}
+
+		// Non-retryable error or max retries exceeded
+		s.log.Warn("Chunk download failed", "chunk", index, "provider", provider.ID.String(),
+			"attempt", attempt, "error", err, "retryable", isRetryableError(err))
 		return err
+	}
+
+	return fmt.Errorf("failed to download chunk %d after %d attempts", index, maxRetries)
+}
+
+// isRetryableError determines if an error is worth retrying
+// Network-level errors (resets, timeouts, EOF) are typically transient and worth retrying.
+// Data integrity errors (hash mismatches) indicate corruption and should not be retried.
+func isRetryableError(err error) bool {
+	errStr := err.Error()
+	// Stream reset errors are typically retryable (provider-side issues)
+	if strings.Contains(errStr, "stream reset") {
+		return true
+	}
+	// Connection errors are retryable
+	if strings.Contains(errStr, "connection reset") {
+		return true
+	}
+	// EOF during transfer might be retryable
+	if strings.Contains(errStr, "EOF") {
+		return true
+	}
+	// Timeout errors are retryable (both generic "timeout" and Go context errors)
+	if strings.Contains(errStr, "timeout") {
+		return true
+	}
+	if strings.Contains(errStr, "context deadline exceeded") {
+		return true
+	}
+	// Hash mismatches are not retryable (data corruption)
+	if strings.Contains(errStr, "hash mismatch") {
+		return false
+	}
+	return false
+}
+
+// downloadChunkAttempt performs a single attempt to download a chunk
+func (s *StateSyncService) downloadChunkAttempt(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
+	// Try resumable download for all chunks, fall back to legacy only if protocol not supported
+	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
+	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+	// Check if we have a partial download from temp file of failed attempt
+	var bytesDownloaded uint64 = 0
+	var isResume bool = false
+	tempFilePath := finalFilePath + ".tmp"
+
+	// Check if final file already exists (complete download)
+	if _, err := os.Stat(finalFilePath); err == nil {
+		s.log.Debug("Final file already exists, skipping download", "chunk", index, "file", finalFilePath)
+		return nil // File already complete
+	}
+
+	// Check for temp file from previous failed attempt
+	if fileInfo, err := os.Stat(tempFilePath); err == nil {
+		bytesDownloaded = uint64(fileInfo.Size())
+		isResume = true
+		s.log.Debug("Found partial download from previous failed attempt", "chunk", index, "temp_file_size", bytesDownloaded)
+	}
+
+	// Try range protocol first (for both fresh downloads and resumes)
+	if isResume {
+		s.log.Info("Attempting to resume chunk download", "chunk", index, "bytes_downloaded", bytesDownloaded)
+	} else {
+		s.log.Debug("Starting fresh download with range protocol", "chunk", index)
+	}
+
+	err := s.downloadChunkResumable(ctx, snap, provider, index, bytesDownloaded, finalFilePath)
+	if err != nil {
+		// Only fallback to legacy if the range protocol is not supported by the server
+		// Network issues (stream resets, timeouts) should be retried with range protocol
+		if isProtocolNotSupportedError(err) {
+			if isResume {
+				s.log.Debug("Range protocol not supported by server, falling back to legacy (will lose resume capability)", "chunk", index, "error", err)
+			} else {
+				s.log.Debug("Range protocol not supported by server, falling back to legacy", "chunk", index, "error", err)
+			}
+
+			// Clean up any partial file since legacy doesn't support resume
+			os.Remove(finalFilePath)
+			return s.downloadChunkLegacy(ctx, snap, provider, index, startTime)
+		} else {
+			// Network/transport error - don't fallback, let retry logic handle it
+			// The partial file will be preserved for resuming on next attempt
+			if isResume {
+				s.log.Debug("Range protocol failed due to network issue, will retry resume on next attempt", "chunk", index, "error", err)
+			} else {
+				s.log.Debug("Range protocol failed due to network issue, will retry", "chunk", index, "error", err)
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
+// isProtocolNotSupportedError determines if an error indicates the server doesn't support the range protocol
+func isProtocolNotSupportedError(err error) bool {
+	errStr := err.Error()
+
+	// Check for actual libp2p protocol negotiation failures
+	if strings.Contains(errStr, "failed to negotiate protocol") &&
+		strings.Contains(errStr, "protocols not supported") {
+		return true
+	}
+
+	return false
+}
+
+// downloadChunkResumable resumes a download from a specific offset
+func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, bytesDownloaded uint64, filePath string) error {
+	// Create a context with stream timeout for libp2p operations
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
+	defer cancel()
+
+	// Use range protocol for resumable downloads - allows partial chunk retrieval
+	// which is critical for large chunks over unreliable networks
+	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotRange)
+	if err != nil {
+		return fmt.Errorf("failed to create range stream: %w", err)
 	}
 	defer stream.Close()
 
-	// Create the request for the snapshot chunk
-	req := snapshotChunkReq{
+	// Set deadlines for the stream operations
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+
+	// Create the range request to resume from where we left off (or start fresh if offset=0)
+	snapHash, err := types.NewHashFromBytes(snap.Hash)
+	if err != nil {
+		return err
+	}
+
+	req := snapshotter.SnapshotChunkRangeReq{
 		Height: snap.Height,
 		Format: snap.Format,
 		Index:  index,
-		Hash:   snap.ChunkHashes[index],
+		Hash:   snapHash,
+		Offset: bytesDownloaded,
+		Length: 0, // 0 means read to end
 	}
+
+	// Log the request details for debugging
+	if bytesDownloaded == 0 {
+		s.log.Debug("Sending range request for fresh download", "chunk", index, "offset", 0, "provider", provider.ID.String())
+	} else {
+		s.log.Debug("Sending range request for resume", "chunk", index, "offset", bytesDownloaded, "provider", provider.ID.String())
+	}
+
 	reqBts, err := req.MarshalBinary()
 	if err != nil {
-		s.log.Warn("failed to marshal snapshot chunk request", "error", err)
 		return err
 	}
 
-	// Send the request
-	stream.SetWriteDeadline(time.Now().Add(chunkSendTimeout))
 	if _, err := stream.Write(reqBts); err != nil {
-		s.log.Warn("failed to send snapshot chunk request", "error", err)
+		return fmt.Errorf("failed to write range request: %w", err)
+	}
+
+	// Use atomic writes with temp file for safety
+	tempFilePath := filePath + ".tmp"
+	var file *os.File
+
+	if bytesDownloaded == 0 {
+		// Fresh download - create new temp file
+		s.log.Debug("Creating new temp file for fresh download", "chunk", index, "temp_path", tempFilePath)
+		file, err = os.Create(tempFilePath)
+	} else {
+		// Resume download from existing temp file
+		s.log.Debug("Resuming from existing temp file", "chunk", index, "existing_bytes", bytesDownloaded, "temp_path", tempFilePath)
+		file, err = os.OpenFile(tempFilePath, os.O_WRONLY|os.O_APPEND, 0644)
+	}
+
+	if err != nil {
 		return err
 	}
 
-	// Read the response
-	chunkFile := filepath.Join(s.snapshotDir, fmt.Sprintf("chunk-%d.sql.gz", index))
-	file, err := os.Create(chunkFile)
-	if err != nil {
-		return fmt.Errorf("failed to create chunk file: %w", err)
-	}
-	defer file.Close()
-
-	stream.SetReadDeadline(time.Now().Add(1 * time.Minute)) // TODO: set appropriate timeout
-	hasher := sha256.New()
-	writer := io.MultiWriter(file, hasher)
-	if _, err := io.Copy(writer, stream); err != nil {
-		return fmt.Errorf("failed to read snapshot chunk: %w", err)
-	}
-
-	hash := hasher.Sum(nil)
-	if !bytes.Equal(hash, snap.ChunkHashes[index][:]) {
-		// delete the file
-		if err := os.Remove(chunkFile); err != nil {
-			s.log.Warn("failed to delete chunk file", "file", chunkFile, "error", err)
+	var cleanupTempFile bool = true // Flag to control temp file cleanup
+	defer func() {
+		file.Close()
+		// Only clean up temp file if we should (success or non-retryable error)
+		if cleanupTempFile {
+			if _, err := os.Stat(tempFilePath); err == nil {
+				os.Remove(tempFilePath)
+			}
 		}
-		return errors.New("chunk hash mismatch")
+	}()
+
+	// Copy remaining data from stream
+	copyStartTime := time.Now()
+	bytesWritten, err := io.Copy(file, stream)
+	if err != nil {
+		// Don't clean up temp file on network errors - preserve for resume
+		cleanupTempFile = false
+		return fmt.Errorf("failed to copy chunk data: %w", err)
+	}
+
+	// Close temp file before validation
+	if err := file.Close(); err != nil {
+		cleanupTempFile = false
+		return err
+	}
+
+	// Validate the complete chunk
+	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
+		// Hash validation failed - this is not retryable, clean up temp file
+		cleanupTempFile = true
+		return err
+	}
+
+	// Atomically move temp file to final location
+	if err := os.Rename(tempFilePath, filePath); err != nil {
+		cleanupTempFile = true
+		return err
+	}
+
+	// Success - temp file was moved, no cleanup needed
+	cleanupTempFile = false
+
+	if bytesDownloaded == 0 {
+		s.log.Info("Fresh chunk download completed using range protocol", "chunk", index,
+			"bytes_written", bytesWritten, "copy_duration", time.Since(copyStartTime))
+	} else {
+		s.log.Info("Resumed chunk download completed", "chunk", index,
+			"resumed_from", bytesDownloaded, "additional_bytes", bytesWritten,
+			"copy_duration", time.Since(copyStartTime))
 	}
 
 	return nil
@@ -275,20 +549,25 @@ func (s *StateSyncService) requestSnapshotChunk(ctx context.Context, snap *snaps
 func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer peer.AddrInfo) error {
 	// request snapshot catalogs from the discovered peer
 	s.host.Peerstore().AddAddrs(peer.ID, peer.Addrs, peerstore.PermanentAddrTTL)
-	stream, err := s.host.NewStream(ctx, peer.ID, snapshotter.ProtocolIDSnapshotCatalog)
+
+	// Create a context with stream timeout for libp2p operations
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
+	defer cancel()
+
+	stream, err := s.host.NewStream(streamCtx, peer.ID, snapshotter.ProtocolIDSnapshotCatalog)
 	if err != nil {
 		return peers.CompressDialError(err)
 	}
 	defer stream.Close()
 
-	stream.SetWriteDeadline(time.Now().Add(catalogSendTimeout)) // TODO: set appropriate timeout
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.CatalogTimeout)))
 	if _, err := stream.Write([]byte(discoverSnapshotsMsg)); err != nil {
 		return fmt.Errorf("failed to send discover snapshot catalog request: %w", err)
 	}
 
 	// read catalogs from the stream
 	snapshots := make([]*snapshotMetadata, 0)
-	stream.SetReadDeadline(time.Now().Add(1 * time.Minute)) // TODO: set appropriate timeout
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.CatalogTimeout)))
 	if err := json.NewDecoder(stream).Decode(&snapshots); err != nil {
 		return fmt.Errorf("failed to read snapshot catalogs: %w", err)
 	}
@@ -450,7 +729,8 @@ func (s *Streamer) Next() error {
 
 	file, err := os.Open(s.files[s.currentChunkIndex])
 	if err != nil {
-		return fmt.Errorf("failed to open chunk file: %w", err)
+		return fmt.Errorf("failed to open chunk file %s (chunk %d of %d): %w",
+			s.files[s.currentChunkIndex], s.currentChunkIndex, s.numChunks, err)
 	}
 
 	s.currentChunk = file
@@ -497,4 +777,231 @@ func filterLocalPeer(peers []peer.AddrInfo, localID peer.ID) []peer.AddrInfo {
 		}
 	}
 	return filteredPeers
+}
+
+// validateChunkHash validates the SHA256 hash of a chunk file
+func (s *StateSyncService) validateChunkHash(filePath string, expectedHash [32]byte) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open chunk file for validation: %w", err)
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return fmt.Errorf("failed to hash chunk file: %w", err)
+	}
+
+	actualHash := hasher.Sum(nil)
+	if !bytes.Equal(actualHash, expectedHash[:]) {
+		return fmt.Errorf("chunk hash mismatch: expected %x, got %x", expectedHash[:], actualHash)
+	}
+
+	return nil
+}
+
+// downloadChunkLegacy performs a legacy download (original implementation)
+func (s *StateSyncService) downloadChunkLegacy(ctx context.Context, snap *snapshotMetadata, provider peer.AddrInfo, index uint32, startTime time.Time) error {
+	// Create a context with stream timeout for libp2p operations
+	streamCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.StreamTimeout))
+	defer cancel()
+
+	stream, err := s.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotChunk)
+	if err != nil {
+		s.log.Warn("failed to create stream to provider", "provider", provider.ID.String(),
+			"error", peers.CompressDialError(err), "chunk", index)
+		return err
+	}
+	defer stream.Close()
+
+	// Set deadlines for the stream operations
+	stream.SetWriteDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.ChunkTimeout)))
+
+	// Create the request for the snapshot chunk
+	snapHash, err := types.NewHashFromBytes(snap.Hash)
+	if err != nil {
+		return err
+	}
+
+	req := snapshotter.SnapshotChunkReq{
+		Height: snap.Height,
+		Format: snap.Format,
+		Index:  index,
+		Hash:   snapHash,
+	}
+	reqBts, err := req.MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.Write(reqBts); err != nil {
+		return fmt.Errorf("failed to write chunk request: %w", err)
+	}
+
+	// Create temporary file for atomic write
+	tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", index)
+	tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
+	finalFileName := fmt.Sprintf("chunk-%d.sql.gz", index)
+	finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+	tempFile, err := os.Create(tempFilePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		tempFile.Close()
+		// Clean up temp file if something goes wrong
+		if _, err := os.Stat(tempFilePath); err == nil {
+			os.Remove(tempFilePath)
+		}
+	}()
+
+	// Copy data from stream to temporary file
+	bytesWritten, err := io.Copy(tempFile, stream)
+	if err != nil {
+		return fmt.Errorf("failed to copy chunk data: %w", err)
+	}
+
+	// Close temp file before validation
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+
+	// Validate chunk hash
+	if err := s.validateChunkHash(tempFilePath, snap.ChunkHashes[index]); err != nil {
+		return err
+	}
+
+	// Atomically move temp file to final location
+	if err := os.Rename(tempFilePath, finalFilePath); err != nil {
+		return err
+	}
+
+	s.log.Info("Chunk download completed successfully", "chunk", index, "provider", provider.ID.String(),
+		"bytes_written", bytesWritten, "total_duration", time.Since(startTime))
+
+	return nil
+}
+
+// cleanupTempFiles removes temporary files based on various criteria
+func (s *StateSyncService) cleanupTempFiles(currentSnapshot *snapshotMetadata, maxAge time.Duration) error {
+	entries, err := os.ReadDir(s.snapshotDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, nothing to clean
+		}
+		return fmt.Errorf("failed to read snapshot directory: %w", err)
+	}
+
+	// Pattern to match temp files: chunk-{number}.sql.gz.tmp
+	tempFilePattern := regexp.MustCompile(`^chunk-(\d+)\.sql\.gz\.tmp$`)
+	now := time.Now()
+	cleanedCount := 0
+	var totalSizeCleaned int64
+
+	for _, entry := range entries {
+		if !tempFilePattern.MatchString(entry.Name()) {
+			continue // Not a temp file
+		}
+
+		filePath := filepath.Join(s.snapshotDir, entry.Name())
+		fileInfo, err := entry.Info()
+		if err != nil {
+			s.log.Warn("Failed to get file info for temp file", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		shouldClean := false
+		reason := ""
+
+		// Check age-based cleanup
+		if maxAge > 0 && now.Sub(fileInfo.ModTime()) > maxAge {
+			shouldClean = true
+			reason = fmt.Sprintf("older than %v", maxAge)
+		}
+
+		// When maxAge is 0, clean all temp files (used when starting new snapshot)
+		if maxAge == 0 {
+			shouldClean = true
+			reason = "cleaning all temp files for new snapshot"
+		}
+
+		if shouldClean {
+			if err := os.Remove(filePath); err != nil {
+				s.log.Warn("Failed to remove temp file", "file", entry.Name(), "error", err)
+			} else {
+				cleanedCount++
+				totalSizeCleaned += fileInfo.Size()
+				s.log.Debug("Cleaned up temp file", "file", entry.Name(), "reason", reason,
+					"size", fileInfo.Size(), "age", now.Sub(fileInfo.ModTime()))
+			}
+		}
+	}
+
+	if cleanedCount > 0 {
+		s.log.Info("Temp file cleanup completed", "files_cleaned", cleanedCount,
+			"total_size_cleaned", totalSizeCleaned, "cleanup_reason", "maintenance")
+	}
+
+	return nil
+}
+
+// performStartupCleanup performs cleanup of old temp files on service startup
+func (s *StateSyncService) performStartupCleanup() {
+	const defaultMaxAge = 24 * time.Hour // Clean temp files older than 24 hours
+
+	s.log.Info("Performing startup cleanup of temp files", "max_age", defaultMaxAge)
+
+	if err := s.cleanupTempFiles(nil, defaultMaxAge); err != nil {
+		s.log.Warn("Startup cleanup failed", "error", err)
+	}
+}
+
+// cleanupInvalidSnapshot removes all files (temp and final) for an invalid snapshot
+func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) error {
+	if snapshot == nil {
+		return nil
+	}
+
+	cleanedCount := 0
+	var totalSizeCleaned int64
+
+	// Clean both temp files and final files for all chunks of this invalid snapshot
+	for i := range snapshot.Chunks {
+		// Clean temp file
+		tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", i)
+		tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
+
+		if fileInfo, err := os.Stat(tempFilePath); err == nil {
+			if err := os.Remove(tempFilePath); err != nil {
+				s.log.Warn("Failed to remove snapshot temp file", "file", tempFileName, "error", err)
+			} else {
+				cleanedCount++
+				totalSizeCleaned += fileInfo.Size()
+				s.log.Debug("Cleaned up snapshot temp file", "file", tempFileName, "size", fileInfo.Size())
+			}
+		}
+
+		// Clean final file (in case some chunks were completed before we discovered the snapshot was invalid)
+		finalFileName := fmt.Sprintf("chunk-%d.sql.gz", i)
+		finalFilePath := filepath.Join(s.snapshotDir, finalFileName)
+
+		if fileInfo, err := os.Stat(finalFilePath); err == nil {
+			if err := os.Remove(finalFilePath); err != nil {
+				s.log.Warn("Failed to remove snapshot final file", "file", finalFileName, "error", err)
+			} else {
+				cleanedCount++
+				totalSizeCleaned += fileInfo.Size()
+				s.log.Debug("Cleaned up snapshot final file", "file", finalFileName, "size", fileInfo.Size())
+			}
+		}
+	}
+
+	if cleanedCount > 0 {
+		s.log.Info("Invalid snapshot cleanup completed", "snapshot_height", snapshot.Height,
+			"files_cleaned", cleanedCount, "total_size_cleaned", totalSizeCleaned)
+	}
+
+	return nil
 }

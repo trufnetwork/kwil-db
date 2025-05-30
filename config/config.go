@@ -341,15 +341,32 @@ func DefaultConfig() *Config {
 			NoTLS:         false,
 		},
 		Snapshots: SnapshotConfig{
-			Enable:          false,
-			RecurringHeight: 14400,
-			MaxSnapshots:    3,
+			Enable:           false,
+			RecurringHeight:  14400,
+			MaxSnapshots:     3,
+			ChunkSendTimeout: types.Duration(300 * time.Second),
 		},
 		StateSync: StateSyncConfig{
-			Enable:           false,
-			DiscoveryTimeout: types.Duration(15 * time.Second),
-			MaxRetries:       3,
-			PsqlPath:         "psql",
+			Enable:                  false,
+			DiscoveryTimeout:        types.Duration(15 * time.Second),
+			MaxRetries:              3,
+			PsqlPath:                "psql",
+			CatalogTimeout:          types.Duration(30 * time.Second),
+			ChunkTimeout:            types.Duration(120 * time.Second), // Generous timeout for large chunks over slow networks
+			MetadataTimeout:         types.Duration(60 * time.Second),
+			StreamTimeout:           types.Duration(300 * time.Second), // Matches chunk send timeout for protocol symmetry
+			ConcurrentChunkFetchers: 5,                                 // Balanced concurrency: reduces network congestion while improving throughput
+		},
+		BlockSync: BlockSyncConfig{
+			BlockGetTimeout:      types.Duration(90 * time.Second), // Accommodates large blocks in slow network conditions
+			BlockSendTimeout:     types.Duration(45 * time.Second), // Half of get timeout to prevent sender timeout before receiver
+			RequestTimeout:       types.Duration(2 * time.Second),  // Short timeout for lightweight request messages
+			ResponseTimeout:      types.Duration(20 * time.Second),
+			IdleTimeout:          types.Duration(500 * time.Millisecond), // Quick detection of stalled transfers
+			AnnounceWriteTimeout: types.Duration(5 * time.Second),
+			AnnounceRespTimeout:  types.Duration(5 * time.Second),
+			TxGetTimeout:         types.Duration(20 * time.Second),
+			TxAnnTimeout:         types.Duration(5 * time.Second),
 		},
 		Extensions: make(map[string]map[string]string),
 		Checkpoint: Checkpoint{
@@ -389,6 +406,7 @@ type Config struct {
 	Migrations   MigrationConfig              `toml:"migrations" comment:"zero downtime migration configuration"`
 	Checkpoint   Checkpoint                   `toml:"checkpoint" comment:"checkpoint info for the leader to sync to before proposing a new block"`
 	Erc20Bridge  ERC20BridgeConfig            `toml:"erc20_bridge" comment:"ERC20 bridge configuration"`
+	BlockSync    BlockSyncConfig              `toml:"block_sync" comment:"Block synchronization configuration"`
 
 	SkipDependencyVerification bool `toml:"skip_dependency_verification" comment:"skip runtime dependency verification (the pg_dump and psql binaries)"`
 	// PGDump: used by the snapshot and the migration module for producing snapshots.
@@ -503,9 +521,10 @@ type AdminConfig struct {
 }
 
 type SnapshotConfig struct {
-	Enable          bool   `toml:"enable" comment:"enable creating and providing snapshots for peers using statesync"`
-	RecurringHeight uint64 `toml:"recurring_height" comment:"snapshot creation period in blocks"`
-	MaxSnapshots    uint64 `toml:"max_snapshots" comment:"number of snapshots to keep, after the oldest is removed when creating a new one"`
+	Enable           bool           `toml:"enable" comment:"enable creating and providing snapshots for peers using statesync"`
+	RecurringHeight  uint64         `toml:"recurring_height" comment:"snapshot creation period in blocks"`
+	MaxSnapshots     uint64         `toml:"max_snapshots" comment:"number of snapshots to keep, after the oldest is removed when creating a new one"`
+	ChunkSendTimeout types.Duration `toml:"chunk_send_timeout" comment:"timeout for sending snapshot chunks to peers"`
 }
 
 type StateSyncConfig struct {
@@ -515,6 +534,50 @@ type StateSyncConfig struct {
 	DiscoveryTimeout types.Duration `toml:"discovery_time" comment:"how long to discover snapshots before selecting one to use"`
 	MaxRetries       uint64         `toml:"max_retries" comment:"how many times to try after failing to apply a snapshot before switching to blocksync"`
 	PsqlPath         string         `toml:"psql_path" comment:"path to the PSQL binary for applying snapshots"`
+
+	// Network timeouts for remote regions
+	CatalogTimeout  types.Duration `toml:"catalog_timeout" comment:"timeout for requesting snapshot catalogs from peers"`
+	ChunkTimeout    types.Duration `toml:"chunk_timeout" comment:"timeout for downloading individual snapshot chunks"`
+	MetadataTimeout types.Duration `toml:"metadata_timeout" comment:"timeout for requesting snapshot metadata"`
+	StreamTimeout   types.Duration `toml:"stream_timeout" comment:"timeout for libp2p stream creation and operations"`
+
+	// Concurrency control
+	ConcurrentChunkFetchers uint32 `toml:"concurrent_chunk_fetchers" comment:"number of concurrent chunk downloads during state sync (1-20)"`
+}
+
+// Validate validates the StateSyncConfig and sets defaults for unspecified values
+func (cfg *StateSyncConfig) Validate() error {
+	// Set default for ConcurrentChunkFetchers if not specified
+	if cfg.ConcurrentChunkFetchers == 0 {
+		cfg.ConcurrentChunkFetchers = 5 // Default value
+	}
+
+	// Range 1-20: Below 1 eliminates concurrency benefits, above 20 can overwhelm network/disk I/O
+	if cfg.ConcurrentChunkFetchers < 1 || cfg.ConcurrentChunkFetchers > 20 {
+		return fmt.Errorf("state_sync.concurrent_chunk_fetchers: must be between 1 and 20, got %d", cfg.ConcurrentChunkFetchers)
+	}
+
+	return nil
+}
+
+// BlockSyncConfig contains configuration for block synchronization timeouts
+type BlockSyncConfig struct {
+	// Block fetching timeouts
+	BlockGetTimeout  types.Duration `toml:"block_get_timeout" comment:"overall timeout for fetching a block"`
+	BlockSendTimeout types.Duration `toml:"block_send_timeout" comment:"timeout for sending a block to a peer"`
+
+	// Request/response timeouts
+	RequestTimeout  types.Duration `toml:"request_timeout" comment:"timeout for writing block requests"`
+	ResponseTimeout types.Duration `toml:"response_timeout" comment:"timeout for reading block responses"`
+	IdleTimeout     types.Duration `toml:"idle_timeout" comment:"timeout between reading chunks of a block"`
+
+	// Protocol timeouts
+	AnnounceWriteTimeout types.Duration `toml:"announce_write_timeout" comment:"timeout for writing block announcements"`
+	AnnounceRespTimeout  types.Duration `toml:"announce_resp_timeout" comment:"timeout for announcement responses"`
+
+	// Transaction timeouts
+	TxGetTimeout types.Duration `toml:"tx_get_timeout" comment:"timeout for fetching transactions"`
+	TxAnnTimeout types.Duration `toml:"tx_ann_timeout" comment:"timeout for transaction announcements"`
 }
 
 type MigrationConfig struct {
@@ -621,6 +684,11 @@ func LoadConfig(filename string) (*Config, error) {
 		if !isValidRPCNamespace(ns) {
 			return nil, fmt.Errorf("rpc.disable_services: invalid namespace %s", ns)
 		}
+	}
+
+	// Validate StateSyncConfig
+	if err := nc.StateSync.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &nc, nil

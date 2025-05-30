@@ -23,12 +23,6 @@ import (
 )
 
 const (
-	// TODO: set appropriate limits
-	catalogSendTimeout = 15 * time.Second
-	chunkSendTimeout   = 45 * time.Second
-	chunkGetTimeout    = 45 * time.Second
-	snapshotGetTimeout = 45 * time.Second
-
 	snapshotCatalogNS    = "snapshot-catalog" // namespace on which snapshot catalogs are advertised
 	discoverSnapshotsMsg = "discover_snapshots"
 )
@@ -36,7 +30,6 @@ const (
 type snapshotKey = snapshotter.SnapshotKey
 type snapshotMetadata = snapshotter.SnapshotMetadata
 type snapshotReq = snapshotter.SnapshotReq
-type snapshotChunkReq = snapshotter.SnapshotChunkReq
 
 type blockStore interface {
 	GetByHeight(height int64) (types.Hash, *ktypes.Block, *ktypes.CommitInfo, error)
@@ -47,6 +40,7 @@ type blockStore interface {
 type StatesyncConfig struct {
 	StateSyncCfg *config.StateSyncConfig
 	DBConfig     config.DBConfig
+	BlockSyncCfg *config.BlockSyncConfig
 	RcvdSnapsDir string
 	P2PService   *P2PService
 
@@ -60,6 +54,7 @@ type StateSyncService struct {
 	// Config
 	cfg              *config.StateSyncConfig
 	dbConfig         config.DBConfig
+	blockSyncCfg     *config.BlockSyncConfig
 	snapshotDir      string
 	trustedProviders []*peer.AddrInfo // trusted providers
 
@@ -73,11 +68,21 @@ type StateSyncService struct {
 	blockStore    blockStore
 
 	// statesync operation specific fields
-	snapshotPool *snapshotPool // resets with every discovery
+	snapshotPool    *snapshotPool     // resets with every discovery
+	currentSnapshot *snapshotMetadata // track current snapshot to avoid unnecessary cleanup
 
 	// Logger
 	log log.Logger
 }
+
+// VerificationResult represents the result of snapshot verification
+type VerificationResult int
+
+const (
+	VerificationValid   VerificationResult = iota // Snapshot is verified as valid
+	VerificationInvalid                           // Snapshot is confirmed invalid (should blacklist)
+	VerificationFailed                            // Verification failed due to network issues (should retry, not blacklist)
+)
 
 func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncService, error) {
 	if cfg.StateSyncCfg.Enable && cfg.StateSyncCfg.TrustedProviders == nil {
@@ -87,6 +92,7 @@ func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncS
 	ss := &StateSyncService{
 		cfg:           cfg.StateSyncCfg,
 		dbConfig:      cfg.DBConfig,
+		blockSyncCfg:  cfg.BlockSyncCfg,
 		snapshotDir:   cfg.RcvdSnapsDir,
 		db:            cfg.DB,
 		host:          cfg.P2PService.host,
@@ -163,7 +169,7 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	}
 
 	// request and commit the block to the blockstore
-	_, rawBlk, ci, _, err := getBlkHeight(ctx, height, ss.host, ss.log)
+	_, rawBlk, ci, _, err := getBlkHeight(ctx, height, ss.host, ss.log, ss.blockSyncCfg)
 	if err != nil {
 		return false, fmt.Errorf("failed to get statesync block %d: %w", height, err)
 	}
@@ -200,22 +206,32 @@ func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
 		ciBytes, _ := ci.MarshalBinary()
 		// maybe we remove hash from the protocol, was thinking receiver could
 		// hang up earlier depending...
-		stream.SetWriteDeadline(time.Now().Add(blkSendTimeout))
+		stream.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
 		stream.Write(hash[:])
 		ktypes.WriteCompactBytes(stream, ciBytes)
 		ktypes.WriteCompactBytes(stream, rawBlk)
 	}
 }
 
-// verifySnapshot verifies the snapshot with the trusted provider and returns the app hash if the snapshot is valid.
-func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (bool, []byte) {
+// verifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
+// Returns VerificationValid with app hash if valid, VerificationInvalid if rejected by provider,
+// or VerificationFailed if unable to verify due to network issues.
+func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (VerificationResult, []byte) {
+	networkErrorCount := 0
+	totalProviders := len(ss.trustedProviders)
+
 	// verify the snapshot
 	for _, provider := range ss.trustedProviders {
+		// Create a context with stream timeout for libp2p operations
+		streamCtx, cancel := context.WithTimeout(ctx, time.Duration(ss.cfg.StreamTimeout))
+		defer cancel()
+
 		// request the snapshot from the provider and verify the contents of the snapshot
-		stream, err := ss.host.NewStream(ctx, provider.ID, snapshotter.ProtocolIDSnapshotMeta)
+		stream, err := ss.host.NewStream(streamCtx, provider.ID, snapshotter.ProtocolIDSnapshotMeta)
 		if err != nil {
 			ss.log.Warn("failed to request snapshot meta", "provider", provider.ID.String(),
 				"error", peers.CompressDialError(err))
+			networkErrorCount++
 			continue
 		}
 
@@ -225,19 +241,21 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 			Format: snap.Format,
 		}
 		reqBts, _ := req.MarshalBinary()
-		stream.SetWriteDeadline(time.Now().Add(catalogSendTimeout))
+		stream.SetWriteDeadline(time.Now().Add(time.Duration(ss.cfg.CatalogTimeout)))
 
 		if _, err := stream.Write(reqBts); err != nil {
 			ss.log.Warn("failed to send snapshot request", "provider", provider.ID.String(), "error", err)
 			stream.Close()
+			networkErrorCount++
 			continue
 		}
 
-		stream.SetReadDeadline(time.Now().Add(snapshotGetTimeout))
+		stream.SetReadDeadline(time.Now().Add(time.Duration(ss.cfg.MetadataTimeout)))
 		var meta snapshotMetadata
 		if err := json.NewDecoder(stream).Decode(&meta); err != nil {
 			ss.log.Warn("failed to decode snapshot metadata", "provider", provider.ID.String(), "error", err)
 			stream.Close()
+			networkErrorCount++
 			continue
 		}
 		stream.Close()
@@ -245,28 +263,41 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		// verify the snapshot metadata
 		if snap.Height != meta.Height || snap.Format != meta.Format || snap.Chunks != meta.Chunks {
 			ss.log.Warnf("snapshot metadata mismatch: expected %v, got %v", snap, meta)
-			continue
+			// This is a definitive rejection - snapshot is invalid
+			return VerificationInvalid, nil
 		}
 
 		// snapshot hashes should match
 		if !bytes.Equal(snap.Hash, meta.Hash) {
 			ss.log.Warnf("snapshot metadata mismatch: expected %v, got %v", snap, meta)
-			continue
+			// This is a definitive rejection - snapshot is invalid
+			return VerificationInvalid, nil
 		}
 
 		// chunk hashes should match
 		for i, chunkHash := range snap.ChunkHashes {
 			if !bytes.Equal(chunkHash[:], meta.ChunkHashes[i][:]) {
 				ss.log.Warnf("snapshot metadata mismatch: expected %v, got %v", snap, meta)
-				continue
+				// This is a definitive rejection - snapshot is invalid
+				return VerificationInvalid, nil
 			}
 		}
 
 		ss.log.Info("verified snapshot with trusted provider", "provider", provider.ID.String(), "snapshot", snap,
 			"appHash", hex.EncodeToString(meta.AppHash))
-		return true, meta.AppHash
+		return VerificationValid, meta.AppHash
 	}
-	return false, nil
+
+	// If we got here, we couldn't verify with any provider
+	if networkErrorCount == totalProviders {
+		// All providers had network errors - this is likely a connectivity issue, not snapshot invalidity
+		ss.log.Warn("Failed to verify snapshot due to network connectivity issues with all trusted providers",
+			"snapshot_height", snap.Height, "providers_tried", totalProviders)
+		return VerificationFailed, nil
+	} else {
+		// Some providers were reachable but rejected the snapshot - it's invalid
+		return VerificationInvalid, nil
+	}
 }
 
 // snapshotPool keeps track of snapshots that have been discovered from the snapshot providers.
