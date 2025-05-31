@@ -231,5 +231,4 @@ require github.com/stretchr/testify v1.10.0
 require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
 )

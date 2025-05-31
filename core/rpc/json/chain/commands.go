@@ -13,6 +13,12 @@ type BlockRequest struct {
 	Raw  bool       `json:"raw"`
 }
 
+type BlockHeaderRequest struct {
+	Height int64 `json:"height"`
+	// Hash is the block hash. If both Height and Hash are provided, hash will be used
+	Hash types.Hash `json:"hash"`
+}
+
 type BlockResultRequest struct {
 	Height int64 `json:"height"`
 	// Hash is the block hash. If both Height and Hash are provided, hash will be used

@@ -12,6 +12,6 @@ var (
 			Name: "CC0-1.0",
 			URL:  "https://creativecommons.org/publicdomain/zero/1.0/legalcode",
 		},
-		Version: "0.1.0",
+		Version: apiSemver,
 	}
 )

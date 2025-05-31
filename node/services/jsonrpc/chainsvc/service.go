@@ -44,6 +44,8 @@ type Node interface {
 	BlockByHash(hash ktypes.Hash) (*ktypes.Block, *ktypes.CommitInfo, error)
 	RawBlockByHeight(height int64) (ktypes.Hash, []byte, *ktypes.CommitInfo, error)
 	RawBlockByHash(hash ktypes.Hash) ([]byte, *ktypes.CommitInfo, error)
+	GetBlockHeader(hash ktypes.Hash) (*ktypes.BlockHeader, error)
+	GetBlockHeaderByHeight(height int64) (*ktypes.BlockHeader, error)
 	BlockResultByHash(hash ktypes.Hash) ([]ktypes.TxResult, error)
 	ChainTx(hash ktypes.Hash) (*chaintypes.Tx, error)
 	BlockHeight() int64
@@ -125,6 +127,9 @@ func (svc *Service) Methods() map[jsonrpc.Method]rpcserver.MethodDef {
 		chainjson.MethodBlock: rpcserver.MakeMethodDef(svc.Block,
 			"retrieve certain block info",
 			"block information at a certain height"),
+		chainjson.MethodBlockHeader: rpcserver.MakeMethodDef(svc.BlockHeader,
+			"retrieve certain block header info",
+			"block header information at a certain height"),
 		chainjson.MethodBlockResult: rpcserver.MakeMethodDef(svc.BlockResult,
 			"retrieve certain block result info",
 			"block result information at a certain height"),
@@ -213,6 +218,47 @@ func (svc *Service) Block(_ context.Context, req *chainjson.BlockRequest) (*chai
 	}, nil
 }
 
+// BlockHeader returns block header information either by block height or block
+// hash. If both provided, block hash will be used. This method is similar to
+// Block, but only returns the block header. It is useful for clients that only
+// need the header information without the full block data.
+func (svc *Service) BlockHeader(_ context.Context, req *chainjson.BlockHeaderRequest) (*chainjson.BlockHeaderResponse, *jsonrpc.Error) {
+	if req.Height < 0 {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "height cannot be negative", nil)
+	}
+
+	var err error
+	var blockHeader *ktypes.BlockHeader
+
+	// prioritize req.Hash over req.Height
+	if req.Hash.IsZero() {
+		blockHeader, err = svc.blockchain.GetBlockHeaderByHeight(req.Height)
+	} else {
+		blockHeader, err = svc.blockchain.GetBlockHeader(req.Hash)
+	}
+
+	if err != nil {
+		if errors.Is(err, nodetypes.ErrBlkNotFound) || errors.Is(err, nodetypes.ErrNotFound) {
+			return nil, jsonrpc.NewError(jsonrpc.ErrorBlkNotFound, "block not found", nil)
+		}
+		svc.log.Error("block header request", "height", req.Height, "hash", req.Hash, "error", err)
+		return nil, jsonrpc.NewError(jsonrpc.ErrorNodeInternal, "failed to get block header", nil)
+	}
+
+	return &chainjson.BlockHeaderResponse{
+		Height:            blockHeader.Height,
+		Version:           blockHeader.Version,
+		NumTxns:           blockHeader.NumTxns,
+		PrevHash:          blockHeader.PrevHash,
+		PrevAppHash:       blockHeader.PrevAppHash,
+		Timestamp:         blockHeader.Timestamp,
+		MerkleRoot:        blockHeader.MerkleRoot,
+		ValidatorSetHash:  blockHeader.ValidatorSetHash,
+		NetworkParamsHash: blockHeader.NetworkParamsHash,
+		NewLeader:         blockHeader.NewLeader,
+	}, nil
+}
+
 // BlockResult returns block result either by block height or bloch hash.
 // If both provided, block hash will be used.
 func (svc *Service) BlockResult(_ context.Context, req *chainjson.BlockResultRequest) (*chainjson.BlockResultResponse, *jsonrpc.Error) {
@@ -221,8 +267,7 @@ func (svc *Service) BlockResult(_ context.Context, req *chainjson.BlockResultReq
 	}
 
 	if !req.Hash.IsZero() {
-		// TODO: commit info for valudator updates
-		block, _ /*commitInfo*/, err := svc.blockchain.BlockByHash(req.Hash)
+		blockHeader, err := svc.blockchain.GetBlockHeader(req.Hash)
 		if err != nil {
 			if errors.Is(err, nodetypes.ErrBlkNotFound) || errors.Is(err, nodetypes.ErrNotFound) {
 				return nil, jsonrpc.NewError(jsonrpc.ErrorBlkNotFound, "block not found", nil)
@@ -241,13 +286,13 @@ func (svc *Service) BlockResult(_ context.Context, req *chainjson.BlockResultReq
 		}
 
 		return &chainjson.BlockResultResponse{
-			Height:    block.Header.Height,
+			Height:    blockHeader.Height,
 			Hash:      req.Hash,
 			TxResults: txResults,
 		}, nil
 	}
 
-	blockHash, block, _, err := svc.blockchain.BlockByHeight(req.Height)
+	blockHeader, err := svc.blockchain.GetBlockHeaderByHeight(req.Height)
 	if err != nil {
 		if errors.Is(err, nodetypes.ErrBlkNotFound) || errors.Is(err, nodetypes.ErrNotFound) {
 			return nil, jsonrpc.NewError(jsonrpc.ErrorBlkNotFound, "block not found", nil)
@@ -256,6 +301,7 @@ func (svc *Service) BlockResult(_ context.Context, req *chainjson.BlockResultReq
 		return nil, jsonrpc.NewError(jsonrpc.ErrorNodeInternal, "failed to get block", nil)
 	}
 
+	blockHash := blockHeader.Hash()
 	txResults, err := svc.blockchain.BlockResultByHash(blockHash)
 	if err != nil {
 		if errors.Is(err, nodetypes.ErrBlkNotFound) || errors.Is(err, nodetypes.ErrNotFound) {
@@ -266,7 +312,7 @@ func (svc *Service) BlockResult(_ context.Context, req *chainjson.BlockResultReq
 	}
 
 	return &chainjson.BlockResultResponse{
-		Height:    block.Header.Height,
+		Height:    blockHeader.Height,
 		Hash:      blockHash,
 		TxResults: txResults,
 	}, nil
