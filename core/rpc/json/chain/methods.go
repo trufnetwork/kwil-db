@@ -8,6 +8,7 @@ const (
 	MethodVersion         jsonrpc.Method = "chain.version"
 	MethodHealth          jsonrpc.Method = "chain.health"
 	MethodBlock           jsonrpc.Method = "chain.block"
+	MethodBlockHeader     jsonrpc.Method = "chain.block_header"
 	MethodBlockResult     jsonrpc.Method = "chain.block_result"
 	MethodTx              jsonrpc.Method = "chain.tx"
 	MethodGenesis         jsonrpc.Method = "chain.genesis"

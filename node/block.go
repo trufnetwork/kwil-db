@@ -613,6 +613,20 @@ func (n *Node) RawBlockByHash(hash types.Hash) ([]byte, *ktypes.CommitInfo, erro
 	return n.bki.GetRaw(hash)
 }
 
+// GetBlockHeader returns the block header by block hash.
+func (n *Node) GetBlockHeader(hash ktypes.Hash) (*ktypes.BlockHeader, error) {
+	return n.bki.GetBlockHeader(hash)
+}
+
+// GetBlockHeaderByHeight returns the block header by height. If height <= 0, the
+// latest block header will be returned.
+func (n *Node) GetBlockHeaderByHeight(height int64) (*ktypes.BlockHeader, error) {
+	if height <= 0 { // I think this is correct since block height starts from 1
+		height, _, _, _ = n.bki.Best()
+	}
+	return n.bki.GetBlockHeaderByHeight(height)
+}
+
 // BlockResultByHash returns the block result by block hash.
 func (n *Node) BlockResultByHash(hash types.Hash) ([]ktypes.TxResult, error) {
 	return n.bki.Results(hash)

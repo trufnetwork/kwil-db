@@ -7,7 +7,7 @@
       "name": "CC0-1.0",
       "url": "https://creativecommons.org/publicdomain/zero/1.0/legalcode"
     },
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "methods": [
     {
@@ -46,6 +46,38 @@
           "$ref": "#/components/schemas/blockResponse"
         },
         "description": "block information at a certain height"
+      },
+      "paramStructure": "by-name"
+    },
+    {
+      "name": "chain.block_header",
+      "description": "retrieve certain block header info",
+      "params": [
+        {
+          "name": "hash",
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "height",
+          "schema": {
+            "type": "integer"
+          },
+          "required": true
+        }
+      ],
+      "result": {
+        "name": "blockHeaderResponse",
+        "schema": {
+          "type": "object",
+          "$ref": "#/components/schemas/blockHeaderResponse"
+        },
+        "description": "block header information at a certain height"
       },
       "paramStructure": "by-name"
     },
@@ -232,6 +264,58 @@
         }
       },
       "blockHeader": {
+        "type": "object",
+        "properties": {
+          "Height": {
+            "type": "integer"
+          },
+          "MerkleRoot": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "NetworkParamsHash": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "NewLeader": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "NumTxns": {
+            "type": "integer"
+          },
+          "PrevAppHash": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "PrevHash": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "Timestamp": {
+            "type": "object",
+            "$ref": "#/components/schemas/time"
+          },
+          "ValidatorSetHash": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "Version": {
+            "type": "integer"
+          }
+        }
+      },
+      "blockHeaderResponse": {
         "type": "object",
         "properties": {
           "Height": {
