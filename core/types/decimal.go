@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/apd/v3"
@@ -46,7 +47,10 @@ type Decimal struct {
 
 // ParseDecimal creates a new Decimal from a string. It automatically infers the precision and scale.
 func ParseDecimal(s string) (*Decimal, error) {
-	inferredPrecision, inferredScale := inferPrecisionAndScale(s)
+	inferredPrecision, inferredScale, err := inferPrecisionAndScale(s)
+	if err != nil {
+		return nil, err
+	}
 
 	return ParseDecimalExplicit(s, inferredPrecision, inferredScale)
 }
@@ -144,6 +148,13 @@ func NewNaNDecimal() *Decimal {
 
 // SetString sets the value of the decimal from a string.
 func (d *Decimal) SetString(s string) error {
+	if s != "" {
+		// Validate s before parsing.
+		if _, err := strconv.ParseFloat(s, 64); err != nil && !errors.Is(err, strconv.ErrRange) { // we can handle large numbers
+			return fmt.Errorf("invalid decimal string: %s, error: %w", s, err)
+		}
+	}
+
 	res, _, err := d.context().NewFromString(s)
 	if err != nil {
 		return err
@@ -159,7 +170,12 @@ func (d *Decimal) SetString(s string) error {
 }
 
 // inferPrecisionAndScale infers the precision and scale from a string.
-func inferPrecisionAndScale(s string) (precision, scale uint16) {
+func inferPrecisionAndScale(s string) (precision, scale uint16, err error) {
+	// Validate if the input is a proper number
+	if _, err = strconv.ParseFloat(s, 64); err != nil && !errors.Is(err, strconv.ErrRange) { // we can handle large numbers
+		return 0, 0, fmt.Errorf("invalid decimal string: %s, error: %w", s, err)
+	}
+
 	s = strings.TrimLeft(s, "-+")
 	parts := strings.Split(s, ".")
 
@@ -168,11 +184,11 @@ func inferPrecisionAndScale(s string) (precision, scale uint16) {
 
 	intPart := uint16(len(parts[0]))
 	if len(parts) == 1 {
-		return max(1, intPart), 0 // at least 1 for precision with 0 scale
+		return max(1, intPart), 0, nil // at least 1 for precision with 0 scale
 	}
 
 	scale = uint16(len(parts[1]))
-	return intPart + scale, scale // precision is the sum of the two
+	return intPart + scale, scale, nil // precision is the sum of the two
 }
 
 // Scale returns the scale of the decimal.
@@ -506,7 +522,11 @@ func (d *Decimal) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &str); err != nil {
 		return err
 	}
-	if err := d.SetPrecisionAndScale(inferPrecisionAndScale(str)); err != nil {
+	precision, scale, err := inferPrecisionAndScale(str)
+	if err != nil {
+		return err
+	}
+	if err := d.SetPrecisionAndScale(precision, scale); err != nil {
 		return err
 	}
 	return d.SetString(str)

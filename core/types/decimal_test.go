@@ -108,6 +108,13 @@ func Test_NewParsedDecimal(t *testing.T) {
 			scale:   3,
 			err:     true,
 		},
+		{
+			name:    "invalid syntax",
+			decimal: ".-1",
+			prec:    153,
+			scale:   103,
+			err:     true,
+		},
 	}
 
 	// test cases for decimal creation
@@ -190,6 +197,23 @@ func Test_DecimalParsing(t *testing.T) {
 		})
 
 	}
+}
+
+func TestParseDecimal_invalid(t *testing.T) {
+	s := ".-1e100"
+	_, err := types.ParseDecimal(s)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid syntax")
+}
+
+func TestParseDecimalExplicit_invalid(t *testing.T) {
+	s := ".-1"
+	precision := uint16(153)
+	scale := uint16(103)
+
+	_, err := types.ParseDecimalExplicit(s, precision, scale)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid syntax")
 }
 
 func Test_MulDecimal(t *testing.T) {
