@@ -3,6 +3,7 @@ package memstore
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -102,6 +103,86 @@ func TestMemBS_GetByHeight(t *testing.T) {
 
 	if hash != block.Hash() {
 		t.Errorf("got hash %v, want %v", hash, block.Hash())
+	}
+}
+
+func TestMemBS_GetBlockHeaderByHeight(t *testing.T) {
+	bs := NewMemBS()
+
+	blocks := []*types.Block{
+		{Header: &types.BlockHeader{Height: 1}},
+		{Header: &types.BlockHeader{Height: 2}},
+		{Header: &types.BlockHeader{Height: 3}},
+	}
+
+	for i, block := range blocks {
+		appHash := types.Hash{byte(i + 1)}
+		if err := bs.Store(block, &types.CommitInfo{AppHash: appHash}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tBlk := blocks[1]
+	blkHeader, err := bs.GetBlockHeaderByHeight(tBlk.Header.Height)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if blkHeader.Height != tBlk.Header.Height {
+		t.Errorf("got height %d, want %d", blkHeader.Height, tBlk.Header.Height)
+	}
+
+	if blkHeader.Hash() != tBlk.Hash() {
+		t.Errorf("got hash %v, want %v", blkHeader.Hash(), tBlk.Hash())
+	}
+
+	// Test invalid block height
+	_, err = bs.GetBlockHeaderByHeight(999)
+	if err == nil {
+		t.Error("expected error for non-existent block height")
+	}
+	if !errors.Is(err, types.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestMemBS_GetBlockHeaderByHash(t *testing.T) {
+	bs := NewMemBS()
+
+	blocks := []*types.Block{
+		{Header: &types.BlockHeader{Height: 1}},
+		{Header: &types.BlockHeader{Height: 2}},
+		{Header: &types.BlockHeader{Height: 3}},
+	}
+
+	for i, block := range blocks {
+		appHash := types.Hash{byte(i + 1)}
+		if err := bs.Store(block, &types.CommitInfo{AppHash: appHash}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tBlk := blocks[1]
+	blkHeader, err := bs.GetBlockHeader(tBlk.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if blkHeader.Height != tBlk.Header.Height {
+		t.Errorf("got height %d, want %d", blkHeader.Height, tBlk.Header.Height)
+	}
+
+	if blkHeader.Hash() != tBlk.Hash() {
+		t.Errorf("got hash %v, want %v", blkHeader.Hash(), tBlk.Hash())
+	}
+
+	// Test invalid block hash
+	_, err = bs.GetBlockHeader(types.Hash{0, 0, 0})
+	if err == nil {
+		t.Error("expected error for non-existent block hash")
+	}
+	if !errors.Is(err, types.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
 

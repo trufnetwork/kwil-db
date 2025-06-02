@@ -23,6 +23,8 @@ type BlockResponse struct {
 
 type BlockResultResponse chaintypes.BlockResult
 
+type BlockHeaderResponse chaintypes.BlockHeader
+
 type TxResponse chaintypes.Tx
 
 // GenesisResponse is the same as kwil-db/config.GenesisConfig, with JSON tags.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"math/rand/v2"
@@ -155,6 +156,54 @@ func TestBlockStore_GetByHeight(t *testing.T) {
 	// if data == nil {
 	// 	t.Fatal("Expected block data, got nil")
 	// }
+}
+
+func TestBlockStore_GetBlockHeader(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+
+	block, appHash, _ := createTestBlock(t, 1, 2)
+	bs.Store(block, &ktypes.CommitInfo{AppHash: appHash})
+
+	blkHeader, err := bs.GetBlockHeader(block.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blkHeader.Hash() != block.Hash() {
+		t.Errorf("Expected hash %v, got %v", block.Hash(), blkHeader.Hash())
+	}
+
+	// Test invalid hash
+	_, err = bs.GetBlockHeader(types.Hash{1, 2, 3})
+	if err == nil {
+		t.Error("Expected error for non-existent block hash")
+	}
+	if !errors.Is(err, types.ErrNotFound) {
+		t.Errorf("Expected %v, got %v", types.ErrNotFound, err)
+	}
+}
+
+func TestBlockStore_GetBlockHeaderByHeight(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+
+	block, appHash, _ := createTestBlock(t, 1, 2)
+	bs.Store(block, &ktypes.CommitInfo{AppHash: appHash})
+
+	blkHeader, err := bs.GetBlockHeaderByHeight(block.Header.Height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blkHeader.Hash() != block.Hash() {
+		t.Errorf("Expected hash %v, got %v", block.Hash(), blkHeader.Hash())
+	}
+
+	// Test invalid hash
+	_, err = bs.GetBlockHeaderByHeight(467)
+	if err == nil {
+		t.Error("Expected error for non-existent block height")
+	}
+	if !errors.Is(err, types.ErrNotFound) {
+		t.Errorf("Expected %v, got %v", types.ErrNotFound, err)
+	}
 }
 
 func TestBlockStore_Have(t *testing.T) {

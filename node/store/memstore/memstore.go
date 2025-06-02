@@ -91,6 +91,30 @@ func (bs *MemBS) GetByHeight(height int64) (types.Hash, *types.Block, *types.Com
 	return blkHash.hash, blk, ci, nil
 }
 
+func (bs *MemBS) GetBlockHeader(hash types.Hash) (*types.BlockHeader, error) {
+	bs.mtx.RLock()
+	defer bs.mtx.RUnlock()
+	blk, have := bs.blocks[hash]
+	if !have {
+		return nil, types.ErrNotFound
+	}
+	return blk.Header, nil
+}
+
+func (bs *MemBS) GetBlockHeaderByHeight(height int64) (*types.BlockHeader, error) {
+	bs.mtx.RLock()
+	defer bs.mtx.RUnlock()
+	blkHash, have := bs.hashes[height]
+	if !have {
+		return nil, types.ErrNotFound
+	}
+	blk, have := bs.blocks[blkHash.hash]
+	if !have {
+		return nil, types.ErrNotFound
+	}
+	return blk.Header, nil
+}
+
 func (bs *MemBS) Have(blkid types.Hash) bool {
 	bs.mtx.RLock()
 	defer bs.mtx.RUnlock()

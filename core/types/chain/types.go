@@ -14,6 +14,7 @@ type Tx struct {
 }
 
 type Block = types.Block
+type BlockHeader = types.BlockHeader
 type CommitInfo = types.CommitInfo
 
 type BlockResult struct {

@@ -551,6 +551,60 @@ func (bki *BlockStore) GetByHeight(height int64) (types.Hash, *ktypes.Block, *kt
 	return hashes.hash, blk, ci, err
 }
 
+// GetBlockHeader retrieves the block header for the given block hash. If the
+// block is not found, it returns types.ErrNotFound. The header is the decoded
+// header, not the raw bytes. This is useful for getting the header without
+// loading the entire block, which can be large.
+func (bki *BlockStore) GetBlockHeader(blkHash types.Hash) (*ktypes.BlockHeader, error) {
+	if !bki.Have(blkHash) {
+		return nil, types.ErrNotFound
+	}
+
+	var block *ktypes.Block
+	err := bki.db.View(func(txn *badger.Txn) error {
+		blockKey := slices.Concat(nsBlock, blkHash[:])
+		item, err := txn.Get(blockKey)
+		if err != nil {
+			return err
+		}
+
+		return item.Value(func(val []byte) error {
+			block, err = ktypes.DecodeBlock(val)
+			return err
+		})
+	})
+
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		return nil, types.ErrNotFound
+	}
+
+	return block.Header, nil
+}
+
+// GetBlockHeaderByHeight retrieves the block header for the given block height.
+// If the block is not found, it returns types.ErrNotFound. The header is the
+// decoded header, not the raw bytes. This is useful for getting the header
+// without loading the entire block, which can be large.
+func (bki *BlockStore) GetBlockHeaderByHeight(height int64) (*ktypes.BlockHeader, error) {
+	bki.mtx.RLock()
+	hashes, have := bki.hashes[height]
+	bki.mtx.RUnlock()
+	if !have {
+		return nil, types.ErrNotFound
+	}
+	// NOTE: Could just use bki.GetBlockHeader here but it seems the appHash
+	// check below is important when fetching data by height.
+	blk, ci, err := bki.Get(hashes.hash)
+	if err != nil {
+		return nil, err
+	}
+	// NOTE: appHash should match hashes.appHash, so check it here.
+	if ci.AppHash != hashes.appHash {
+		return nil, fmt.Errorf("appHash mismatch: %s != %s", ci.AppHash, hashes.appHash)
+	}
+	return blk.Header, err
+}
+
 func (bki *BlockStore) HaveTx(txHash types.Hash) bool {
 	var have bool
 	err := bki.db.View(func(txn *badger.Txn) error {
