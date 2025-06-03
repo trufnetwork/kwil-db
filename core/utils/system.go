@@ -44,13 +44,15 @@ func EstimateRestoreTime(sizeBytes uint64, cpuCount int) int {
 		return 1
 	}
 
-	// Base throughput: ~50 MB/s for database restoration
-	// This accounts for decompression + PostgreSQL operations
-	baseMBps := 50.0
+	// Base throughput: ~1 MB/s for database restoration
+	// This accounts for PostgreSQL operations: SQL parsing, transaction execution,
+	// index maintenance, WAL writes, and ACID compliance overhead
+	// Real-world data shows ~1.59 MB/s actual throughput for bulk restoration
+	baseMBps := 1.0
 
-	// CPU count helps with decompression and PostgreSQL performance
-	// More cores provide diminishing returns, so we cap the benefit
-	cpuMultiplier := math.Min(1.0+float64(cpuCount-1)*0.15, 2.0) // Up to 2x improvement
+	// CPU count has limited impact since restoration is I/O and PostgreSQL-bound
+	// More cores provide diminishing returns for database operations
+	cpuMultiplier := math.Min(1.0+float64(cpuCount-1)*0.05, 1.3) // Up to 1.3x improvement
 	adjustedMBps := baseMBps * cpuMultiplier
 
 	// Convert bytes to MB and calculate time in seconds
