@@ -24,6 +24,7 @@ import (
 	"github.com/kwilteam/kwil-db/config"
 	"github.com/kwilteam/kwil-db/core/log"
 	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/kwilteam/kwil-db/core/utils"
 	"github.com/kwilteam/kwil-db/node/meta"
 	"github.com/kwilteam/kwil-db/node/peers"
 	"github.com/kwilteam/kwil-db/node/snapshotter"
@@ -627,6 +628,22 @@ func (s *StateSyncService) verifyState(ctx context.Context, snapshot *snapshotMe
 // RestoreDB restores the database from the logical sql dump using psql command
 // It also validates the snapshot hash, before restoring the database
 func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMetadata) error {
+	// Log detailed information about the restoration process
+	sysInfo := utils.GetSystemInfo()
+	sizeStr := utils.FormatBytes(snapshot.Size)
+	estimatedMinutes := utils.EstimateRestoreTime(snapshot.Size, sysInfo.CPUCount)
+
+	s.log.Info("Restoring database from snapshot. This may take a while, please do not interrupt the process.",
+		"size", sizeStr,
+		"chunks", snapshot.Chunks,
+		"cpu_cores", sysInfo.CPUCount,
+		"os", sysInfo.OS,
+		"estimated_time", fmt.Sprintf("~%d minutes", estimatedMinutes))
+
+	// Start monitoring restoration progress
+	stopMonitoring := utils.MonitorRestoreProgress(ctx, estimatedMinutes, s.log)
+	defer stopMonitoring()
+
 	streamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
 	defer streamer.Close()
 
@@ -675,6 +692,8 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	if err := cmd.Wait(); err != nil {
 		return err
 	}
+
+	logger.Info("Database restoration completed successfully")
 	return nil
 }
 
