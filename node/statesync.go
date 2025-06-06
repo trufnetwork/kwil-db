@@ -213,7 +213,7 @@ func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
 	}
 }
 
-// verifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
+// VerifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
 // Returns VerificationValid with app hash if valid, VerificationInvalid if rejected by provider,
 // or VerificationFailed if unable to verify due to network issues.
 func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (VerificationResult, []byte) {
