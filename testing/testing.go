@@ -190,21 +190,28 @@ func (tc SchemaTest) Run(ctx context.Context, opts *Options) error {
 					return err
 				}
 
-				err = interp.Execute(&common.EngineContext{
-					TxContext: &common.TxContext{
-						Ctx:    ctx,
-						Signer: deployer,
-						Caller: string(deployer),
-						TxID:   "txid",
-						BlockContext: &common.BlockContext{
-							Height: 0,
-						},
+				// Create transaction context for ownership transfer
+				ownershipTxCtx := &common.TxContext{
+					Ctx:    ctx,
+					Signer: deployer,
+					Caller: string(deployer),
+					TxID:   "txid",
+					BlockContext: &common.BlockContext{
+						Height: 0,
 					},
+				}
+
+				// Enable profiling for ownership transfer if requested globally
+				if opts.EnableProfiling {
+					ownershipTxCtx.SetValue("enable_profiling", true)
+				}
+
+				err = interp.Execute(&common.EngineContext{
+					TxContext:     ownershipTxCtx,
 					OverrideAuthz: true,
 				}, outerTx, "TRANSFER OWNERSHIP TO $user", map[string]any{
 					"user": tc.Owner,
 				}, func(r *common.Row) error {
-					// do nothing
 					return nil
 				})
 				if err != nil {
@@ -222,20 +229,29 @@ func (tc SchemaTest) Run(ctx context.Context, opts *Options) error {
 					DB:       tx2,
 					Deployer: deployer,
 					Logger:   opts.Logger,
+					Options:  opts,
 				}
 
 				// deploy schemas
 				for _, stmt := range seedStmts {
-					err = interp.Execute(&common.EngineContext{
-						TxContext: &common.TxContext{
-							Ctx:    ctx,
-							Signer: deployer,
-							Caller: string(deployer),
-							TxID:   platform.Txid(),
-							BlockContext: &common.BlockContext{
-								Height: 0,
-							},
+					// Create transaction context for seed statements
+					seedTxCtx := &common.TxContext{
+						Ctx:    ctx,
+						Signer: deployer,
+						Caller: string(deployer),
+						TxID:   platform.Txid(),
+						BlockContext: &common.BlockContext{
+							Height: 0,
 						},
+					}
+
+					// Enable profiling for seed statements if requested globally
+					if opts.EnableProfiling {
+						seedTxCtx.SetValue("enable_profiling", true)
+					}
+
+					err = interp.Execute(&common.EngineContext{
+						TxContext:     seedTxCtx,
 						OverrideAuthz: true,
 					}, tx2, stmt, nil, func(r *common.Row) error {
 						// do nothing
@@ -302,6 +318,10 @@ type TestCase struct {
 	// BlockHeight sets the blockheight for the test, accessible by
 	// the @height variable. If not set, it will default to 0.
 	Height int64 `json:"height"`
+	// EnableProfiling specifies whether profiling should be enabled for the test
+	EnableProfiling bool `json:"enable_profiling"`
+	// LogProfiling specifies whether profiling results should be logged for the test
+	LogProfiling bool `json:"log_profiling"`
 }
 
 // run runs the Execution as a TestFunc
@@ -315,20 +335,30 @@ func (e *TestCase) runExecution(ctx context.Context, platform *Platform) error {
 	platform.Logger.Logf(`executing action "%s" against namespace "%s"`, e.Action, e.Namespace)
 
 	var results [][]any
-	res, err := platform.Engine.Call(&common.EngineContext{
-		TxContext: &common.TxContext{
-			Ctx:    ctx,
-			Signer: []byte(caller),
-			Caller: caller,
-			TxID:   platform.Txid(),
-			BlockContext: &common.BlockContext{
-				Height: e.Height,
-				ChainContext: &common.ChainContext{
-					MigrationParams:   &common.MigrationContext{},
-					NetworkParameters: &common.NetworkParameters{},
-				},
+
+	// Create transaction context and set profiling configuration
+	txCtx := &common.TxContext{
+		Ctx:    ctx,
+		Signer: []byte(caller),
+		Caller: caller,
+		TxID:   platform.Txid(),
+		BlockContext: &common.BlockContext{
+			Height: e.Height,
+			ChainContext: &common.ChainContext{
+				MigrationParams:   &common.MigrationContext{},
+				NetworkParameters: &common.NetworkParameters{},
 			},
 		},
+	}
+
+	// Enable profiling if requested (either per test case or globally)
+	// Test case setting takes precedence over global setting
+	if e.EnableProfiling || (platform.Options != nil && platform.Options.EnableProfiling) {
+		txCtx.SetValue("enable_profiling", true)
+	}
+
+	res, err := platform.Engine.Call(&common.EngineContext{
+		TxContext:     txCtx,
 		OverrideAuthz: true,
 	}, platform.DB, e.Namespace, e.Action, e.Args, func(r *common.Row) error {
 		results = append(results, r.Values)
@@ -403,6 +433,17 @@ func (e *TestCase) runExecution(ctx context.Context, platform *Platform) error {
 		}
 	}
 
+	// Log profiling results if requested (either per test case or globally)
+	shouldLogProfiling := e.LogProfiling || e.EnableProfiling ||
+		(platform.Options != nil && (platform.Options.LogProfiling || platform.Options.EnableProfiling))
+
+	if shouldLogProfiling && len(res.Logs) > 0 {
+		platform.Logger.Logf("Action logs for %s.%s:", e.Namespace, e.Action)
+		for _, log := range res.Logs {
+			platform.Logger.Logf("  %s", log)
+		}
+	}
+
 	return nil
 }
 
@@ -428,6 +469,9 @@ type Platform struct {
 
 	// Logger is for logging information during execution of the test.
 	Logger Logger
+
+	// Options contains the test configuration options
+	Options *Options
 
 	// lastTxid is the last transaction ID that was used.
 	lastTxid []byte
@@ -654,6 +698,10 @@ type Options struct {
 	// true, then the container will be removed and recreated. If it
 	// returns false, then the test will fail.
 	ReplaceExistingContainer func() (bool, error)
+	// EnableProfiling specifies whether profiling should be enabled for the test
+	EnableProfiling bool
+	// LogProfiling specifies whether profiling results should be logged for the test
+	LogProfiling bool
 }
 
 // ConnConfig groups the basic connection settings used to construct the DSN

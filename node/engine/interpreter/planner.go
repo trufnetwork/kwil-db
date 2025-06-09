@@ -5,9 +5,12 @@ package interpreter
 
 import (
 	"errors"
-	"fmt"
+	"fmt" // <<< PROFILE
+	"reflect"
 	"strings"
+	"time"
 
+	// <<< PROFILE
 	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/kwilteam/kwil-db/extensions/precompiles"
 	"github.com/kwilteam/kwil-db/node/engine"
@@ -79,6 +82,14 @@ func makeActionToExecutable(namespace string, act *action) *executable {
 			}
 
 			exec2 := exec.subscope(namespace)
+			// <<< PROFILE: Wrap the entire action execution
+			if exec2.EnableProfiling {
+				actionStart := time.Now()
+				defer func() {
+					exec2.addProfileRecord("ACTION_EXEC", fmt.Sprintf("%s.%s", namespace, act.Name), actionStart, time.Since(actionStart))
+				}()
+			}
+			// <<< END PROFILE
 
 			for j, param := range act.Parameters {
 				err = exec2.allocateVariable(param.Name, args[j])
@@ -219,15 +230,108 @@ type resultFunc func(*row) error
 // - action logic: FOR loops / IF clauses / variable assignment
 type stmtFunc func(exec *executionContext, fn resultFunc) error
 
+// <<< PROFILE: Helper functions for profiling
+// profileStmt wraps a stmtFunc with timing logic.
+func profileStmt(node any, identifier string, stmt stmtFunc) stmtFunc {
+	// Capture type and identifier string once during planning, not every execution
+	nodeType := reflect.TypeOf(node).String()
+	// If identifier wasn't provided, use type as fallback
+	if identifier == "" {
+		identifier = nodeType
+	}
+
+	return func(exec *executionContext, fn resultFunc) error {
+		// High ROI: Check flag first to avoid any overhead when disabled
+		if !exec.EnableProfiling {
+			return stmt(exec, fn)
+		}
+
+		start := time.Now()
+		// DEFER the recording: ensures it runs even if stmt returns an error
+		defer func() {
+			// addProfileRecord checks the flag again internally, but check above is faster
+			exec.addProfileRecord(nodeType, identifier, start, time.Since(start))
+		}()
+		return stmt(exec, fn) // execute the original
+	}
+}
+
+// getIdentifier creates a concise, readable string for a node.
+// This can be extended for better readability.
+func getIdentifier(node any) string {
+	// Add specific cases for clarity
+	switch n := node.(type) {
+	case *parse.ActionStmtDeclaration:
+		return fmt.Sprintf("DECLARE: %s %s", n.Variable.Name, n.Type.String())
+	case *parse.ActionStmtAssign:
+		varName := fmt.Sprintf("%T", n.Variable) // fallback
+		if v, ok := n.Variable.(*parse.ExpressionVariable); ok {
+			varName = v.Name
+		} else if v, ok := n.Variable.(*parse.ExpressionArrayAccess); ok {
+			varName = fmt.Sprintf("%T[]", v.Array) // fallback
+		}
+		return fmt.Sprintf("ASSIGN: %s", varName)
+	case *parse.ActionStmtSQL:
+		raw, _ := n.SQL.Raw() // ignore error for profiling
+		if len(raw) > 80 {
+			raw = raw[:77] + "..."
+		}
+		return "STMT_SQL: " + raw // Distinguish from SQL_DB_EXEC in context.go
+	case *parse.SQLStatement: // For top-level SQL
+		raw, _ := n.Raw()
+		if len(raw) > 80 {
+			raw = raw[:77] + "..."
+		}
+		return "STMT_SQL: " + raw
+	case *parse.ActionStmtCall:
+		ns := n.Call.Namespace
+		if ns == "" {
+			ns = "<current>"
+		}
+		return fmt.Sprintf("CALL: %s.%s()", ns, n.Call.Name)
+	case *parse.ActionStmtForLoop:
+		return fmt.Sprintf("FOR: %s IN %T", n.Receiver.Name, n.LoopTerm)
+	case *parse.ActionStmtIf:
+		return "IF / ELSE IF / ELSE"
+	case *parse.ActionStmtReturn:
+		if n.SQL != nil {
+			return "RETURN SQL"
+		}
+		if len(n.Values) > 0 {
+			return fmt.Sprintf("RETURN (%d values)", len(n.Values))
+		}
+		return "RETURN"
+	case *parse.ActionStmtReturnNext:
+		return fmt.Sprintf("RETURN NEXT (%d values)", len(n.Values))
+	case *parse.ActionStmtLoopControl:
+		return string(n.Type) // BREAK or CONTINUE
+	case *parse.CreateActionStatement:
+		return fmt.Sprintf("CREATE ACTION: %s", n.Name)
+	case *parse.DropActionStatement:
+		return fmt.Sprintf("DROP ACTION: %s", n.Name)
+	case *parse.CreateTableStatement:
+		return fmt.Sprintf("CREATE TABLE: %s", n.Name)
+	case *parse.DropTableStatement:
+		return fmt.Sprintf("DROP TABLE: %v", n.Tables)
+		// Add more cases as needed for clarity
+	}
+	// Default fallback
+	return reflect.TypeOf(node).String()
+}
+
+// <<< END PROFILE
+
 func (i *interpreterPlanner) VisitActionStmtDeclaration(p0 *parse.ActionStmtDeclaration) any {
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		nv, err := makeNull(p0.Type)
 		if err != nil {
 			return err
 		}
 
 		return exec.allocateVariable(p0.Variable.Name, nv)
-	})
+	}))
+	// <<< END PROFILE
 }
 
 func (i *interpreterPlanner) VisitActionStmtAssignment(p0 *parse.ActionStmtAssign) any {
@@ -253,7 +357,8 @@ func (i *interpreterPlanner) VisitActionStmtAssignment(p0 *parse.ActionStmtAssig
 			}
 		}
 	}
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		val, err := valFn(exec)
 		if err != nil {
 			return err
@@ -416,7 +521,8 @@ func (i *interpreterPlanner) VisitActionStmtAssignment(p0 *parse.ActionStmtAssig
 		default:
 			panic(fmt.Errorf("unexpected assignable variable type: %T", p0.Variable))
 		}
-	})
+	}))
+	// <<< END PROFILE
 }
 
 func (i *interpreterPlanner) VisitActionStmtCall(p0 *parse.ActionStmtCall) any {
@@ -439,7 +545,8 @@ func (i *interpreterPlanner) VisitActionStmtCall(p0 *parse.ActionStmtCall) any {
 		args[j] = arg.Accept(i).(exprFunc)
 	}
 
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		ns, err := exec.getNamespace(p0.Call.Namespace)
 		if err != nil {
 			return err
@@ -496,7 +603,8 @@ func (i *interpreterPlanner) VisitActionStmtCall(p0 *parse.ActionStmtCall) any {
 		}
 
 		return nil
-	})
+	}))
+	// <<< END PROFILE
 }
 
 // executeBlock executes a block of statements with their own sub-scope.
@@ -524,7 +632,8 @@ func (i *interpreterPlanner) VisitActionStmtForLoop(p0 *parse.ActionStmtForLoop)
 
 	loopFn := p0.LoopTerm.Accept(i).(loopTermFunc)
 
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP. This times the *entire* loop execution.
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		err := loopFn(exec, func(term value) error {
 			exec.scope.child()
 			defer exec.scope.popScope()
@@ -546,7 +655,8 @@ func (i *interpreterPlanner) VisitActionStmtForLoop(p0 *parse.ActionStmtForLoop)
 			return nil // swallow break errors and exit
 		}
 		return err
-	})
+	}))
+	// <<< END PROFILE
 }
 
 // loopTermFunc is a function that allows iterating over a loop term.
@@ -780,7 +890,9 @@ func (i *interpreterPlanner) VisitActionStmtIf(p0 *parse.ActionStmtIf) any {
 }
 
 func (i *interpreterPlanner) VisitActionStmtSQL(p0 *parse.ActionStmtSQL) any {
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	identifier := getIdentifier(p0) // get identifier before closure
+	return profileStmt(p0, identifier, stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		raw, err := p0.SQL.Raw()
 		if err != nil {
 			return err
@@ -796,11 +908,13 @@ func (i *interpreterPlanner) VisitActionStmtSQL(p0 *parse.ActionStmtSQL) any {
 		}
 
 		return nil
-	})
+	}))
+	// <<< END PROFILE
 }
 
 func (i *interpreterPlanner) VisitActionStmtLoopControl(p0 *parse.ActionStmtLoopControl) any {
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		switch p0.Type {
 		case parse.LoopControlTypeBreak:
 			return errBreak
@@ -809,7 +923,8 @@ func (i *interpreterPlanner) VisitActionStmtLoopControl(p0 *parse.ActionStmtLoop
 		default:
 			panic(fmt.Errorf("unexpected loop control type: %s", p0.Type))
 		}
-	})
+	}))
+	// <<< END PROFILE
 }
 
 func (i *interpreterPlanner) VisitActionStmtReturn(p0 *parse.ActionStmtReturn) any {
@@ -825,7 +940,8 @@ func (i *interpreterPlanner) VisitActionStmtReturn(p0 *parse.ActionStmtReturn) a
 	}
 	// third case: a raw `RETURN;` that does not return anything.
 
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		if len(valFns) > 0 {
 			vals := make([]value, len(p0.Values))
 			for j, valFn := range valFns {
@@ -861,7 +977,8 @@ func (i *interpreterPlanner) VisitActionStmtReturn(p0 *parse.ActionStmtReturn) a
 
 		// if there are no values, we dont return anything
 		return errReturn
-	})
+	}))
+	// <<< END PROFILE
 }
 
 func (i *interpreterPlanner) VisitActionStmtReturnNext(p0 *parse.ActionStmtReturnNext) any {
@@ -870,7 +987,8 @@ func (i *interpreterPlanner) VisitActionStmtReturnNext(p0 *parse.ActionStmtRetur
 		valFns[j] = v.Accept(i).(exprFunc)
 	}
 
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		vals := make([]value, len(p0.Values))
 		for j, valFn := range valFns {
 			val, err := valFn(exec)
@@ -888,7 +1006,8 @@ func (i *interpreterPlanner) VisitActionStmtReturnNext(p0 *parse.ActionStmtRetur
 
 		// we don't return an errReturn or mark done here because return next is not the last statement in an action.
 		return nil
-	})
+	}))
+	// <<< END PROFILE
 }
 
 // everything in this section is for expressions, which evaluate to exactly one value.
@@ -1559,7 +1678,8 @@ func (i *interpreterPlanner) VisitSQLStatement(p0 *parse.SQLStatement) any {
 	if err != nil {
 		panic(err)
 	}
-	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+	// <<< PROFILE: WRAP
+	return profileStmt(p0, getIdentifier(p0), stmtFunc(func(exec *executionContext, fn resultFunc) error {
 		reset, err := handleNamespaced(exec, p0)
 		if err != nil {
 			return err
@@ -1582,7 +1702,8 @@ func (i *interpreterPlanner) VisitSQLStatement(p0 *parse.SQLStatement) any {
 		}
 
 		return exec.query(raw, fn)
-	})
+	}))
+	// <<< END PROFILE
 }
 
 // here, we other top-level statements that are not covered by the other visitors.

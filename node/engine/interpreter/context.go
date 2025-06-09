@@ -3,6 +3,7 @@ package interpreter
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/kwilteam/kwil-db/common"
@@ -14,6 +15,21 @@ import (
 	"github.com/kwilteam/kwil-db/node/engine/planner/logical"
 	"github.com/kwilteam/kwil-db/node/types/sql"
 )
+
+// Define the structure for profiling results
+type ProfileRecord struct {
+	StartTime   time.Time     `json:"start_time"`
+	Duration    time.Duration `json:"duration_ns"`
+	DurationStr string        `json:"duration"`   // Human readable
+	NodeType    string        `json:"node_type"`  // e.g., "*parse.ActionStmtSQL"
+	Identifier  string        `json:"identifier"` // e.g., "SQL: SELECT id FROM users", "CALL: my_action", "ASSIGN: $my_var"
+	// You could add Position (Line/Col) here if the parse.Node provides it
+}
+
+// String provides a basic formatted output
+func (pr ProfileRecord) String() string {
+	return fmt.Sprintf("[%s] (%s) %s: %s", pr.DurationStr, pr.NodeType, pr.Identifier, pr.StartTime.Format("15:04:05.000000"))
+}
 
 // executionContext is the context of the entire execution.
 type executionContext struct {
@@ -38,6 +54,10 @@ type executionContext struct {
 	queryActive bool
 	// inAction is true if the execution is currently in an action.
 	inAction bool
+
+	// Add profiling fields
+	EnableProfiling bool             // Flag to turn profiling on/off
+	profileRecords  *[]ProfileRecord // Pointer so all subscopes add to the same slice
 }
 
 // subscope creates a new subscope execution context.
@@ -47,14 +67,42 @@ type executionContext struct {
 // It is used for when an action calls another action / extension method.
 func (e *executionContext) subscope(namespace string) *executionContext {
 	return &executionContext{
-		engineCtx:      e.engineCtx,
-		scope:          newScope(namespace),
-		canMutateState: e.canMutateState,
-		db:             e.db,
-		interpreter:    e.interpreter,
-		logs:           e.logs,
-		inAction:       true,
+		engineCtx:       e.engineCtx,
+		scope:           newScope(namespace),
+		canMutateState:  e.canMutateState,
+		db:              e.db,
+		interpreter:     e.interpreter,
+		logs:            e.logs,
+		EnableProfiling: e.EnableProfiling,
+		profileRecords:  e.profileRecords,
+		inAction:        true,
 	}
+}
+
+// addProfileRecord appends a record if profiling is enabled and the slice is initialized.
+func (e *executionContext) addProfileRecord(nodeType, identifier string, start time.Time, duration time.Duration) {
+	if !e.EnableProfiling || e.profileRecords == nil {
+		return
+	}
+	*e.profileRecords = append(*e.profileRecords, ProfileRecord{
+		StartTime:   start,
+		Duration:    duration,
+		DurationStr: duration.String(),
+		NodeType:    nodeType,
+		Identifier:  identifier,
+	})
+}
+
+// GetProfileRecords returns the collected profiling data.
+// The CALLER of the interpreter should call this at the very end.
+func (e *executionContext) GetProfileRecords() []ProfileRecord {
+	if e.profileRecords == nil {
+		return nil
+	}
+	// Return a copy
+	res := make([]ProfileRecord, len(*e.profileRecords))
+	copy(res, *e.profileRecords)
+	return res
 }
 
 // checkPrivilege checks that the current user has a privilege,
@@ -160,7 +208,11 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	e.queryActive = true
 	defer func() { e.queryActive = false }()
 
+	// <<< PROFILE: Time query preparation
+	startPrepare := time.Now()
 	generatedSQL, analyzed, args, err := e.prepareQuery(sql)
+	e.addProfileRecord("SQL_PREPARE", sql, startPrepare, time.Since(startPrepare))
+	// <<< END PROFILE
 	if err != nil {
 		return err
 	}
@@ -186,6 +238,11 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 		cols[i] = field.Name
 	}
 
+	// <<< PROFILE: Time actual DB execution
+	startExec := time.Now()
+	defer func() {
+		e.addProfileRecord("SQL_DB_EXEC", generatedSQL, startExec, time.Since(startExec))
+	}()
 	return query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
 		if len(scanValues) != len(cols) {
 			// should never happen, but just in case
@@ -204,6 +261,7 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 			Values:  vals,
 		})
 	}, args)
+	// <<< END PROFILE: defer handles the timing
 }
 
 func fromScanValues(scanVals []any) ([]value, error) {

@@ -726,14 +726,34 @@ func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, 
 	// and not returned as a top-level error.
 	err, ok = unwrapExecutionErr(err)
 	if ok {
+		// Add profiling results to logs if profiling is enabled
+		logs := *execCtx.logs
+		if execCtx.EnableProfiling && len(*execCtx.profileRecords) > 0 {
+			logs = append(logs, "=== PROFILING RESULTS ===")
+			for _, record := range *execCtx.profileRecords {
+				logs = append(logs, record.String())
+			}
+			logs = append(logs, "=== END PROFILING ===")
+		}
+
 		return &common.CallResult{
-			Logs:  *execCtx.logs,
+			Logs:  logs,
 			Error: err,
 		}, nil
 	}
 
+	// Add profiling results to logs if profiling is enabled
+	logs := *execCtx.logs
+	if execCtx.EnableProfiling && len(*execCtx.profileRecords) > 0 {
+		logs = append(logs, "=== PROFILING RESULTS ===")
+		for _, record := range *execCtx.profileRecords {
+			logs = append(logs, record.String())
+		}
+		logs = append(logs, "=== END PROFILING ===")
+	}
+
 	return &common.CallResult{
-		Logs: *execCtx.logs,
+		Logs: logs,
 	}, err
 }
 
@@ -763,13 +783,29 @@ func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, nam
 
 	logs := make([]string, 0)
 
+	// Check if profiling is enabled via transaction context
+	enableProfiling := false
+	if profilingValue, ok := txCtx.TxContext.Value("enable_profiling"); ok {
+		if enabled, ok := profilingValue.(bool); ok {
+			enableProfiling = enabled
+		}
+	}
+
+	var profileRecords *[]ProfileRecord
+	if enableProfiling {
+		records := make([]ProfileRecord, 0)
+		profileRecords = &records
+	}
+
 	e := &executionContext{
-		engineCtx:      txCtx,
-		scope:          newScope(namespace),
-		canMutateState: am.AccessMode() == sql.ReadWrite,
-		db:             db,
-		interpreter:    i,
-		logs:           &logs,
+		engineCtx:       txCtx,
+		scope:           newScope(namespace),
+		canMutateState:  am.AccessMode() == sql.ReadWrite,
+		db:              db,
+		interpreter:     i,
+		logs:            &logs,
+		EnableProfiling: enableProfiling,
+		profileRecords:  profileRecords,
 	}
 	e.scope.isTopLevel = toplevel
 
