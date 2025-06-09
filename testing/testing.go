@@ -51,6 +51,87 @@ func RunSchemaTest(t *testing.T, s SchemaTest, options *Options) {
 	}
 }
 
+// RunSchemaTestWithProfiling runs a SchemaTest with profiling enabled and logs all profiling results.
+// This automatically enables profiling and logs detailed execution timings.
+func RunSchemaTestWithProfiling(t *testing.T, s SchemaTest, options *Options) {
+	if options == nil {
+		options = &Options{
+			UseTestContainer: true,
+			Logger:           t,
+		}
+	}
+	if options.Logger == nil {
+		options.Logger = t
+	}
+
+	if s.Owner == "" {
+		s.Owner = string(deployer)
+	}
+
+	// Force enable profiling and logging
+	options.EnableProfiling = true
+	options.LogProfiling = true
+
+	err := s.Run(context.Background(), options)
+	if err != nil {
+		t.Fatalf("test failed: %s", err.Error())
+	}
+}
+
+// TestResults contains the results of running a schema test, including profiling data.
+type TestResults struct {
+	// TestCaseResults contains the results for each test case execution
+	TestCaseResults []TestCaseResult `json:"test_case_results"`
+	// FunctionResults contains the results for each custom function test
+	FunctionResults []FunctionResult `json:"function_results"`
+	// Success indicates whether all tests passed
+	Success bool `json:"success"`
+	// Error contains any error that occurred during test execution
+	Error string `json:"error,omitempty"`
+}
+
+// TestCaseResult contains the results of a single test case execution
+type TestCaseResult struct {
+	// Name is the name of the test case
+	Name string `json:"name"`
+	// Namespace is the database namespace
+	Namespace string `json:"namespace"`
+	// Action is the action that was executed
+	Action string `json:"action"`
+	// Success indicates whether the test passed
+	Success bool `json:"success"`
+	// Error contains any error that occurred
+	Error string `json:"error,omitempty"`
+	// Logs contains all logs from the execution, including profiling results
+	Logs []string `json:"logs"`
+	// ProfilingResults contains parsed profiling data (if profiling was enabled)
+	ProfilingResults []ProfilingResult `json:"profiling_results,omitempty"`
+}
+
+// FunctionResult contains the results of a custom function test
+type FunctionResult struct {
+	// Name is the identifier of the function test
+	Name string `json:"name"`
+	// Success indicates whether the test passed
+	Success bool `json:"success"`
+	// Error contains any error that occurred
+	Error string `json:"error,omitempty"`
+	// Logs contains any logs captured during execution
+	Logs []string `json:"logs"`
+}
+
+// ProfilingResult contains parsed profiling data for easier consumption
+type ProfilingResult struct {
+	// NodeType is the type of AST node (e.g., "SQL_PREPARE", "ACTION_CALL")
+	NodeType string `json:"node_type"`
+	// Identifier is a human-readable description of what was executed
+	Identifier string `json:"identifier"`
+	// Duration is the execution time in nanoseconds
+	Duration int64 `json:"duration"`
+	// DurationStr is a human-readable duration string
+	DurationStr string `json:"duration_str"`
+}
+
 // SchemaTest allows for testing schemas against a live database.
 // It allows for several ways of specifying schemas to deploy, as well
 // as functions that can be run against the schemas, and expected results.
@@ -433,6 +514,9 @@ func (e *TestCase) runExecution(ctx context.Context, platform *Platform) error {
 		}
 	}
 
+	// Capture profiling data if available
+	platform.AddProfilingData(res.Logs)
+
 	// Log profiling results if requested (either per test case or globally)
 	shouldLogProfiling := e.LogProfiling || e.EnableProfiling ||
 		(platform.Options != nil && (platform.Options.LogProfiling || platform.Options.EnableProfiling))
@@ -475,6 +559,9 @@ type Platform struct {
 
 	// lastTxid is the last transaction ID that was used.
 	lastTxid []byte
+
+	// ProfilingData collects profiling results from all executions if profiling is enabled
+	ProfilingData []ProfilingResult
 }
 
 // Txid returns a new, unused transaction ID.
@@ -530,10 +617,17 @@ func (p *Platform) NewTxContext(ctx context.Context, caller string, enableProfil
 func (p *Platform) CallWithProfiling(ctx context.Context, caller, namespace, action string, args []any, enableProfiling *bool, resultFn func(*common.Row) error) (*common.CallResult, error) {
 	txCtx := p.NewTxContext(ctx, caller, enableProfiling)
 
-	return p.Engine.Call(&common.EngineContext{
+	res, err := p.Engine.Call(&common.EngineContext{
 		TxContext:     txCtx,
 		OverrideAuthz: true,
 	}, p.DB, namespace, action, args, resultFn)
+
+	// Capture profiling data if available
+	if res != nil {
+		p.AddProfilingData(res.Logs)
+	}
+
+	return res, err
 }
 
 // ExecuteWithProfiling is a convenience method for custom test functions to execute SQL with profiling control.
@@ -544,6 +638,55 @@ func (p *Platform) ExecuteWithProfiling(ctx context.Context, caller, statement s
 		TxContext:     txCtx,
 		OverrideAuthz: true,
 	}, p.DB, statement, params, resultFn)
+}
+
+// parseProfilingFromLogs extracts profiling results from log strings
+func (p *Platform) parseProfilingFromLogs(logs []string) []ProfilingResult {
+	var results []ProfilingResult
+	inProfiling := false
+
+	for _, log := range logs {
+		if log == "=== PROFILING RESULTS ===" {
+			inProfiling = true
+			continue
+		}
+		if log == "=== END PROFILING ===" {
+			inProfiling = false
+			continue
+		}
+		if inProfiling && log != "" {
+			// Parse log format: "NodeType: Identifier (Duration)"
+			// Example: "SQL_PREPARE: SELECT * FROM users (1.234ms)"
+			if parts := strings.Split(log, ": "); len(parts) >= 2 {
+				nodeType := parts[0]
+				rest := strings.Join(parts[1:], ": ")
+
+				// Extract duration from parentheses
+				if idx := strings.LastIndex(rest, "("); idx != -1 {
+					identifier := strings.TrimSpace(rest[:idx])
+					durationStr := strings.Trim(rest[idx+1:], "() ")
+
+					// Parse duration
+					if duration, err := time.ParseDuration(durationStr); err == nil {
+						results = append(results, ProfilingResult{
+							NodeType:    nodeType,
+							Identifier:  identifier,
+							Duration:    duration.Nanoseconds(),
+							DurationStr: durationStr,
+						})
+					}
+				}
+			}
+		}
+	}
+	return results
+}
+
+// AddProfilingData adds profiling results to the platform's collection
+func (p *Platform) AddProfilingData(logs []string) {
+	if p.Options != nil && (p.Options.EnableProfiling || p.Options.LogProfiling) {
+		p.ProfilingData = append(p.ProfilingData, p.parseProfilingFromLogs(logs)...)
+	}
 }
 
 // runWithPostgres runs the callback function with a postgres container.
