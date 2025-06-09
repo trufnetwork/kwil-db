@@ -3012,9 +3012,98 @@ func newValueWithSoftCast(v any, dt *types.DataType) (val value, ok bool, err er
 	return val, true, nil
 }
 
+// copySingleDimArray performs a deep copy of the slice data for singleDimArray
+func copySingleDimArray[T any](original *singleDimArray[T]) singleDimArray[T] {
+	if original == nil {
+		return newNullArray[T]()
+	}
+	// Shallow copy struct fields first (Valid, Dims header, Elements header)
+	newArr := *original
+
+	// Deep copy Dims slice
+	if len(original.Dims) > 0 {
+		newArr.Dims = make([]pgtype.ArrayDimension, len(original.Dims))
+		copy(newArr.Dims, original.Dims)
+	}
+
+	// Deep copy Elements slice
+	if original.Valid {
+		// make a slice with capacity to allow for efficient append later via Set()
+		newArr.Elements = make([]T, len(original.Elements), len(original.Elements)+1)
+		copy(newArr.Elements, original.Elements)
+	}
+	// if !original.Valid, Elements will be nil, which is correct
+	return newArr
+}
+
+// copyArray efficiently deep copies an arrayValue by copying the underlying slice,
+// avoiding the slow stringify/parse cycle of copyVal.
+func copyArray(v arrayValue) (arrayValue, error) {
+	if v == nil || v.Null() {
+		// Return a correctly typed NULL array
+		nullVal, err := makeNull(v.Type())
+		if err != nil {
+			return nil, err
+		}
+		arr, ok := nullVal.(arrayValue)
+		if !ok {
+			// Should not happen for array types, but handle defensively
+			return nil, fmt.Errorf("makeNull returned non-array type for %v", v.Type())
+		}
+		return arr, nil
+	}
+
+	switch original := v.(type) {
+	case *int8ArrayValue:
+		newArr := &int8ArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *textArrayValue:
+		newArr := &textArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *boolArrayValue:
+		newArr := &boolArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *blobArrayValue:
+		newArr := &blobArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		// Note: this copies the blobValue structs, which contain []byte headers.
+		// If true deep-copy of each []byte was needed, we'd iterate.
+		// However, for append, copying the headers is sufficient as elements aren't mutated.
+		return newArr, nil
+	case *uuidArrayValue:
+		newArr := &uuidArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *decimalArrayValue:
+		newArr := &decimalArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		// Copy metadata pointer if it exists
+		if original.metadata != nil {
+			metaCopy := *original.metadata
+			newArr.metadata = &metaCopy
+		}
+		return newArr, nil
+	case *nullValue:
+		// Handles the case where the array itself is the generic NULL type
+		return &nullValue{}, nil
+	case *arrayOfNulls:
+		// Just copy the struct for arrayOfNulls
+		newArr := *original
+		return &newArr, nil
+	default:
+		// Fallback or error. For safety, we error.
+		// We could optionally fallback: return copyVal(v)
+		return nil, fmt.Errorf("unsupported array type for efficient copyArray: %T", v)
+	}
+}
+
 // copyVal deep copies a value.
 // There are certainly more efficient ways to do this, but I am doing this
 // under a time constraint.
+// NOTE: This is slow, use copyArray for array types where possible.
 func copyVal[V value](v V) (V, error) {
 	// all errors returned in this function signal some sort of
 	// internal bug, and not a user error.
