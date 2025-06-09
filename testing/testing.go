@@ -491,6 +491,61 @@ func (p *Platform) Txid() string {
 	return hex.EncodeToString(b[:])
 }
 
+// NewTxContext creates a new transaction context for custom test functions.
+// If enableProfiling is true, profiling will be enabled for this context.
+// If enableProfiling is false, it will use the global profiling setting from Options.
+func (p *Platform) NewTxContext(ctx context.Context, caller string, enableProfiling *bool) *common.TxContext {
+	if caller == "" {
+		caller = string(p.Deployer)
+	}
+
+	txCtx := &common.TxContext{
+		Ctx:    ctx,
+		Signer: []byte(caller),
+		Caller: caller,
+		TxID:   p.Txid(),
+		BlockContext: &common.BlockContext{
+			Height: 0,
+		},
+	}
+
+	// Determine if profiling should be enabled
+	shouldEnableProfiling := false
+	if enableProfiling != nil {
+		// Explicit override
+		shouldEnableProfiling = *enableProfiling
+	} else if p.Options != nil {
+		// Use global setting
+		shouldEnableProfiling = p.Options.EnableProfiling
+	}
+
+	if shouldEnableProfiling {
+		txCtx.SetValue("enable_profiling", true)
+	}
+
+	return txCtx
+}
+
+// CallWithProfiling is a convenience method for custom test functions to call actions with profiling control.
+func (p *Platform) CallWithProfiling(ctx context.Context, caller, namespace, action string, args []any, enableProfiling *bool, resultFn func(*common.Row) error) (*common.CallResult, error) {
+	txCtx := p.NewTxContext(ctx, caller, enableProfiling)
+
+	return p.Engine.Call(&common.EngineContext{
+		TxContext:     txCtx,
+		OverrideAuthz: true,
+	}, p.DB, namespace, action, args, resultFn)
+}
+
+// ExecuteWithProfiling is a convenience method for custom test functions to execute SQL with profiling control.
+func (p *Platform) ExecuteWithProfiling(ctx context.Context, caller, statement string, params map[string]any, enableProfiling *bool, resultFn func(*common.Row) error) error {
+	txCtx := p.NewTxContext(ctx, caller, enableProfiling)
+
+	return p.Engine.Execute(&common.EngineContext{
+		TxContext:     txCtx,
+		OverrideAuthz: true,
+	}, p.DB, statement, params, resultFn)
+}
+
 // runWithPostgres runs the callback function with a postgres container.
 func runWithPostgres(ctx context.Context, opts *Options, fn func(context.Context, *pg.DB, Logger) error) (err error) {
 	if !opts.UseTestContainer {
