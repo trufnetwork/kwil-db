@@ -298,50 +298,6 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 	}()
 }
 
-// startTxAnns handles periodic reannouncement. It can also be modified to
-// regularly create dummy transactions.
-func (n *Node) startTxAnns(ctx context.Context, reannouncePeriod time.Duration) {
-	n.wg.Add(1)
-	go func() {
-		defer n.wg.Done()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(reannouncePeriod):
-			}
-
-			func() {
-				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
-
-				const sendN = 200
-				const sendBtsLimit = 8_000_000
-				txns := n.mp.PeekN(sendN, sendBtsLimit)
-				if len(txns) == 0 {
-					return // from this anon func, not the goroutine!
-				}
-				n.log.Infof("re-announcing %d unconfirmed txns", len(txns))
-
-				var numSent, bytesSent int64
-				for _, tx := range txns {
-					rawTx := tx.Bytes()
-					n.queueTxn(ctx, tx.Hash(), rawTx, n.host.ID()) // response handling is async
-					if ctx.Err() != nil {
-						n.log.Warn("interrupting long re-broadcast")
-						break
-					}
-					numSent++
-					bytesSent += int64(len(rawTx))
-				}
-
-				mets.TxnsReannounced(ctx, numSent, bytesSent)
-			}()
-		}
-	}()
-}
-
 // startOrderedTxQueueAnns ensures that transaction announcements are broadcasted
 // in the order they are received, maintaining FIFO order for nonce consistency.
 func (n *Node) startOrderedTxQueueAnns(ctx context.Context) {

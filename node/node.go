@@ -52,11 +52,6 @@ var mets metrics.NodeMetrics = metrics.Node
 // versions should not communicate (TODO).
 const AppVersion = 1
 
-const (
-	blockTxCount    = 50 // for "mining"
-	txReAnnInterval = 30 * time.Second
-)
-
 type peerManager interface {
 	network.Notifiee
 	Start(context.Context) error
@@ -340,11 +335,6 @@ func (n *Node) Start(ctx context.Context) error {
 			cancel()
 			return err
 		} */
-
-	// custom stream-based gossip uses txAnnStreamHandler and announceTx.
-	// This dummy method will make create+announce new pretend transactions.
-	// It also periodically rebroadcasts txns.
-	n.startTxAnns(ctx, txReAnnInterval)
 
 	// mine is our block anns goroutine, which must be only for leader
 	n.wg.Add(1)
