@@ -63,15 +63,13 @@ var (
 	execCounter       metric.Int64Counter
 
 	// Node / p2p metrics
-	numPeersGauge            metric.Int64Gauge
-	downloadedBlocksCounter  metric.Int64Counter
-	servedBlocksCounter      metric.Int64Counter
-	servedBlockBytesCounter  metric.Int64Counter
-	advertisementCounter     metric.Int64Counter
-	advertiseRejectCounter   metric.Int64Counter
-	advertiseAcceptCounter   metric.Int64Counter
-	txReannounceCounter      metric.Int64Counter
-	txReannounceBytesCounter metric.Int64Counter
+	numPeersGauge           metric.Int64Gauge
+	downloadedBlocksCounter metric.Int64Counter
+	servedBlocksCounter     metric.Int64Counter
+	servedBlockBytesCounter metric.Int64Counter
+	advertisementCounter    metric.Int64Counter
+	advertiseRejectCounter  metric.Int64Counter
+	advertiseAcceptCounter  metric.Int64Counter
 
 	// Block store metrics
 	bsBlocksStoredCounter          metric.Int64Counter
@@ -130,8 +128,6 @@ func init() {
 	advertisementCounter, _ = nodeMeter.Int64Counter("node.advertisements_sent.count")
 	advertiseRejectCounter, _ = nodeMeter.Int64Counter("node.advertisements_sent.reject.count")
 	advertiseAcceptCounter, _ = nodeMeter.Int64Counter("node.advertisements_sent.accept.count")
-	txReannounceCounter, _ = nodeMeter.Int64Counter("node.tx_reannounce.count")
-	txReannounceBytesCounter, _ = nodeMeter.Int64Counter("node.tx_reannounce.bytes")
 	// rebroadcasts etc...
 
 	// Consensus metrics
@@ -187,7 +183,6 @@ type NodeMetrics interface {
 	Advertised(ctx context.Context, protocol string)
 	AdvertiseRejected(ctx context.Context, protocol string)
 	AdvertiseServed(ctx context.Context, protocol string, contentLen int64)
-	TxnsReannounced(ctx context.Context, num, totalSize int64)
 }
 
 type nodeMetrics struct{}
@@ -229,13 +224,6 @@ func (nodeMetrics) AdvertiseServed(ctx context.Context, protocol string, content
 		metric.WithAttributes(attribute.String("proto", protocol),
 			attribute.Int64("size", contentLen)),
 	)
-}
-
-func (nodeMetrics) TxnsReannounced(ctx context.Context, num, totalSize int64) {
-	txReannounceCounter.Add(ctx, num,
-		metric.WithAttributes(attribute.Int64("size", totalSize)),
-	)
-	txReannounceBytesCounter.Add(ctx, totalSize)
 }
 
 type DBMetrics interface {
