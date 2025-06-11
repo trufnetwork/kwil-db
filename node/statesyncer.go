@@ -606,7 +606,7 @@ func (s *StateSyncService) bestSnapshot() (*snapshotMetadata, error) {
 	return best, nil
 }
 
-// VerifySnapshot verifies the final state of the application after the DB is restored from the snapshot.
+// verifyState verifies the final state of the application after the DB is restored from the snapshot.
 func (s *StateSyncService) verifyState(ctx context.Context, snapshot *snapshotMetadata) error {
 	tx, err := s.db.BeginReadTx(ctx)
 	if err != nil {
@@ -697,7 +697,7 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	return nil
 }
 
-// decompressAndValidateChunkStreams decompresses the chunk streams and validates the snapshot hash
+// decompressAndValidateSnapshotHash decompresses the chunk streams and validates the snapshot hash
 func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snapshotHash []byte) error {
 	hasher := sha256.New()
 	_, err := io.Copy(io.MultiWriter(output, hasher), reader)
