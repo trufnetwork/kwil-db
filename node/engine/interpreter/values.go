@@ -2664,7 +2664,7 @@ var _ driver.Valuer = (*arrayOfNulls)(nil)
 var _ arrayValue = (*arrayOfNulls)(nil)
 
 func (n *arrayOfNulls) Len() int32 {
-	return n.length + 1 // 1-based
+	return n.length
 }
 
 func (n *arrayOfNulls) Get(i int32) (scalarValue, error) {
@@ -2672,31 +2672,50 @@ func (n *arrayOfNulls) Get(i int32) (scalarValue, error) {
 }
 
 func (n *arrayOfNulls) Value() (driver.Value, error) {
-	// returning an array of null TEXT matches the behavior of Postgres.
-	// psql:
-	// postgres=# select pg_typeof(array[null]);
-	// pg_typeof
-	// -----------
-	//  text[]
+	// We encode as TEXT[] full of NULLs, mirroring Postgres.
 	sd := newValidArr(make([]pgtype.Text, n.length))
-	for i := int32(1); i <= n.length; i++ {
-		sd.Elements[i-1] = pgtype.Text{Valid: false}
+	for i := int32(0); i < n.length; i++ {
+		sd.Elements[i] = pgtype.Text{Valid: false}
 	}
 	return sd.Value()
 }
 
 func (n *arrayOfNulls) Set(i int32, v scalarValue) error {
-	// if the incoming value is a null value, then we simply expand
-	// the array to the new length. If it is not a null value, then we
-	// will convert the null array to that type.
+	if i < 1 {
+		return engine.ErrIndexOutOfBounds
+	}
+
+	// If the incoming value is NULL we simply expand the length and keep the
+	// current array-of-nulls representation.
+	if v.Null() {
+		if i > n.length {
+			n.length = i
+		}
+		return nil
+	}
+
+	// Non-null value: convert to the appropriate concrete array type and then
+	// delegate the Set.  We mimic the previous behaviour by creating the array
+	// on the fly and setting the element, but because callers ignore the
+	// returned array we just perform the operation and return.
 	vt := v.Type().Copy()
 	vt.IsArray = true
-	newVal, err := v.Cast(vt)
+
+	newVal, err := newZeroValue(vt)
 	if err != nil {
 		return err
 	}
 
-	return newVal.(arrayValue).Set(i, v)
+	concreteArr := newVal.(arrayValue)
+
+	// Copy existing NULLs
+	for idx := int32(1); idx <= n.length; idx++ {
+		if err := concreteArr.Set(idx, &nullValue{}); err != nil {
+			return err
+		}
+	}
+
+	return concreteArr.Set(i, v)
 }
 
 func (n *arrayOfNulls) Type() *types.DataType {
@@ -3039,18 +3058,15 @@ func copySingleDimArray[T any](original *singleDimArray[T]) singleDimArray[T] {
 // copyArray efficiently deep copies an arrayValue by copying the underlying slice,
 // avoiding the slow stringify/parse cycle of copyVal.
 func copyArray(v arrayValue) (arrayValue, error) {
-	if v == nil || v.Null() {
-		// Return a correctly typed NULL array
+	if v == nil {
+		return nil, fmt.Errorf("copyArray: nil input")
+	}
+	if v.Null() {
 		nullVal, err := makeNull(v.Type())
 		if err != nil {
 			return nil, err
 		}
-		arr, ok := nullVal.(arrayValue)
-		if !ok {
-			// Should not happen for array types, but handle defensively
-			return nil, fmt.Errorf("makeNull returned non-array type for %v", v.Type())
-		}
-		return arr, nil
+		return nullVal.(arrayValue), nil
 	}
 
 	switch original := v.(type) {
