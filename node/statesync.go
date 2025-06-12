@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"bufio"
+
 	"github.com/kwilteam/kwil-db/config"
 	"github.com/kwilteam/kwil-db/core/log"
 	ktypes "github.com/kwilteam/kwil-db/core/types"
@@ -213,11 +215,12 @@ func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
 	}
 }
 
-// verifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
+// VerifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
 // Returns VerificationValid with app hash if valid, VerificationInvalid if rejected by provider,
 // or VerificationFailed if unable to verify due to network issues.
 func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMetadata) (VerificationResult, []byte) {
 	networkErrorCount := 0
+	sentinelCount := 0 // providers responded with noData sentinel (snapshot absent)
 	totalProviders := len(ss.trustedProviders)
 
 	// verify the snapshot
@@ -251,14 +254,33 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		}
 
 		stream.SetReadDeadline(time.Now().Add(time.Duration(ss.cfg.MetadataTimeout)))
-		var meta snapshotMetadata
-		if err := json.NewDecoder(stream).Decode(&meta); err != nil {
-			ss.log.Warn("failed to decode snapshot metadata", "provider", provider.ID.String(), "error", err)
+
+		br := bufio.NewReader(stream)
+
+		// Peek a single byte
+		first, err := br.Peek(1)
+		if err != nil {
+			ss.log.Warn("failed to peek snapshot metadata", "provider", provider.ID.String(), "error", err)
 			stream.Close()
 			networkErrorCount++
 			continue
 		}
-		stream.Close()
+
+		// If that byte is the sentinel → invalid snapshot
+		if first[0] == 0 {
+			ss.log.Info("trusted provider lacks snapshot", "provider", provider.ID.String(), "height", snap.Height)
+			sentinelCount++
+			continue
+		}
+
+		// Otherwise decode JSON without loading the whole thing
+		var meta snapshotMetadata
+		dec := json.NewDecoder(br)
+		if err := dec.Decode(&meta); err != nil {
+			ss.log.Warn("failed to decode snapshot metadata", "provider", provider.ID.String(), "error", err)
+			networkErrorCount++
+			continue
+		}
 
 		// verify the snapshot metadata
 		if snap.Height != meta.Height || snap.Format != meta.Format || snap.Chunks != meta.Chunks {
@@ -288,16 +310,26 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 		return VerificationValid, meta.AppHash
 	}
 
-	// If we got here, we couldn't verify with any provider
-	if networkErrorCount == totalProviders {
-		// All providers had network errors - this is likely a connectivity issue, not snapshot invalidity
+	// If we got here, none of the providers produced valid metadata
+
+	if sentinelCount == totalProviders { // everyone said they don't have it
+		return VerificationInvalid, nil
+	}
+
+	if networkErrorCount == totalProviders { // all had network errors
 		ss.log.Warn("Failed to verify snapshot due to network connectivity issues with all trusted providers",
 			"snapshot_height", snap.Height, "providers_tried", totalProviders)
 		return VerificationFailed, nil
-	} else {
-		// Some providers were reachable but rejected the snapshot - it's invalid
+	}
+
+	// Mixed responses: some sentinels, some network errors, but no valid metadata
+	if sentinelCount+networkErrorCount == totalProviders {
+		// At least one sentinel (no snapshot) but others network issues – treat as invalid to avoid endless retries
 		return VerificationInvalid, nil
 	}
+
+	// Fallback
+	return VerificationFailed, nil
 }
 
 // snapshotPool keeps track of snapshots that have been discovered from the snapshot providers.
