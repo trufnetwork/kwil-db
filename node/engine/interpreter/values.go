@@ -1674,31 +1674,37 @@ func setArr[T, B any](arr internalArray[T], i int32, v scalarValue, fn func(B) T
 
 	pgArr := arr.pgtypeArr()
 
-	// in postgres, if we have array [1,2], and we set to index 4, it will allocate
-	// positions 3 and 4. We do the same here.
-	// if the index is greater than the length of the array, we need to allocate
-	// enough space to set the value.
-	if i > int32(len(pgArr.Elements)) {
-		// Allocate enough space to set the value.
-		// This matches the behavior of Postgres.
-		newVal := make([]T, i)
+	currentLen := int32(len(pgArr.Elements))
 
-		// copy the existing values into the new array
-		copy(newVal, pgArr.Elements)
+	// Postgres semantics: if the index is beyond the current length we must
+	// extend the array.  Optimise for the very common append-by-one case where
+	// copySingleDimArray has already reserved capacity.
 
-		// set the new values to a valid null value
-		for j := len(pgArr.Elements); j < int(i); j++ {
-			nn, err := makeNull()
-			if err != nil {
-				return err
+	if i > currentLen {
+		// Fast-path: appending exactly one element and capacity already exists.
+		if i == currentLen+1 && cap(pgArr.Elements) >= int(i) {
+			// Simply grow slice length within existing capacity.
+			pgArr.Elements = pgArr.Elements[:i]
+			pgArr.Dims[0] = pgtype.ArrayDimension{Length: i, LowerBound: 1}
+			pgArr.Valid = true
+		} else {
+			// General path: allocate a new slice large enough, copy, null-fill.
+			newVal := make([]T, i)
+			copy(newVal, pgArr.Elements)
+
+			// Fill any gaps (and the new slot) with typed NULLs; the final slot
+			// will be overwritten below.
+			for j := int(currentLen); j < int(i); j++ {
+				nn, err := makeNull()
+				if err != nil {
+					return err
+				}
+				newVal[j] = nn
 			}
-			newVal[j] = nn
-		}
 
-		pgArr.Elements = newVal
-		pgArr.Dims[0] = pgtype.ArrayDimension{
-			Length:     i,
-			LowerBound: 1,
+			pgArr.Elements = newVal
+			pgArr.Dims[0] = pgtype.ArrayDimension{Length: i, LowerBound: 1}
+			pgArr.Valid = true
 		}
 	}
 
