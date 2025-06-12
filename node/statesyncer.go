@@ -36,6 +36,12 @@ var (
 	ErrNoSnapshotsDiscovered = errors.New("no snapshots discovered")
 )
 
+// verificationBackoff is the time to wait before retrying the same snapshot
+// after a VerificationFailed result (all trusted providers unreachable). This
+// prevents a tight retry loop that can spam logs and consume CPU when the
+// provider is temporarily offline.
+const verificationBackoff = 5 * time.Second
+
 // DiscoverSnapshots discovers snapshot providers and their catalogs. It waits for responsesp
 // from snapshot catalog providers for the duration of the discoveryTimeout. If the timeout is reached,
 // the best snapshot is selected and snapshot chunks are requested. If no snapshots are discovered,
@@ -146,9 +152,14 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 			s.cleanupInvalidSnapshot(bestSnapshot)
 			continue
 		case VerificationFailed:
-			// Verification failed due to network issues - don't blacklist, just retry
-			s.log.Warn("Failed to verify snapshot due to network issues, will retry without blacklisting",
-				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+			// Verification failed due to network issues - don't blacklist yet, but back off
+			s.log.Warn("Failed to verify snapshot due to network issues, backing off before retry",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash), "backoff", verificationBackoff)
+			select {
+			case <-time.After(verificationBackoff):
+			case <-ctx.Done():
+				return false, nil, ctx.Err()
+			}
 			continue
 		case VerificationValid:
 			// Snapshot is valid, proceed with download

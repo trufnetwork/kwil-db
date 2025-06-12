@@ -177,7 +177,7 @@ func TestStateSyncService(t *testing.T) {
 
 	// Validate the snapshot should fail as the trusted provider does not have the snapshot
 	verificationResult, _ := ss3.VerifySnapshot(ctx, snap1)
-	assert.Equal(t, VerificationFailed, verificationResult)
+	assert.Equal(t, VerificationInvalid, verificationResult)
 
 	// add snap1 to the trusted provider
 	st1.addSnapshot(snap1)
