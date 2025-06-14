@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -3100,9 +3101,16 @@ func copyArray(v arrayValue) (arrayValue, error) {
 	case *blobArrayValue:
 		newArr := &blobArrayValue{}
 		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
-		// Note: this copies the blobValue structs, which contain []byte headers.
-		// If true deep-copy of each []byte was needed, we'd iterate.
-		// However, for append, copying the headers is sufficient as elements aren't mutated.
+		// The copy is shallow for blob values, so we must manually deep copy the bytes.
+		if newArr.Valid {
+			for i := range newArr.Elements {
+				if newArr.Elements[i].bts != nil {
+					newBts := make([]byte, len(newArr.Elements[i].bts))
+					copy(newBts, newArr.Elements[i].bts)
+					newArr.Elements[i].bts = newBts
+				}
+			}
+		}
 		return newArr, nil
 	case *uuidArrayValue:
 		newArr := &uuidArrayValue{}
@@ -3115,6 +3123,16 @@ func copyArray(v arrayValue) (arrayValue, error) {
 		if original.metadata != nil {
 			metaCopy := *original.metadata
 			newArr.metadata = &metaCopy
+		}
+		// The copy is shallow for decimal/numeric values, so we must manually deep copy the big.Int.
+		if newArr.Valid {
+			for i := range newArr.Elements {
+				if newArr.Elements[i].Int != nil {
+					newInt := new(big.Int)
+					newInt.Set(newArr.Elements[i].Int)
+					newArr.Elements[i].Int = newInt
+				}
+			}
 		}
 		return newArr, nil
 	case *nullValue:
