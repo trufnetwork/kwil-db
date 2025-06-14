@@ -2204,6 +2204,20 @@ func Test_Actions(t *testing.T) {
 			action:      "test_untyped_null_array",
 			errContains: "type cast error",
 		},
+		{
+			name: "null numeric array",
+			stmt: []string{
+				`CREATE ACTION smth_null($arr numeric(10,5)[]) public returns (numeric(10,5)[]) {
+					$arr := array_append($arr, 1.0::numeric(10,5));
+					RETURN $arr;
+				}`,
+			},
+			action: "smth_null",
+			values: []any{nil},
+			results: [][]any{
+				{[]*types.Decimal{mustExplicitDecimal("1.00000", 10, 5)}},
+			},
+		},
 	}
 
 	db := newTestDB(t, nil, nil)
