@@ -1689,11 +1689,20 @@ func setArr[T, B any](arr internalArray[T], i int32, v scalarValue, fn func(B) T
 			pgArr.Valid = true
 		} else {
 			// General path: allocate a new slice large enough, copy, null-fill.
-			newVal := make([]T, i)
+			// Exponential-growth strategy: double capacity until it fits i.
+			newCap := cap(pgArr.Elements)
+			if newCap == 0 {
+				newCap = 1
+			}
+			for newCap < int(i) {
+				newCap *= 2
+			}
+
+			// Allocate slice with len=i and the computed capacity.
+			newVal := make([]T, i, newCap)
 			copy(newVal, pgArr.Elements)
 
-			// Fill any gaps (and the new slot) with typed NULLs; the final slot
-			// will be overwritten below.
+			// Fill any new positions (including the slot at i-1) with typed NULLs.
 			for j := int(currentLen); j < int(i); j++ {
 				nn, err := makeNull()
 				if err != nil {
