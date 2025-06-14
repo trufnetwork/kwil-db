@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -3123,16 +3122,6 @@ func copyArray(v arrayValue) (arrayValue, error) {
 		if original.metadata != nil {
 			metaCopy := *original.metadata
 			newArr.metadata = &metaCopy
-		}
-		// The copy is shallow for decimal/numeric values, so we must manually deep copy the big.Int.
-		if newArr.Valid {
-			for i := range newArr.Elements {
-				if newArr.Elements[i].Int != nil {
-					newInt := new(big.Int)
-					newInt.Set(newArr.Elements[i].Int)
-					newArr.Elements[i].Int = newInt
-				}
-			}
 		}
 		return newArr, nil
 	case *nullValue:
