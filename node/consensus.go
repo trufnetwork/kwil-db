@@ -23,6 +23,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// FAR_AHEAD_THRESHOLD specifies how many blocks ahead of our current height a
+// proposal must be before we ignore it.  Proposals that far in the future are
+// almost certainly spam or belong to another fork and would otherwise flood
+// the logs.  The value 100 was chosen empirically: it easily covers ordinary
+// catch-up gaps while still surfacing genuine fork scenarios.
 const FAR_AHEAD_THRESHOLD = int64(100)
 
 type (

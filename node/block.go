@@ -21,6 +21,19 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// Block-sync peer-sampling
+//
+// Historical bug: querying only a small fixed fraction (⌈N·0.2⌉, minimum 1)
+// of peers could pick a single behind-height peer and stall block sync.  The
+// revised algorithm below fixes that by:
+//   - keeping a lightweight "peer → best height" cache updated on every
+//     announcement or block response,
+//   - skipping peers that are definitely behind, and
+//   - scaling the sample size with network size (all peers for ≤5, ≥3 or ⅓ for
+//     ≤15, and ≥3 or ⅕ thereafter).
+//
+// When the cache is stale we fall back to the full peer set, so liveness is
+// preserved at the cost of extra bandwidth.
 const (
 	blkReadLimit          = 300_000_000
 	defaultBlkGetTimeout  = 90 * time.Second
@@ -34,7 +47,12 @@ type peerInfo struct {
 	seenAt time.Time
 }
 
-var peerBest sync.Map // map[peer.ID]*peerInfo
+// peerBest remembers the highest block height we have *ever* seen from each
+// peer.  It is an opportunistic heuristic: if we know a peer is at height 10
+// and we need block 20, we can skip querying it.  Entries are evicted by
+// gcPeerCache; if we evict too aggressively we merely sample the peer again
+// later.  sync.Map lets hot paths read/write without explicit locks.
+var peerBest sync.Map // map[peer.ID]peerInfo
 
 func (n *Node) blkGetStreamHandler(s network.Stream) {
 	defer s.Close()
@@ -686,6 +704,9 @@ func (n *Node) BlockResultByHash(hash types.Hash) ([]ktypes.TxResult, error) {
 }
 
 func gcPeerCache() {
+	// gcPeerCache runs from a ticker started in node.Start.
+	// It trims the peerBest map by removing entries that are older than
+	// cacheTTL or when the map grows beyond maxEntries.
 	now := time.Now()
 	var count int
 	peerBest.Range(func(k, v any) bool { count++; return true })
