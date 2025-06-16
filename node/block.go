@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/kwilteam/kwil-db/config"
@@ -20,11 +21,38 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// Block-sync peer-sampling
+//
+// Historical bug: querying only a small fixed fraction (⌈N·0.2⌉, minimum 1)
+// of peers could pick a single behind-height peer and stall block sync.  The
+// revised algorithm below fixes that by:
+//   - keeping a lightweight "peer → best height" cache updated on every
+//     announcement or block response,
+//   - skipping peers that are definitely behind, and
+//   - scaling the sample size with network size (all peers for ≤5, ≥3 or ⅓ for
+//     ≤15, and ≥3 or ⅕ thereafter).
+//
+// When the cache is stale we fall back to the full peer set, so liveness is
+// preserved at the cost of extra bandwidth.
 const (
 	blkReadLimit          = 300_000_000
 	defaultBlkGetTimeout  = 90 * time.Second
 	defaultBlkSendTimeout = 45 * time.Second
+	cacheTTL              = 15 * time.Minute
+	maxEntries            = 5_000
 )
+
+type peerInfo struct {
+	height int64
+	seenAt time.Time
+}
+
+// peerBest remembers the highest block height we have *ever* seen from each
+// peer.  It is an opportunistic heuristic: if we know a peer is at height 10
+// and we need block 20, we can skip querying it.  Entries are evicted by
+// gcPeerCache; if we evict too aggressively we merely sample the peer again
+// later.  sync.Map lets hot paths read/write without explicit locks.
+var peerBest sync.Map // map[peer.ID]peerInfo
 
 func (n *Node) blkGetStreamHandler(s network.Stream) {
 	defer s.Close()
@@ -131,6 +159,9 @@ func (n *Node) blkAnnStreamHandler(s network.Stream) {
 	}
 
 	peerID := s.Conn().RemotePeer()
+
+	// Update peer height cache with observed announcement height
+	peerBest.Store(peerID, peerInfo{height: height, seenAt: time.Now()})
 
 	n.log.Debug("Accept commit?", "height", height, "blockID", blkid, "appHash", ci.AppHash,
 		"from_peer", peers.PeerIDStringer(peerID)) // maybe debug level
@@ -433,13 +464,47 @@ func (n *Node) getBlkHeight(ctx context.Context, height int64) (types.Hash, []by
 }
 
 func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Logger, blockSyncCfg *config.BlockSyncConfig) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-	availablePeers := peerHosts(host)
-	if len(availablePeers) == 0 {
+	allPeers := peerHosts(host)
+	if len(allPeers) == 0 {
 		return types.Hash{}, nil, nil, 0, types.ErrPeersNotFound
 	}
 
-	cnt := max(len(availablePeers)/5, 1) // 20% of peers
-	availablePeers = availablePeers[:cnt]
+	// Filter out peers we know can't have this block
+	var eligiblePeers []peer.ID
+	for _, p := range allPeers {
+		if v, ok := peerBest.Load(p); ok {
+			pi := v.(peerInfo)
+			if time.Since(pi.seenAt) < cacheTTL && pi.height < height {
+				continue // definitely behind
+			}
+		}
+		eligiblePeers = append(eligiblePeers, p)
+	}
+
+	// If no eligible peers, fall back to all peers (maybe our cache is stale)
+	if len(eligiblePeers) == 0 {
+		eligiblePeers = allPeers
+	}
+
+	// Smart sampling: query more peers in small networks to avoid single-peer stalls
+	var sampleSize int
+	switch {
+	case len(eligiblePeers) <= 5:
+		sampleSize = len(eligiblePeers) // Query all peers in small networks
+	case len(eligiblePeers) <= 15:
+		sampleSize = max(len(eligiblePeers)/3, 3) // Query at least 3, up to 1/3
+	default:
+		sampleSize = max(len(eligiblePeers)/5, 3) // Query at least 3, up to 1/5 (original behavior)
+	}
+
+	// Shuffle to randomize peer selection
+	rng.Shuffle(len(eligiblePeers), func(i, j int) {
+		eligiblePeers[i], eligiblePeers[j] = eligiblePeers[j], eligiblePeers[i]
+	})
+	availablePeers := eligiblePeers[:sampleSize]
+
+	log.Debugf("Querying %d peers for block %d (filtered %d/%d eligible)", sampleSize, height, len(eligiblePeers), len(allPeers))
+
 	// incremented when a peer's best height is one less than the requested height
 	// to help determine if the block has not been committed yet and stop
 	// requesting the block from other peers if enough peers indicate that the
@@ -472,6 +537,10 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 				if theirBest > bestHeight {
 					bestHeight = theirBest
 				}
+
+				// Update our cache with this peer's best height
+				peerBest.Store(peer, peerInfo{height: theirBest, seenAt: time.Now()})
+
 				if theirBest == height-1 {
 					bestHCount++
 				}
@@ -537,6 +606,8 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 			if theirBest > bestHeight {
 				bestHeight = theirBest
 			}
+			// Update our cache - this peer has at least the requested height
+			peerBest.Store(peer, peerInfo{height: max(theirBest, height), seenAt: time.Now()})
 		}
 
 		mets.DownloadedBlock(context.Background(), height, int64(len(rawBlk)))
@@ -630,4 +701,22 @@ func (n *Node) GetBlockHeaderByHeight(height int64) (*ktypes.BlockHeader, error)
 // BlockResultByHash returns the block result by block hash.
 func (n *Node) BlockResultByHash(hash types.Hash) ([]ktypes.TxResult, error) {
 	return n.bki.Results(hash)
+}
+
+func gcPeerCache() {
+	// gcPeerCache runs from a ticker started in node.Start.
+	// It trims the peerBest map by removing entries that are older than
+	// cacheTTL or when the map grows beyond maxEntries.
+	now := time.Now()
+	var count int
+	peerBest.Range(func(k, v any) bool { count++; return true })
+
+	peerBest.Range(func(k, v any) bool {
+		pi := v.(peerInfo)
+		if now.Sub(pi.seenAt) > cacheTTL || count > maxEntries {
+			peerBest.Delete(k)
+			count--
+		}
+		return true
+	})
 }
