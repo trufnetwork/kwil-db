@@ -2689,7 +2689,7 @@ func (n *arrayOfNulls) Get(i int32) (scalarValue, error) {
 func (n *arrayOfNulls) Value() (driver.Value, error) {
 	// We encode as TEXT[] full of NULLs, mirroring Postgres.
 	sd := newValidArr(make([]pgtype.Text, n.length))
-	for i := int32(0); i < n.length; i++ {
+	for i := range sd.Elements {
 		sd.Elements[i] = pgtype.Text{Valid: false}
 	}
 	return sd.Value()
