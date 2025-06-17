@@ -3070,8 +3070,7 @@ func copySingleDimArray[T any](original *singleDimArray[T]) singleDimArray[T] {
 	return newArr
 }
 
-// copyArray efficiently deep copies an arrayValue by copying the underlying slice,
-// avoiding the slow stringify/parse cycle of copyVal.
+// copyArray efficiently deep copies an arrayValue by copying the underlying slice.
 func copyArray(v arrayValue) (arrayValue, error) {
 	if v == nil {
 		return nil, fmt.Errorf("copyArray: nil input")
@@ -3133,33 +3132,6 @@ func copyArray(v arrayValue) (arrayValue, error) {
 		return &newArr, nil
 	default:
 		// Fallback or error. For safety, we error.
-		// We could optionally fallback: return copyVal(v)
 		return nil, fmt.Errorf("unsupported array type for efficient copyArray: %T", v)
 	}
-}
-
-// copyVal deep copies a value.
-// There are certainly more efficient ways to do this, but I am doing this
-// under a time constraint.
-// NOTE: This is slow, use copyArray for array types where possible.
-func copyVal[V value](v V) (V, error) {
-	// all errors returned in this function signal some sort of
-	// internal bug, and not a user error.
-	v2 := *new(V)
-	str, err := stringifyValue(v)
-	if err != nil {
-		return v2, fmt.Errorf("could not copy val: %w", err)
-	}
-
-	parsed, err := parseValue(str, v.Type())
-	if err != nil {
-		return v2, fmt.Errorf("could not copy val: %w", err)
-	}
-
-	v3, ok := parsed.(V)
-	if !ok {
-		return v2, fmt.Errorf("could not copy val: unexpected type %T", parsed)
-	}
-
-	return v3, nil
 }
