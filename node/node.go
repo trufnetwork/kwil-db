@@ -382,6 +382,22 @@ func (n *Node) Start(ctx context.Context) error {
 		n.pm.Start(ctx)
 	}()
 
+	// Launch peer-height cache GC ticker
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				gcPeerCache()
+			}
+		}
+	}()
+
 	n.log.Info("Node started.")
 
 	<-ctx.Done()

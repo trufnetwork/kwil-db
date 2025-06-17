@@ -23,6 +23,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// FAR_AHEAD_THRESHOLD specifies how many blocks ahead of our current height a
+// proposal must be before we ignore it.  Proposals that far in the future are
+// almost certainly spam or belong to another fork and would otherwise flood
+// the logs.  The value 100 was chosen empirically: it easily covers ordinary
+// catch-up gaps while still surfacing genuine fork scenarios.
+const FAR_AHEAD_THRESHOLD = int64(100)
+
 type (
 	ConsensusReset = types.ConsensusReset
 	AckRes         = types.AckRes
@@ -242,10 +249,18 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		return
 	}
 
+	height := prop.Height
+	currentHeight := n.BlockHeight()
+
+	// Short-circuit very far-ahead proposals to reduce log noise
+	if height > currentHeight+FAR_AHEAD_THRESHOLD {
+		n.log.Debug("ignoring far-ahead block proposal", "height", height, "current", currentHeight,
+			"gap", height-currentHeight)
+		return
+	}
+
 	n.log.Info("got block proposal", "height", prop.Height, "hash", prop.Hash, "prevHash", prop.PrevHash,
 		"stamp", prop.Stamp, "leaderSig", prop.LeaderSig, "senderPubKey", hex.EncodeToString(prop.SenderPubKey))
-
-	height := prop.Height
 
 	// This requires atomicity of AcceptProposal -> download -> NotifyBlockProposal.
 	// We also must not ignore any proposal messages since they may be real
@@ -265,8 +280,14 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 
 	if !n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp) {
 		// NOTE: if this is ahead of our last commit height, we have to try to catch up
-		n.log.Debug("do not want proposal content", "height", height, "hash", prop.Hash,
-			"prevHash", prop.PrevHash)
+		gap := height - currentHeight
+		if gap > 1 {
+			n.log.Info("ignoring block proposal (behind by blocks)", "height", height, "current", currentHeight,
+				"gap", gap, "hash", prop.Hash)
+		} else {
+			n.log.Debug("do not want proposal content", "height", height, "hash", prop.Hash,
+				"prevHash", prop.PrevHash)
+		}
 		return
 	}
 
