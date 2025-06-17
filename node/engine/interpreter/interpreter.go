@@ -935,6 +935,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 		return newValue(int64(arr.Len()))
 	},
 	"array_append": func(args []value) (value, error) {
+		// handle array_append(NULL, element)
 		if args[0].Null() {
 			return oneLengthArray(args[1])
 		}
@@ -949,13 +950,44 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 			return nil, fmt.Errorf("expected scalar, got %s", args[1].Type())
 		}
 
-		// copy as to not mutate the original array
-		arr2, err := copyVal(arr)
+		// Special handling for arrayOfNulls: appending an element defines its type.
+		// We must create a concrete array type. The Set() method on arrayOfNulls
+		// does not mutate the receiver to the new type.
+		if _, ok := arr.(*arrayOfNulls); ok {
+			// If we are appending NULL to an arrayOfNulls, just extend it
+			if scal.Null() {
+				arr2, err := copyArray(arr)
+				if err != nil {
+					return nil, err
+				}
+				// Set will just increase the internal length count for arrayOfNulls if scal is null
+				err = arr2.Set(arr2.Len()+1, scal)
+				return arr2, err
+			}
+
+			// If appending a non-null, create a concrete array using makeArray
+			vals := make([]scalarValue, 0, arr.Len()+1)
+			for i := int32(1); i <= arr.Len(); i++ {
+				// Get returns a nullValue for arrayOfNulls
+				v, err := arr.Get(i)
+				if err != nil {
+					return nil, err
+				}
+				vals = append(vals, v)
+			}
+			vals = append(vals, scal)
+			// makeArray infers type from the first non-null element (scal)
+			return makeArray(vals, nil)
+		}
+
+		// copy as to not mutate the original array using the EFFICIENT copy
+		arr2, err := copyArray(arr)
 		if err != nil {
 			return nil, err
 		}
 
 		// 1-based indexing
+		// Set efficiently appends/resizes the underlying slice copied by copyArray
 		err = arr2.Set(arr2.Len()+1, scal)
 		if err != nil {
 			return nil, err

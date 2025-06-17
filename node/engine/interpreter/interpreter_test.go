@@ -2109,8 +2109,8 @@ func Test_Actions(t *testing.T) {
 					SELECT error('abcdef_unique');
 				}`,
 			},
-			action:               "select_error",
-			executionErrContains: "abcdef_unique",
+			action:      "select_error",
+			errContains: "abcdef_unique",
 		},
 		{
 			name: "primary key conflict",
@@ -2121,9 +2121,9 @@ func Test_Actions(t *testing.T) {
 					INSERT INTO t (a) VALUES ($a);
 				}`,
 			},
-			action:               "insert_conflict",
-			values:               []any{1},
-			executionErrContains: "duplicate key value violates unique constraint",
+			action:      "insert_conflict",
+			values:      []any{1},
+			errContains: "duplicate key value violates unique constraint",
 		},
 		{
 			name: "call function in loop",
@@ -2193,6 +2193,31 @@ func Test_Actions(t *testing.T) {
 			error('c is not d');
 		}
 		`),
+		{
+			name: "untyped NULL array literal without cast raises error",
+			stmt: []string{
+				`CREATE ACTION test_untyped_null_array() public returns (int[]) {
+				    $arr := array[null, null];
+				    RETURN $arr;
+				}`,
+			},
+			action:      "test_untyped_null_array",
+			errContains: "type cast error",
+		},
+		{
+			name: "null numeric array",
+			stmt: []string{
+				`CREATE ACTION smth_null($arr numeric(10,5)[]) public returns (numeric(10,5)[]) {
+					$arr := array_append($arr, 1.0::numeric(10,5));
+					RETURN $arr;
+				}`,
+			},
+			action: "smth_null",
+			values: []any{nil},
+			results: [][]any{
+				{[]*types.Decimal{mustExplicitDecimal("1.00000", 10, 5)}},
+			},
+		},
 	}
 
 	db := newTestDB(t, nil, nil)

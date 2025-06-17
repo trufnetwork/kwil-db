@@ -1674,31 +1674,46 @@ func setArr[T, B any](arr internalArray[T], i int32, v scalarValue, fn func(B) T
 
 	pgArr := arr.pgtypeArr()
 
-	// in postgres, if we have array [1,2], and we set to index 4, it will allocate
-	// positions 3 and 4. We do the same here.
-	// if the index is greater than the length of the array, we need to allocate
-	// enough space to set the value.
-	if i > int32(len(pgArr.Elements)) {
-		// Allocate enough space to set the value.
-		// This matches the behavior of Postgres.
-		newVal := make([]T, i)
+	currentLen := int32(len(pgArr.Elements))
 
-		// copy the existing values into the new array
-		copy(newVal, pgArr.Elements)
+	// Postgres semantics: if the index is beyond the current length we must
+	// extend the array.  Optimise for the very common append-by-one case where
+	// copySingleDimArray has already reserved capacity.
 
-		// set the new values to a valid null value
-		for j := len(pgArr.Elements); j < int(i); j++ {
-			nn, err := makeNull()
-			if err != nil {
-				return err
+	if i > currentLen {
+		// Fast-path: appending exactly one element and capacity already exists.
+		if i == currentLen+1 && cap(pgArr.Elements) >= int(i) {
+			// Simply grow slice length within existing capacity.
+			pgArr.Elements = pgArr.Elements[:i]
+			pgArr.Dims[0] = pgtype.ArrayDimension{Length: i, LowerBound: 1}
+			pgArr.Valid = true
+		} else {
+			// General path: allocate a new slice large enough, copy, null-fill.
+			// Exponential-growth strategy: double capacity until it fits i.
+			newCap := cap(pgArr.Elements)
+			if newCap == 0 {
+				newCap = 1
 			}
-			newVal[j] = nn
-		}
+			for newCap < int(i) {
+				newCap *= 2
+			}
 
-		pgArr.Elements = newVal
-		pgArr.Dims[0] = pgtype.ArrayDimension{
-			Length:     i,
-			LowerBound: 1,
+			// Allocate slice with len=i and the computed capacity.
+			newVal := make([]T, i, newCap)
+			copy(newVal, pgArr.Elements)
+
+			// Fill any new positions (including the slot at i-1) with typed NULLs.
+			for j := int(currentLen); j < int(i); j++ {
+				nn, err := makeNull()
+				if err != nil {
+					return err
+				}
+				newVal[j] = nn
+			}
+
+			pgArr.Elements = newVal
+			pgArr.Dims[0] = pgtype.ArrayDimension{Length: i, LowerBound: 1}
+			pgArr.Valid = true
 		}
 	}
 
@@ -2664,7 +2679,7 @@ var _ driver.Valuer = (*arrayOfNulls)(nil)
 var _ arrayValue = (*arrayOfNulls)(nil)
 
 func (n *arrayOfNulls) Len() int32 {
-	return n.length + 1 // 1-based
+	return n.length
 }
 
 func (n *arrayOfNulls) Get(i int32) (scalarValue, error) {
@@ -2672,31 +2687,50 @@ func (n *arrayOfNulls) Get(i int32) (scalarValue, error) {
 }
 
 func (n *arrayOfNulls) Value() (driver.Value, error) {
-	// returning an array of null TEXT matches the behavior of Postgres.
-	// psql:
-	// postgres=# select pg_typeof(array[null]);
-	// pg_typeof
-	// -----------
-	//  text[]
+	// We encode as TEXT[] full of NULLs, mirroring Postgres.
 	sd := newValidArr(make([]pgtype.Text, n.length))
-	for i := int32(1); i <= n.length; i++ {
-		sd.Elements[i-1] = pgtype.Text{Valid: false}
+	for i := range sd.Elements {
+		sd.Elements[i] = pgtype.Text{Valid: false}
 	}
 	return sd.Value()
 }
 
 func (n *arrayOfNulls) Set(i int32, v scalarValue) error {
-	// if the incoming value is a null value, then we simply expand
-	// the array to the new length. If it is not a null value, then we
-	// will convert the null array to that type.
+	if i < 1 {
+		return engine.ErrIndexOutOfBounds
+	}
+
+	// If the incoming value is NULL we simply expand the length and keep the
+	// current array-of-nulls representation.
+	if v.Null() {
+		if i > n.length {
+			n.length = i
+		}
+		return nil
+	}
+
+	// Non-null value: convert to the appropriate concrete array type and then
+	// delegate the Set.  We mimic the previous behaviour by creating the array
+	// on the fly and setting the element, but because callers ignore the
+	// returned array we just perform the operation and return.
 	vt := v.Type().Copy()
 	vt.IsArray = true
-	newVal, err := v.Cast(vt)
+
+	newVal, err := newZeroValue(vt)
 	if err != nil {
 		return err
 	}
 
-	return newVal.(arrayValue).Set(i, v)
+	concreteArr := newVal.(arrayValue)
+
+	// Copy existing NULLs
+	for idx := int32(1); idx <= n.length; idx++ {
+		if err := concreteArr.Set(idx, &nullValue{}); err != nil {
+			return err
+		}
+	}
+
+	return concreteArr.Set(i, v)
 }
 
 func (n *arrayOfNulls) Type() *types.DataType {
@@ -3012,27 +3046,92 @@ func newValueWithSoftCast(v any, dt *types.DataType) (val value, ok bool, err er
 	return val, true, nil
 }
 
-// copyVal deep copies a value.
-// There are certainly more efficient ways to do this, but I am doing this
-// under a time constraint.
-func copyVal[V value](v V) (V, error) {
-	// all errors returned in this function signal some sort of
-	// internal bug, and not a user error.
-	v2 := *new(V)
-	str, err := stringifyValue(v)
-	if err != nil {
-		return v2, fmt.Errorf("could not copy val: %w", err)
+// copySingleDimArray performs a deep copy of the slice data for singleDimArray
+func copySingleDimArray[T any](original *singleDimArray[T]) singleDimArray[T] {
+	if original == nil {
+		return newNullArray[T]()
+	}
+	// Shallow copy struct fields first (Valid, Dims header, Elements header)
+	newArr := *original
+
+	// Deep copy Dims slice
+	if len(original.Dims) > 0 {
+		newArr.Dims = make([]pgtype.ArrayDimension, len(original.Dims))
+		copy(newArr.Dims, original.Dims)
 	}
 
-	parsed, err := parseValue(str, v.Type())
-	if err != nil {
-		return v2, fmt.Errorf("could not copy val: %w", err)
+	// Deep copy Elements slice
+	if original.Valid {
+		// make a slice with capacity to allow for efficient append later via Set()
+		newArr.Elements = make([]T, len(original.Elements), len(original.Elements)+1)
+		copy(newArr.Elements, original.Elements)
+	}
+	// if !original.Valid, Elements will be nil, which is correct
+	return newArr
+}
+
+// copyArray efficiently deep copies an arrayValue by copying the underlying slice.
+func copyArray(v arrayValue) (arrayValue, error) {
+	if v == nil {
+		return nil, fmt.Errorf("copyArray: nil input")
+	}
+	if v.Null() {
+		nullVal, err := makeNull(v.Type())
+		if err != nil {
+			return nil, err
+		}
+		return nullVal.(arrayValue), nil
 	}
 
-	v3, ok := parsed.(V)
-	if !ok {
-		return v2, fmt.Errorf("could not copy val: unexpected type %T", parsed)
+	switch original := v.(type) {
+	case *int8ArrayValue:
+		newArr := &int8ArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *textArrayValue:
+		newArr := &textArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *boolArrayValue:
+		newArr := &boolArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *blobArrayValue:
+		newArr := &blobArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		// The copy is shallow for blob values, so we must manually deep copy the bytes.
+		if newArr.Valid {
+			for i := range newArr.Elements {
+				if newArr.Elements[i].bts != nil {
+					newBts := make([]byte, len(newArr.Elements[i].bts))
+					copy(newBts, newArr.Elements[i].bts)
+					newArr.Elements[i].bts = newBts
+				}
+			}
+		}
+		return newArr, nil
+	case *uuidArrayValue:
+		newArr := &uuidArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		return newArr, nil
+	case *decimalArrayValue:
+		newArr := &decimalArrayValue{}
+		newArr.singleDimArray = copySingleDimArray(&original.singleDimArray)
+		// Copy metadata pointer if it exists
+		if original.metadata != nil {
+			metaCopy := *original.metadata
+			newArr.metadata = &metaCopy
+		}
+		return newArr, nil
+	case *nullValue:
+		// Handles the case where the array itself is the generic NULL type
+		return &nullValue{}, nil
+	case *arrayOfNulls:
+		// Just copy the struct for arrayOfNulls
+		newArr := *original
+		return &newArr, nil
+	default:
+		// Fallback or error. For safety, we error.
+		return nil, fmt.Errorf("unsupported array type for efficient copyArray: %T", v)
 	}
-
-	return v3, nil
 }
