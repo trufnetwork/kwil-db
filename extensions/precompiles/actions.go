@@ -222,12 +222,7 @@ const (
 type Modifiers []Modifier
 
 func (m Modifiers) Has(mod Modifier) bool {
-	for _, mod2 := range m {
-		if mod2 == mod {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m, mod)
 }
 
 // PrecompileValue specifies the type and nullability of a value passed to or returned from

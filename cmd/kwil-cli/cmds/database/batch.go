@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -220,13 +221,7 @@ func ensureInputFormat(in *string) {
 }
 
 func isSupportedBatchFileType(fileType string) bool {
-	for _, supportedType := range supportedBatchFileTypes {
-		if supportedType == fileType {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(supportedBatchFileTypes, fileType)
 }
 
 func getFileType(path string) (string, error) {

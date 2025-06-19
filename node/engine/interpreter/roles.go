@@ -439,13 +439,7 @@ func (a *accessController) IsOwner(user string) bool {
 		return false
 	}
 
-	for _, role := range roles {
-		if role == ownerRole {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(roles, ownerRole)
 }
 
 // GetOwner returns the owner of the database.

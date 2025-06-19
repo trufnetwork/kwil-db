@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/kwilteam/kwil-db/core/types"
@@ -127,12 +128,7 @@ func (c *Constraint) Copy() *Constraint {
 }
 
 func (c *Constraint) ContainsColumn(col string) bool {
-	for _, column := range c.Columns {
-		if column == col {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Columns, col)
 }
 
 type ConstraintType string
@@ -162,12 +158,7 @@ func (i *Index) Copy() *Index {
 }
 
 func (i *Index) ContainsColumn(col string) bool {
-	for _, column := range i.Columns {
-		if column == col {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(i.Columns, col)
 }
 
 // index types
