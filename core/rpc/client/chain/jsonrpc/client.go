@@ -4,14 +4,14 @@ import (
 	"context"
 	"net/url"
 
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/rpc/client/chain"
-	"github.com/kwilteam/kwil-db/core/rpc/client/user"
-	userClient "github.com/kwilteam/kwil-db/core/rpc/client/user/jsonrpc"
-	chainjson "github.com/kwilteam/kwil-db/core/rpc/json/chain"
-	userjson "github.com/kwilteam/kwil-db/core/rpc/json/user"
-	"github.com/kwilteam/kwil-db/core/types"
-	chaintypes "github.com/kwilteam/kwil-db/core/types/chain"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/chain"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/user"
+	userClient "github.com/trufnetwork/kwil-db/core/rpc/client/user/jsonrpc"
+	chainjson "github.com/trufnetwork/kwil-db/core/rpc/json/chain"
+	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
+	"github.com/trufnetwork/kwil-db/core/types"
+	chaintypes "github.com/trufnetwork/kwil-db/core/types/chain"
 )
 
 // Client is a chain RPC client. It provides all methods of the user RPC

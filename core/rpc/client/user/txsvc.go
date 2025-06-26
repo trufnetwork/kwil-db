@@ -6,8 +6,8 @@ import (
 	"context"
 	"math/big"
 
-	"github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // TxSvcClient is the interface for a txsvc client.

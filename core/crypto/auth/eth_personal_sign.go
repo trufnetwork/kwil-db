@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 	"golang.org/x/crypto/sha3"
 )
 

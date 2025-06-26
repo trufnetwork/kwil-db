@@ -11,8 +11,8 @@ import (
 	"math"
 	"math/big"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/utils"
 )
 
 var SerializationByteOrder = binary.LittleEndian

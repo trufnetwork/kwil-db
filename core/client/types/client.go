@@ -10,8 +10,8 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // Client defines methods are used to talk to a Kwil provider.

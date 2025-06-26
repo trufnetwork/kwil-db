@@ -10,7 +10,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 const (

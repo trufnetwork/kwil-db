@@ -3,7 +3,7 @@ package types
 import (
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 // This file contains the messages exchanged between the consensus engine and the block processor.

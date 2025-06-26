@@ -3,7 +3,7 @@ package gatewayclient
 import (
 	"net/http"
 
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
 )
 
 // GatewayOptions are options that can be set for the gateway client

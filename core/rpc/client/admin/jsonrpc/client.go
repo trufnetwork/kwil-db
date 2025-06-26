@@ -5,15 +5,15 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/rpc/client/admin"
-	userClient "github.com/kwilteam/kwil-db/core/rpc/client/chain/jsonrpc"
-	"github.com/kwilteam/kwil-db/core/rpc/client/user"
-	adminjson "github.com/kwilteam/kwil-db/core/rpc/json/admin"
-	userjson "github.com/kwilteam/kwil-db/core/rpc/json/user"
-	"github.com/kwilteam/kwil-db/core/types"
-	adminTypes "github.com/kwilteam/kwil-db/core/types/admin"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/admin"
+	userClient "github.com/trufnetwork/kwil-db/core/rpc/client/chain/jsonrpc"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/user"
+	adminjson "github.com/trufnetwork/kwil-db/core/rpc/json/admin"
+	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
+	"github.com/trufnetwork/kwil-db/core/types"
+	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 // Client is an admin RPC client. It provides all methods of the user RPC

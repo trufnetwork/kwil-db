@@ -3,7 +3,7 @@ package client
 import (
 	"net/http"
 
-	userjson "github.com/kwilteam/kwil-db/core/rpc/json/user"
+	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
 )
 
 // ActionCallOpts is the options for action call.

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

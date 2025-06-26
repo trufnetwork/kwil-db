@@ -1,7 +1,7 @@
 package adminjson
 
 import (
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 )
 
 const (

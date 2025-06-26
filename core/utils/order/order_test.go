@@ -3,7 +3,7 @@ package order_test
 import (
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/utils/order"
+	"github.com/trufnetwork/kwil-db/core/utils/order"
 	"github.com/stretchr/testify/assert"
 )
 

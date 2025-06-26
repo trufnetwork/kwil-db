@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/gatewayclient"
-	"github.com/kwilteam/kwil-db/core/types"
-	clientType "github.com/kwilteam/kwil-db/core/types/client"
-	"github.com/kwilteam/kwil-db/core/types/transactions"
-	"github.com/kwilteam/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/gatewayclient"
+	"github.com/trufnetwork/kwil-db/core/types"
+	clientType "github.com/trufnetwork/kwil-db/core/types/client"
+	"github.com/trufnetwork/kwil-db/core/types/transactions"
+	"github.com/trufnetwork/kwil-db/core/utils"
 )
 
 const (

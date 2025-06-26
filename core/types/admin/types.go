@@ -5,7 +5,7 @@ package types
 import (
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // NodeInfo describes the administered node.

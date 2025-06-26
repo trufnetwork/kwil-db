@@ -11,14 +11,14 @@ import (
 	"net/url"
 	"time"
 
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	chainrpc "github.com/kwilteam/kwil-db/core/rpc/client/chain"
-	userClient "github.com/kwilteam/kwil-db/core/rpc/client/chain/jsonrpc"
-	"github.com/kwilteam/kwil-db/core/rpc/client/user"
-	"github.com/kwilteam/kwil-db/core/types"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	chainrpc "github.com/trufnetwork/kwil-db/core/rpc/client/chain"
+	userClient "github.com/trufnetwork/kwil-db/core/rpc/client/chain/jsonrpc"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/user"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 type RPCClient interface {

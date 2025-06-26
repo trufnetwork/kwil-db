@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"net/url"
 
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/rpc/client/gateway"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/gateway"
 )
 
 // Client is a JSON-RPC client for the Kwil gateway service. It use the

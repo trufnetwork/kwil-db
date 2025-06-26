@@ -3,8 +3,8 @@ package chain
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	chaintypes "github.com/kwilteam/kwil-db/core/types/chain"
+	"github.com/trufnetwork/kwil-db/core/types"
+	chaintypes "github.com/trufnetwork/kwil-db/core/types/chain"
 )
 
 type Client interface {

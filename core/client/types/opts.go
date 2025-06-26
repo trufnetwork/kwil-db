@@ -4,8 +4,8 @@ import (
 	"math/big"
 	"net/http"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 // Options are options that can be set for the client
