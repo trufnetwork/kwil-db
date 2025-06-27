@@ -13,11 +13,11 @@ require (
 	github.com/docker/go-connections v0.5.0
 	github.com/drhodes/golorem v0.0.0-20220328165741-da82e5b29246
 	github.com/ethereum/go-ethereum v1.14.13
-	github.com/trufnetwork/kwil-db v0.10.0-beta-1.0.20250227174801-ad4ee84cc97d
-	github.com/trufnetwork/kwil-db/core v0.4.1
 	github.com/stretchr/testify v1.10.0
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/testcontainers/testcontainers-go/modules/compose v0.34.0
+	github.com/trufnetwork/kwil-db v0.10.2
+	github.com/trufnetwork/kwil-db/core v0.4.2
 )
 
 require (
@@ -197,7 +197,7 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/manifoldco/promptui v0.9.0 // indirect
 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mattn/go-shellwords v1.0.12 // indirect
