@@ -6,7 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	smt "github.com/kwilteam/openzeppelin-merkle-tree-go/standard_merkle_tree"
+	smt "github.com/trufnetwork/openzeppelin-merkle-tree-go/standard_merkle_tree"
 )
 
 var (
