@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 func Test_AccountIDRoundtrip(t *testing.T) {

@@ -3,8 +3,8 @@ package order_test
 import (
 	"testing"
 
-	"github.com/trufnetwork/kwil-db/core/utils/order"
 	"github.com/stretchr/testify/assert"
+	"github.com/trufnetwork/kwil-db/core/utils/order"
 )
 
 func TestOrderMap(t *testing.T) {
