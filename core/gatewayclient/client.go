@@ -11,14 +11,14 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/core/client"
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	userClient "github.com/kwilteam/kwil-db/core/rpc/client/chain/jsonrpc"
-	"github.com/kwilteam/kwil-db/core/rpc/client/gateway"
-	gwClient "github.com/kwilteam/kwil-db/core/rpc/client/gateway/jsonrpc"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/client"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	userClient "github.com/trufnetwork/kwil-db/core/rpc/client/chain/jsonrpc"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/gateway"
+	gwClient "github.com/trufnetwork/kwil-db/core/rpc/client/gateway/jsonrpc"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // GatewayClient is a client that is made to interact with a kwil gateway.
@@ -178,11 +178,11 @@ func (c *GatewayClient) authenticate(ctx context.Context) error {
 	}
 
 	// remove trailing slash, avoid the confusing case like "http://example.com/" != "http://example.com"
-	// This is also done in the kgw, https://github.com/kwilteam/kgw/pull/42
+	// This is also done in the kgw, https://github.com/trufnetwork/kgw/pull/42
 	// With switching to JSON rpc in KGW, the domain should not include the path.
 	targetDomain := c.target.Scheme + "://" + c.target.Host
 	// backward compatibility if the Domain is not returned by the gateway
-	// Those fields are returned from kgw in https://github.com/kwilteam/kgw/pull/40
+	// Those fields are returned from kgw in https://github.com/trufnetwork/kgw/pull/40
 	if authParam.Domain != "" && authParam.Domain != targetDomain {
 		return fmt.Errorf("domain mismatch: configured '%s' != remote %s",
 			targetDomain, authParam.Domain)
@@ -235,7 +235,7 @@ func (c *GatewayClient) GetAuthCookie() (cookie *http.Cookie, found bool) {
 func (c *GatewayClient) SetAuthCookie(cookie *http.Cookie) error {
 	// ref https://stackoverflow.com/a/16328399.
 	// KGW already set the cookie domain without port in
-	// https://github.com/kwilteam/kgw/pull/18/files#diff-5b365c916e8b28d0115f136435a03daa1ef6df8cf0eb49479c556923545b56c7R60
+	// https://github.com/trufnetwork/kgw/pull/18/files#diff-5b365c916e8b28d0115f136435a03daa1ef6df8cf0eb49479c556923545b56c7R60
 	targetDomain := strings.Split(c.target.Host, ":")[0]
 	if cookie.Domain != "" && cookie.Domain != targetDomain {
 		return fmt.Errorf("cookie domain %s not valid for host %s", cookie.Domain, c.target.Host)

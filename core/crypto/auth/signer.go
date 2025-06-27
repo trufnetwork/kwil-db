@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/crypto/sha3"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/utils"
 )
 
 func uvarintLen(x uint64) int {

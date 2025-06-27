@@ -4,9 +4,9 @@ package admin
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
-	adminTypes "github.com/kwilteam/kwil-db/core/types/admin"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
+	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 type AdminClient interface {

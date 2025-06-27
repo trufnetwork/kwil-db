@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 func init() {

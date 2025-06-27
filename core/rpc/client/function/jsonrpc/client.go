@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/rpc/client/function"
-	jsonFunction "github.com/kwilteam/kwil-db/core/rpc/json/function"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/function"
+	jsonFunction "github.com/trufnetwork/kwil-db/core/rpc/json/function"
 )
 
 // Client is a JSON-RPC client for the Kwil function service. It uses the

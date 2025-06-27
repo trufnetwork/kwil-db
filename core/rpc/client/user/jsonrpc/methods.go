@@ -10,11 +10,11 @@ import (
 	"math/big"
 	"net/url"
 
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/rpc/client/user"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	userjson "github.com/kwilteam/kwil-db/core/rpc/json/user"
-	"github.com/kwilteam/kwil-db/core/types"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/rpc/client/user"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // Client is a JSON-RPC client for the Kwil user service. It use the JSONRPCClient

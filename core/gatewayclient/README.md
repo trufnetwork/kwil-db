@@ -21,7 +21,7 @@ on top of `core/client`, so you can use all the functionalities provided by `cor
 ### Create a Kwil Gateway Client
 
 To use this client, you need to create a new client with the `NewClient` function
-from `github.com/kwilteam/kwil-db/core/gatewayclient` package.
+from `github.com/trufnetwork/kwil-db/core/gatewayclient` package.
 
 ```go
 clt, err := gatewayclient.NewClient(ctx, kgwProvider, &gatewayclient.GatewayOptions{
@@ -35,7 +35,7 @@ clt, err := gatewayclient.NewClient(ctx, kgwProvider, &gatewayclient.GatewayOpti
 
 ### Options
 
-`GatewayOptions` is a struct that embeds `github.com/kwilteam/kwil-db/core/types/client.Options`.
+`GatewayOptions` is a struct that embeds `github.com/trufnetwork/kwil-db/core/types/client.Options`.
 
 It also has two other optional fields:
 - `AuthSignFunc`, allows you to provide a custom signing function for authentication, you can use it to do extra logic when the message is signed.

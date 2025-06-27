@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/utils"
 )
 
 type NodeStatus struct {

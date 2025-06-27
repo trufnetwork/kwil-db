@@ -1,8 +1,8 @@
 package adminjson
 
 import (
-	"github.com/kwilteam/kwil-db/core/types"
-	adminTypes "github.com/kwilteam/kwil-db/core/types/admin"
+	"github.com/trufnetwork/kwil-db/core/types"
+	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 // type StatusResponse = adminTypes.Status

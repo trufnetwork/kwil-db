@@ -1,7 +1,7 @@
 package userjson
 
 import (
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // This file defines the structured parameter types used in the "params" field

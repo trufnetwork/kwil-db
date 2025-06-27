@@ -21,7 +21,7 @@ signing.
 */
 package auth
 
-import "github.com/kwilteam/kwil-db/core/crypto"
+import "github.com/trufnetwork/kwil-db/core/crypto"
 
 // Authenticator is an interface for verifying signatures and
 // deriving a string identifier from the sender bytes. Custom

@@ -1,7 +1,7 @@
 package userjson
 
 import (
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // This file defines the response types. There is one for each request type.

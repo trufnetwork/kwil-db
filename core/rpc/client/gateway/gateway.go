@@ -3,9 +3,9 @@ package gateway
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // Client is the interface for the Kwil gateway client.

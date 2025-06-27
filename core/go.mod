@@ -1,4 +1,4 @@
-module github.com/kwilteam/kwil-db/core
+module github.com/trufnetwork/kwil-db/core
 
 go 1.23.0
 

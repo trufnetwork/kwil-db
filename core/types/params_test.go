@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/stretchr/testify/require"
 )
 
