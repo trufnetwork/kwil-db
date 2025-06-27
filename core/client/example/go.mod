@@ -2,7 +2,7 @@ module mykwilapp
 
 go 1.23.0
 
-require github.com/trufnetwork/kwil-db/core v0.4.1
+require github.com/trufnetwork/kwil-db/core v0.4.2
 
 require (
 	github.com/cockroachdb/apd/v3 v3.2.1 // indirect

@@ -11,15 +11,15 @@ import (
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
-	ethdeposits "github.com/kwilteam/kwil-db/extensions/listeners/eth_deposits"
-	"github.com/kwilteam/kwil-db/test/setup"
-	"github.com/kwilteam/kwil-db/test/specifications"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	ethdeposits "github.com/trufnetwork/kwil-db/extensions/listeners/eth_deposits"
+	"github.com/trufnetwork/kwil-db/test/setup"
+	"github.com/trufnetwork/kwil-db/test/specifications"
 )
 
 var (

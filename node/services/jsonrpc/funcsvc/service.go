@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	"github.com/kwilteam/kwil-db/core/rpc/json/function"
-	userjson "github.com/kwilteam/kwil-db/core/rpc/json/user"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
-	rpcserver "github.com/kwilteam/kwil-db/node/services/jsonrpc"
-	"github.com/kwilteam/kwil-db/version"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/core/rpc/json/function"
+	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
+	"github.com/trufnetwork/kwil-db/version"
 )
 
 type Service struct{}

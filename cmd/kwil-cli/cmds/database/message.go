@@ -8,7 +8,7 @@ import (
 
 	"github.com/olekukonko/tablewriter"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // NOTE: I feel those types are better to be defined in the core/client package

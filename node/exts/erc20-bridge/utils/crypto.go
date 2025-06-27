@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/signer/core"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 
-	"github.com/kwilteam/kwil-db/node/exts/erc20-bridge/abigen"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
 )
 
 const GnosisSafeSigLength = ethCrypto.SignatureLength

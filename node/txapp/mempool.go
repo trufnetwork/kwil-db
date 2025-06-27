@@ -9,13 +9,13 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
-	"github.com/kwilteam/kwil-db/node/types/sql"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 type mempool struct {

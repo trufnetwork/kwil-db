@@ -24,7 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/kwilteam/kwil-db/node/utils/muhash"
+	"github.com/trufnetwork/kwil-db/node/utils/muhash"
 )
 
 // replConn creates a new connection to a postgres host with the

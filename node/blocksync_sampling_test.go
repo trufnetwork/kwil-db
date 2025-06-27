@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 
 	mock "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/require"

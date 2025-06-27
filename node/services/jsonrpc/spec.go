@@ -3,7 +3,7 @@ package rpcserver
 import (
 	"reflect"
 
-	"github.com/kwilteam/kwil-db/node/services/jsonrpc/openrpc"
+	"github.com/trufnetwork/kwil-db/node/services/jsonrpc/openrpc"
 )
 
 // MakeOpenRPCSpec creates an OpenRPC spec from a service.

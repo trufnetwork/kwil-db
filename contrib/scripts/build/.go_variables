@@ -39,7 +39,7 @@ GO_LDFLAGS="$GO_LDFLAGS -s -w"
 
 export GO_LDFLAGS="$GO_LDFLAGS" # https://github.com/koalaman/shellcheck/issues/2064
 
-export SOURCE="github.com/kwilteam/kwil-db/cmd/${BINARY}"
+export SOURCE="github.com/trufnetwork/kwil-db/cmd/${BINARY}"
 
 GO_GCFLAGS="${GO_GCFLAGS:-}"
 export GO_GCFLAGS="$GO_GCFLAGS"

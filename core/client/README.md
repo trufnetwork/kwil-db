@@ -37,7 +37,7 @@ module mykwilapp
 go 1.23
 
 require (
-    github.com/trufnetwork/kwil-db/core v0.4.1
+    github.com/trufnetwork/kwil-db/core v0.4.2
 )
 ```
 

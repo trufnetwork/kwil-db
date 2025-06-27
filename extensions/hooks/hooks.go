@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/utils/order"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/utils/order"
 )
 
 // GenesisHook is a function that is run exactly once, at network genesis.

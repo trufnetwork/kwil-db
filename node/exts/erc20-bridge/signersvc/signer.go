@@ -20,12 +20,12 @@ import (
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/node/exts/erc20-bridge/utils"
-	"github.com/kwilteam/kwil-db/node/exts/evm-sync/chains"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
+	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 )
 
 // StateFilePath returns the state file.

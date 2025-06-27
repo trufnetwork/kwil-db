@@ -9,8 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/kwilteam/kwil-db/node/exts/erc20-bridge/abigen"
-	"github.com/kwilteam/kwil-db/node/exts/evm-sync/chains"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
+	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 )
 
 // Multicall https://github.com/mds1/multicall

@@ -7,10 +7,10 @@ import (
 	"slices"
 	"time"
 
-	common "github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
-	"github.com/kwilteam/kwil-db/node/voting"
+	common "github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 // ListenerManager listens for any Validator state changes and node catch up status

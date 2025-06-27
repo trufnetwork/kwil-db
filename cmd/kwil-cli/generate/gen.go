@@ -3,8 +3,8 @@ package main
 import (
 	"flag"
 
-	"github.com/kwilteam/kwil-db/app/shared/generate"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds"
+	"github.com/trufnetwork/kwil-db/app/shared/generate"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds"
 )
 
 var (

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 func TestBlockAnnMsg_MarshalUnmarshal(t *testing.T) {

@@ -3,7 +3,7 @@ package engine
 import (
 	"strings"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // Table is a table in the schema.

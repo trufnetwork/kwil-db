@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
-	dbtest "github.com/kwilteam/kwil-db/node/pg/test"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	dbtest "github.com/trufnetwork/kwil-db/node/pg/test"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 func TestSetParamNames(t *testing.T) {

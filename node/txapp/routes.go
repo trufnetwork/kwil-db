@@ -9,16 +9,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
-	"github.com/kwilteam/kwil-db/extensions/consensus"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
-	"github.com/kwilteam/kwil-db/node/accounts"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/types/sql"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/extensions/consensus"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/node/accounts"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 func init() {

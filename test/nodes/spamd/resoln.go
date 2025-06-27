@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
 )
 
 func init() {

@@ -6,16 +6,16 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/log"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	chainjson "github.com/kwilteam/kwil-db/core/rpc/json/chain"
-	userjson "github.com/kwilteam/kwil-db/core/rpc/json/user"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	chaintypes "github.com/kwilteam/kwil-db/core/types/chain"
-	rpcserver "github.com/kwilteam/kwil-db/node/services/jsonrpc"
-	nodetypes "github.com/kwilteam/kwil-db/node/types"
-	"github.com/kwilteam/kwil-db/version"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/log"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	chainjson "github.com/trufnetwork/kwil-db/core/rpc/json/chain"
+	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	chaintypes "github.com/trufnetwork/kwil-db/core/types/chain"
+	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
+	nodetypes "github.com/trufnetwork/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/version"
 )
 
 const (

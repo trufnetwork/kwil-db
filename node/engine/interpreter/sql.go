@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/utils/order"
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/utils/order"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 var (

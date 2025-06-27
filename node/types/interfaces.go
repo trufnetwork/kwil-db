@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // The following errors must be aliases for errors.Is to work properly.

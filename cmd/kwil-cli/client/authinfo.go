@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/helpers"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/helpers"
 )
 
 const (

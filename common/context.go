@@ -1,8 +1,8 @@
 package common
 
 import (
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // ChainContext provides context for all chain operations.

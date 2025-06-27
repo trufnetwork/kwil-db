@@ -8,10 +8,10 @@ import (
 	"time"
 
 	ec "github.com/ethereum/go-ethereum/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 const (

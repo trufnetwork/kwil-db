@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/utils/random"
-	"github.com/kwilteam/kwil-db/node/consensus"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
+	"github.com/trufnetwork/kwil-db/node/consensus"
 )
 
 func TestPriorityLockQueue(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/kwilteam/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/config"
 )
 
 func TestPreRunBindConfigFile(t *testing.T) {

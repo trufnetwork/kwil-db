@@ -3,7 +3,7 @@ package logical
 import (
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/node/engine/parse"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 // the following maps map constants from parse to their logical

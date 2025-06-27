@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/core/utils/order"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/utils/order"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 func newNamespaceManager() *namespaceManager {

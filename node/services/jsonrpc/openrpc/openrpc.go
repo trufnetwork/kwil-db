@@ -3,7 +3,7 @@ package openrpc
 import (
 	"reflect"
 
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 )
 
 // Spec is the structure of an openrpc JSON file.

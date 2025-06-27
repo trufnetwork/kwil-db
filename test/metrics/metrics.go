@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/store"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/store"
 )
 
 // Log is a struct that represents a log instance

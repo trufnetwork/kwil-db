@@ -7,10 +7,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/node/engine/interpreter"
-	"github.com/kwilteam/kwil-db/node/pg"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
+	"github.com/trufnetwork/kwil-db/node/pg"
 )
 
 // Helper to create an int64 pointer

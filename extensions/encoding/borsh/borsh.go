@@ -3,7 +3,7 @@ package borsh
 import (
 	"github.com/near/borsh-go"
 
-	"github.com/kwilteam/kwil-db/core/types/serialize"
+	"github.com/trufnetwork/kwil-db/core/types/serialize"
 )
 
 func init() {

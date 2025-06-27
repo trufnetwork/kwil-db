@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // TxHashAndExecResponse is meant to combine the "tx_hash" marshalling of

@@ -12,15 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/log"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	blockprocessor "github.com/kwilteam/kwil-db/node/block_processor"
-	"github.com/kwilteam/kwil-db/node/meta"
-	"github.com/kwilteam/kwil-db/node/metrics"
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/log"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	blockprocessor "github.com/trufnetwork/kwil-db/node/block_processor"
+	"github.com/trufnetwork/kwil-db/node/meta"
+	"github.com/trufnetwork/kwil-db/node/metrics"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 var mets metrics.ConsensusMetrics = metrics.Consensus

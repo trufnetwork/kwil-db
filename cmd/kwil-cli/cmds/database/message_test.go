@@ -1,8 +1,8 @@
 package database
 
 import (
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 func Example_respDBlist_text_0() {

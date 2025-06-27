@@ -2,7 +2,7 @@ package chainsvc
 
 //go:generate go run genopenrpcspec.go
 
-import "github.com/kwilteam/kwil-db/node/services/jsonrpc/openrpc"
+import "github.com/trufnetwork/kwil-db/node/services/jsonrpc/openrpc"
 
 var (
 	SpecInfo = openrpc.Info{

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/app/rpc"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	types "github.com/kwilteam/kwil-db/core/types/admin"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/rpc"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	types "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 func statusCmd() *cobra.Command {

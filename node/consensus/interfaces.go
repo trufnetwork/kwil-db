@@ -4,12 +4,12 @@ import (
 	"context"
 	"time"
 
-	blockprocessor "github.com/kwilteam/kwil-db/node/block_processor"
-	"github.com/kwilteam/kwil-db/node/mempool"
+	blockprocessor "github.com/trufnetwork/kwil-db/node/block_processor"
+	"github.com/trufnetwork/kwil-db/node/mempool"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // DB is the interface for the main SQL database. All queries must be executed

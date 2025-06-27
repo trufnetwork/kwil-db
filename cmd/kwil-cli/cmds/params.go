@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // parseParams parses the arguments into a map of name to value.

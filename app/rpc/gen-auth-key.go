@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/core/rpc/transport"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/core/rpc/transport"
 )
 
 var (

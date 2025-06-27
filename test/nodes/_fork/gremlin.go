@@ -8,14 +8,14 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/common/functions"
-	"github.com/kwilteam/kwil-db/core/types/serialize"
-	"github.com/kwilteam/kwil-db/core/types/transactions"
-	"github.com/kwilteam/kwil-db/extensions/auth"
-	"github.com/kwilteam/kwil-db/extensions/consensus"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
-	"github.com/kwilteam/kwil-db/extensions/resolutions/credit"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/common/functions"
+	"github.com/trufnetwork/kwil-db/core/types/serialize"
+	"github.com/trufnetwork/kwil-db/core/types/transactions"
+	"github.com/trufnetwork/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/extensions/consensus"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions/credit"
 )
 
 func init() {

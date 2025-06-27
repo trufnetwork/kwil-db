@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 func Test_respValJoinStatus_MarshalJSON(t *testing.T) {

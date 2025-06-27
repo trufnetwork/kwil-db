@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/extensions/auth"
 
 	"github.com/stretchr/testify/require"
 )

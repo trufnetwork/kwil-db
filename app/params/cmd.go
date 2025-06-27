@@ -3,7 +3,7 @@ package params
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/rpc"
+	"github.com/trufnetwork/kwil-db/app/rpc"
 )
 
 var consensusCmd = &cobra.Command{

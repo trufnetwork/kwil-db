@@ -84,25 +84,25 @@ var (
 const (
 	// DBMeterName is the name of the meter for DB metrics. Use the global DB
 	// instance to access use these metrics.
-	DBMeterName = "github.com/kwilteam/kwil-db/node/pg"
+	DBMeterName = "github.com/trufnetwork/kwil-db/node/pg"
 
 	// RPCMeterName is the name of the meter for RPC metrics. Use the global RPC
 	// instance to access use these metrics.
-	RPCMeterName = "github.com/kwilteam/kwil-db/node/services/jsonrpc" // currently the http server, but may be used in services like services/jsonrpc/usersvc
+	RPCMeterName = "github.com/trufnetwork/kwil-db/node/services/jsonrpc" // currently the http server, but may be used in services like services/jsonrpc/usersvc
 
-	NodeMeterName = "github.com/kwilteam/kwil-db/node" // node and node/peers
+	NodeMeterName = "github.com/trufnetwork/kwil-db/node" // node and node/peers
 
-	EngineMeterName = "github.com/kwilteam/kwil-db/node/engine" // maybe split into engine/interpreter and engin/parse and engine/planner
+	EngineMeterName = "github.com/trufnetwork/kwil-db/node/engine" // maybe split into engine/interpreter and engin/parse and engine/planner
 
-	ConsensusMeterName = "github.com/kwilteam/kwil-db/node/consensus"
+	ConsensusMeterName = "github.com/trufnetwork/kwil-db/node/consensus"
 
-	BlockProcessorMeterName = "github.com/kwilteam/kwil-db/node/block_processor"
+	BlockProcessorMeterName = "github.com/trufnetwork/kwil-db/node/block_processor"
 
-	MempoolMeterName = "github.com/kwilteam/kwil-db/node/mempool"
+	MempoolMeterName = "github.com/trufnetwork/kwil-db/node/mempool"
 
-	BlockStoreMeterName = "github.com/kwilteam/kwil-db/node/store"
+	BlockStoreMeterName = "github.com/trufnetwork/kwil-db/node/store"
 
-	AccountsMeterName = "github.com/kwilteam/kwil-db/node/accounts"
+	AccountsMeterName = "github.com/trufnetwork/kwil-db/node/accounts"
 )
 
 // init sets up all meters and instruments. Initially, the no-op meter

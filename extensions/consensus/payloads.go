@@ -3,8 +3,8 @@ package consensus
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
 
 	"math/big"
 )

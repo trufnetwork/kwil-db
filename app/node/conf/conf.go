@@ -23,8 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/config"
 
 	"github.com/knadh/koanf/parsers/toml/v2"
 	"github.com/knadh/koanf/providers/env"

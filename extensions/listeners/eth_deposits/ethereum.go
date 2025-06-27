@@ -14,10 +14,10 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/jpillora/backoff"
-	kcrypto "github.com/kwilteam/kwil-db/core/crypto"
+	kcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/extensions/resolutions/credit"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions/credit"
 )
 
 // file contains functionality for subscribing to ethereum and reading logs

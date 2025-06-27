@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 func (ce *ConsensusEngine) validateBlock(blk *ktypes.Block) error {

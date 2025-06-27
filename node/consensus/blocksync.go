@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jpillora/backoff"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 // The leader must determine the best height to ensure it is synchronized with the network

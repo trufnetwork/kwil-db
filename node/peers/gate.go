@@ -5,7 +5,6 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/core/log"
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/control"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -13,6 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/multiformats/go-multiaddr"
 	msmux "github.com/multiformats/go-multistream"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 // WhitelistGater is a libp2p connmgr.ConnectionGater implementation to enforce

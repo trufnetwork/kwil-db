@@ -1,7 +1,7 @@
 package store
 
 import (
-	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 type options struct {

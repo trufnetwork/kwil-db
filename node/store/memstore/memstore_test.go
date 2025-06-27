@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 func fakeAppHash(height int64) types.Hash {

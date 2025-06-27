@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/csv"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/csv"
 )
 
 func Test_CSV(t *testing.T) {

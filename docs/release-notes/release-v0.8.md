@@ -71,7 +71,7 @@ The CLI utilities, the Go SDK client, and the JS SDK now use the JSON-RPC server
 
 The HTTP API, which is a REST gateway for the gRPC server, is now deprecated, although it listens on all network interfaces on port 8080 by default. The gRPC server, which was previously deprecated, now listens only on a loopback address to support the internal HTTP gateway (Swagger). The gRPC and the HTTP gateway will be removed in the next release.
 
-The OpenRPC specification document for the "user" RPC service may be found in the [source code repository](https://github.com/kwilteam/kwil-db/blob/release-v0.8/internal/services/jsonrpc/usersvc/user.openrpc.json). The server itself will also provide the server's active service specification at the `/spec/v1` HTTP endpoint and in the response to the `rpc.discover` JSON-RPC methods.
+The OpenRPC specification document for the "user" RPC service may be found in the [source code repository](https://github.com/trufnetwork/kwil-db/blob/release-v0.8/internal/services/jsonrpc/usersvc/user.openrpc.json). The server itself will also provide the server's active service specification at the `/spec/v1` HTTP endpoint and in the response to the `rpc.discover` JSON-RPC methods.
 
 The `"params"` value in all requests are *named* rather than *positional*. This means that the JSON-RPC 1.0 calling convention with an array `[]` for the parameters is not supported, only the JSON-RPC convention using an object `{}`. However, this is a detail that the Kwil clients hide from users. Only if doing manual HTTP POST requests, such as with `curl` or Postman, is this important.
 
@@ -143,7 +143,7 @@ Added the `utils parse` command to parse a Kuneiform file and output the schema 
 
 Added the `utils decode-tx` command to decode a serialized transaction provided as a base64 string.
 
-Many of the fields in the JSON objects returned by `query-tx` and other commands with the `--output json` option are renamed with consistent snake case formatting. See the See [UPGRADING.md](https://github.com/kwilteam/kwil-db/blob/release-v0.8/UPGRADING.md) for details on changes to the `core` module types and their JSON tags.
+Many of the fields in the JSON objects returned by `query-tx` and other commands with the `--output json` option are renamed with consistent snake case formatting. See the See [UPGRADING.md](https://github.com/trufnetwork/kwil-db/blob/release-v0.8/UPGRADING.md) for details on changes to the `core` module types and their JSON tags.
 
 The `account balance` command may now be given a `--pending` flag to return account information that includes changes that consider any unconfirmed transactions. This is useful for determining the next nonce for an account when broadcasting multiple transaction per block.
 
@@ -177,11 +177,11 @@ This release of Kwil DB uses version 0.2.1 of the `core` Go module.
 A Go application that supports Kwil DB v0.8.0 should be developed using the `core` module specified in the go.mod as follows:
 
 ```go
-require github.com/kwilteam/kwil-db/core v0.2.1
-require github.com/kwilteam/kwil-db/parse v0.2.1 // to parse Kuneiform files
+require github.com/trufnetwork/kwil-db/core v0.2.1
+require github.com/trufnetwork/kwil-db/parse v0.2.1 // to parse Kuneiform files
 ```
 
-See the example application in [`client/core/example`](https://github.com/kwilteam/kwil-db/tree/release-v0.8/core/client/example) for a demonstration.
+See the example application in [`client/core/example`](https://github.com/trufnetwork/kwil-db/tree/release-v0.8/core/client/example) for a demonstration.
 
 Below discusses the breaking changes to the `core` module, which provides the SDK and client for Kwil. If you do not use the Go SDK, you can skip this section.
 
@@ -299,4 +299,4 @@ This release requires Go version 1.21 or 1.22.
 
 This release consists of 164 commits changing 583 files, with a total of 67,719 lines of code added and 31,945 lines deleted.
 
-See the full list of changes since v0.7 at https://github.com/kwilteam/kwil-db/compare/v0.7.6...v0.8.1
+See the full list of changes since v0.7 at https://github.com/trufnetwork/kwil-db/compare/v0.7.6...v0.8.1

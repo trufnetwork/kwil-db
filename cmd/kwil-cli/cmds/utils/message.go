@@ -9,8 +9,8 @@ import (
 	"io"
 	"reflect"
 
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 type transaction struct {

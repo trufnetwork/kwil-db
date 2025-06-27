@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 //go:embed users_template.sql

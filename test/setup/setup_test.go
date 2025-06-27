@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/test/setup"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/test/setup"
 )
 
 // this is a simple test to ensure that the setup package is working

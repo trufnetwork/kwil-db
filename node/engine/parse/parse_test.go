@@ -4,10 +4,10 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
 // assertPositionsAreSet asserts that all positions in the ast are set.
@@ -959,7 +959,7 @@ func Test_SQL(t *testing.T) {
 		{
 			// this select doesn't make much sense, however
 			// it is a regression test for a previously known bug
-			// https://github.com/kwilteam/kwil-db/pull/810
+			// https://github.com/trufnetwork/kwil-db/pull/810
 			name: "offset and limit",
 			sql:  `SELECT * FROM users LIMIT id OFFSET id;`,
 			want: &SQLStatement{

@@ -155,8 +155,8 @@ jobs:
           rm -rf go.work
           cd ..
           rm -rf ./kgw
-          git config --global url."https://${GH_ACCESS_TOKEN}:x-oauth-basic@github.com/kwilteam/".insteadOf "https://github.com/kwilteam/"
-          git clone -b ${{ inputs.kgw-ref }}  https://github.com/kwilteam/kgw.git ./kgw
+          git config --global url."https://${GH_ACCESS_TOKEN}:x-oauth-basic@github.com/trufnetwork/".insteadOf "https://github.com/trufnetwork/"
+          git clone -b ${{ inputs.kgw-ref }}  https://github.com/trufnetwork/kgw.git ./kgw
           rm -rf ~/.gitconfig
           cd ./kgw
           echo "KGW_DIR=$(pwd)" >> $GITHUB_ENV
@@ -197,7 +197,7 @@ jobs:
           # NOTE: we use the default hardhat signer address
           KWIL_DB_OWNER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 docker compose up -d
           # clone kwil-js
-          git clone https://github.com/kwilteam/kwil-js.git /tmp/kwil-js
+          git clone https://github.com/trufnetwork/kwil-js.git /tmp/kwil-js
           cd /tmp/kwil-js
           # kwil-js release branch is v0.x
           kjs_ref=${{ inputs.kjs-ref }}

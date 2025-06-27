@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 func TestPeerIDPubKeyRoundTrip(t *testing.T) {

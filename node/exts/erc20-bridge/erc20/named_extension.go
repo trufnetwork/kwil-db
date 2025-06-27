@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // this file implements a "named" erc20 extension, which is the extension that users interact with

@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 // consensusMessageType is the type of messages used to trigger the state changes in the consensus engine.

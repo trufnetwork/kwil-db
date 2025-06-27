@@ -15,12 +15,12 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
-	"github.com/kwilteam/kwil-db/node/exts/evm-sync/chains"
-	orderedsync "github.com/kwilteam/kwil-db/node/exts/ordered-sync"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
 )
 
 func init() {

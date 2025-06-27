@@ -16,14 +16,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds/database"
-	clientImpl "github.com/kwilteam/kwil-db/core/client"
-	client "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds/database"
+	clientImpl "github.com/trufnetwork/kwil-db/core/client"
+	client "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 type jsonRPCCLIDriver struct {
