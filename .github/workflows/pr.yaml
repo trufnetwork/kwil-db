@@ -37,7 +37,6 @@ jobs:
 
   test:
     needs: changes
-    # TODO: uncomment this when we have a way to run the test job
     #  only run only if there are changes and non-draft PRs
     if: ${{ needs.changes.outputs.run == 'true' && !github.event.pull_request.draft}}
     runs-on: ubuntu-latest
