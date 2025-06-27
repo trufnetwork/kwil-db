@@ -8,17 +8,17 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/accounts"
-	"github.com/kwilteam/kwil-db/node/pg"
-	dbtest "github.com/kwilteam/kwil-db/node/pg/test"
-	"github.com/kwilteam/kwil-db/node/types/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/accounts"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	dbtest "github.com/trufnetwork/kwil-db/node/pg/test"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 func TestChangesetMigration(t *testing.T) {

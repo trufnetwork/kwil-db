@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/types"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // The harness methods in this file pertain to the embedded dataset schema,

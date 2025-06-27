@@ -19,18 +19,18 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/custom"
-	appNode "github.com/kwilteam/kwil-db/app/node"
-	"github.com/kwilteam/kwil-db/app/node/conf"
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node"
-	"github.com/kwilteam/kwil-db/node/engine/interpreter"
-	"github.com/kwilteam/kwil-db/node/meta"
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/app/custom"
+	appNode "github.com/trufnetwork/kwil-db/app/node"
+	"github.com/trufnetwork/kwil-db/app/node/conf"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node"
+	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
+	"github.com/trufnetwork/kwil-db/node/meta"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 var (

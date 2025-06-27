@@ -7,10 +7,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 )
 
 // testing the testing package

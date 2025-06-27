@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kwilteam/kwil-db/app"
+	"github.com/trufnetwork/kwil-db/app"
 )
 
 func main() {

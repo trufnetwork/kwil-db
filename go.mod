@@ -1,4 +1,4 @@
-module github.com/kwilteam/kwil-db
+module github.com/trufnetwork/kwil-db
 
 go 1.23.0
 
@@ -19,7 +19,6 @@ require (
 	github.com/knadh/koanf/providers/posflag v0.1.0
 	github.com/knadh/koanf/providers/structs v0.1.0
 	github.com/knadh/koanf/v2 v2.1.2
-	github.com/kwilteam/kwil-db/core v0.4.1
 	github.com/kwilteam/openzeppelin-merkle-tree-go v0.0.0-20250128210530-6c29061dd35f // tmp hacky fix branch
 	github.com/libp2p/go-libp2p v0.38.2
 	github.com/libp2p/go-libp2p-kad-dht v0.29.0
@@ -32,6 +31,7 @@ require (
 	github.com/samber/lo v1.47.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/pflag v1.0.6
+	github.com/trufnetwork/kwil-db/core v0.4.1
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.34.0
 	go.opentelemetry.io/otel/metric v1.34.0

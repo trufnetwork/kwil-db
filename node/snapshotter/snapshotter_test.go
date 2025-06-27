@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/utils"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/utils"
 )
 
 const (

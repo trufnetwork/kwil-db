@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
-	dbtest "github.com/kwilteam/kwil-db/node/pg/test"
-	"github.com/kwilteam/kwil-db/node/types/sql"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
+	dbtest "github.com/trufnetwork/kwil-db/node/pg/test"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/voting"
 
 	"github.com/stretchr/testify/require"
 )

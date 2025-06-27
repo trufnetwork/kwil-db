@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/pg"
 )
 
 func NewTestPool(ctx context.Context, dropSchemas []string, dropTables ...string) (*pg.Pool, func(), error) {

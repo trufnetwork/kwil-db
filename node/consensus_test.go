@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 func TestBlockProp_MarshalUnmarshal(t *testing.T) {

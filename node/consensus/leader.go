@@ -10,9 +10,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/kwilteam/kwil-db/config"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/config"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 // The Leader is responsible for proposing blocks and managing the consensus process:

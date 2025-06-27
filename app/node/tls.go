@@ -1,7 +1,7 @@
 package node
 
 import (
-	"github.com/kwilteam/kwil-db/core/rpc/transport"
+	"github.com/trufnetwork/kwil-db/core/rpc/transport"
 )
 
 // defaultAdminClients is the name of the file containing the PEM-encoded

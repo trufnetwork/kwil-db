@@ -3,12 +3,12 @@ package node
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/consensus"
-	"github.com/kwilteam/kwil-db/node/snapshotter"
-	"github.com/kwilteam/kwil-db/node/types"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/consensus"
+	"github.com/trufnetwork/kwil-db/node/snapshotter"
+	"github.com/trufnetwork/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 type ConsensusEngine interface {

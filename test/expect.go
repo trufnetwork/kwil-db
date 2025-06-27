@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/test/setup"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/test/setup"
 )
 
 var txTimeout = 5 * time.Second

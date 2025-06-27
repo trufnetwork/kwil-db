@@ -11,10 +11,10 @@ import (
 	"io"
 	"time"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/utils"
-	"github.com/kwilteam/kwil-db/node/peers"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/node/peers"
+	"github.com/trufnetwork/kwil-db/node/types"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"

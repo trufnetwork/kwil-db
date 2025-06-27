@@ -4,7 +4,7 @@ import (
 	"slices"
 	"time"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
 )
 
 type blockExecStatus struct {

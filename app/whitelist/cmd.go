@@ -1,8 +1,8 @@
 package whitelist
 
 import (
-	"github.com/kwilteam/kwil-db/app/shared/display"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
 )
 
 var peersCmd = &cobra.Command{

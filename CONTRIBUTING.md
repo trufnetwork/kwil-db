@@ -2,7 +2,7 @@
 
 Thanks for taking the time to contribute to kwil-db! 
 
-Please follow the guidelines below when contributing. If you have any questions, please feel free to reach out to us on [Discord](https://discord.com/invite/HzRPZ59Kay) or use the [discussions](https://github.com/kwilteam/kwil-db/discussions) feature on GitHub.
+Please follow the guidelines below when contributing. If you have any questions, please feel free to reach out to us on [Discord](https://discord.com/invite/HzRPZ59Kay) or use the [discussions](https://github.com/trufnetwork/kwil-db/discussions) feature on GitHub.
 
 ## Table of Contents
 
@@ -30,7 +30,7 @@ Discussions can lead to an issue if they determine that a feature, bug fix, or d
 
 Issues are for reporting bugs, requesting features, requesting repository documentation, or discussing any other changes that can be directly resolved with a pull request to the kwil-db repository.
 
-For general discussions, or discussions where it is unclear how the discussion would be closed by a pull request, please use the [discussion](https://github.com/kwilteam/kwil-db/discussions) section.
+For general discussions, or discussions where it is unclear how the discussion would be closed by a pull request, please use the [discussion](https://github.com/trufnetwork/kwil-db/discussions) section.
 
 For opening issues, please follow the following guidelines:
 
@@ -83,7 +83,7 @@ Please ensure that your contributions adhere to the following coding guidelines:
 1. Fork the repository by clicking the "Fork" button on the top right of the repository page. Clone the kwil-db repository and add your fork as a remote.
 
 ```bash
-git clone https://github.com/kwilteam/kwil-db
+git clone https://github.com/trufnetwork/kwil-db
 cd kwil-db
 git checkout main
 git remote add <your-origin-name> <your-fork-url>

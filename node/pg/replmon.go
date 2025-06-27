@@ -16,7 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/kwilteam/kwil-db/core/utils/random"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
 )
 
 // publicationName is the name of the publication required for logical

@@ -8,11 +8,11 @@ import (
 	"sync"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
-	"github.com/kwilteam/kwil-db/node/exts/evm-sync/chains"
-	orderedsync "github.com/kwilteam/kwil-db/node/exts/ordered-sync"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // RegisterEventResolution registers a resolution function for the EVM event listener.

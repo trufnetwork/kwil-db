@@ -14,13 +14,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	adminRpc "github.com/kwilteam/kwil-db/core/rpc/client/admin"
-	adminjson "github.com/kwilteam/kwil-db/core/rpc/client/admin/jsonrpc"
-	"github.com/kwilteam/kwil-db/core/rpc/transport"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/utils/url"
+	"github.com/trufnetwork/kwil-db/core/log"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	adminRpc "github.com/trufnetwork/kwil-db/core/rpc/client/admin"
+	adminjson "github.com/trufnetwork/kwil-db/core/rpc/client/admin/jsonrpc"
+	"github.com/trufnetwork/kwil-db/core/rpc/transport"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/utils/url"
 )
 
 // AdminClient is a client for the Kwil admin service.

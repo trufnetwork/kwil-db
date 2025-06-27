@@ -9,15 +9,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/txapp"
-	nodetypes "github.com/kwilteam/kwil-db/node/types"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/txapp"
+	nodetypes "github.com/trufnetwork/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 /*func marshalTx(t *testing.T, tx *types.Transaction) []byte {

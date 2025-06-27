@@ -7,12 +7,12 @@ import (
 
 	"github.com/samber/lo"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/client"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/client"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 type RewardInstanceInfo struct {

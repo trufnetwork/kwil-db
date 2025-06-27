@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/types/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 func Test_built_in_sql(t *testing.T) {

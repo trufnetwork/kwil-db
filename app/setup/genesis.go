@@ -12,12 +12,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node"
 )
 
 var (

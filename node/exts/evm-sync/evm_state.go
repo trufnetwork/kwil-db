@@ -12,11 +12,11 @@ import (
 
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
-	"github.com/kwilteam/kwil-db/node/exts/evm-sync/chains"
-	"github.com/kwilteam/kwil-db/node/exts/poll"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+	"github.com/trufnetwork/kwil-db/node/exts/poll"
 )
 
 // this file implements functionality for getting state from Ethereum.

@@ -8,10 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/node/peers"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/discovery"
@@ -19,6 +15,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/node/peers"
 )
 
 type P2PService struct {

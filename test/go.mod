@@ -1,10 +1,10 @@
-module github.com/kwilteam/kwil-db/test
+module github.com/trufnetwork/kwil-db/test
 
 go 1.23.0
 
 replace (
-	github.com/kwilteam/kwil-db => ../
-	github.com/kwilteam/kwil-db/core => ../core
+	github.com/trufnetwork/kwil-db => ../
+	github.com/trufnetwork/kwil-db/core => ../core
 )
 
 require (
@@ -13,8 +13,8 @@ require (
 	github.com/docker/go-connections v0.5.0
 	github.com/drhodes/golorem v0.0.0-20220328165741-da82e5b29246
 	github.com/ethereum/go-ethereum v1.14.13
-	github.com/kwilteam/kwil-db v0.10.0-beta-1.0.20250227174801-ad4ee84cc97d
-	github.com/kwilteam/kwil-db/core v0.4.1
+	github.com/trufnetwork/kwil-db v0.10.0-beta-1.0.20250227174801-ad4ee84cc97d
+	github.com/trufnetwork/kwil-db/core v0.4.1
 	github.com/stretchr/testify v1.10.0
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/testcontainers/testcontainers-go/modules/compose v0.34.0

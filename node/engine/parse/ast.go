@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	antlr "github.com/antlr4-go/antlr/v4"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
 // this file contains the ASTs for SQL, DDL, and actions.

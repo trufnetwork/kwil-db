@@ -25,10 +25,10 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	"github.com/kwilteam/kwil-db/node/metrics"
-	"github.com/kwilteam/kwil-db/node/services/jsonrpc/openrpc"
+	"github.com/trufnetwork/kwil-db/core/log"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/node/metrics"
+	"github.com/trufnetwork/kwil-db/node/services/jsonrpc/openrpc"
 )
 
 // The endpoint path is constant for now.

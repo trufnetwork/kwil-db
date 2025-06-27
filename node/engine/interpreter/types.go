@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 type action struct {

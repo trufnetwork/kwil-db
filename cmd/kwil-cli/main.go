@@ -10,9 +10,9 @@ import (
 	// concerned with activation heights, it could need to use new functionality
 	// introduced by the consensus extensions.
 
-	"github.com/kwilteam/kwil-db/app/shared"
-	root "github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
+	"github.com/trufnetwork/kwil-db/app/shared"
+	root "github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
 )
 
 func main() {

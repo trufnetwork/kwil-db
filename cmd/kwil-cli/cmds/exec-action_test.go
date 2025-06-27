@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/csv"
-	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/csv"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 func Test_CSVParams(t *testing.T) {

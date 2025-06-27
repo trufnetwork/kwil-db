@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/utils/random"
-	"github.com/kwilteam/kwil-db/node/metrics"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
+	"github.com/trufnetwork/kwil-db/node/metrics"
 
 	"github.com/libp2p/go-libp2p/core/discovery"
 	"github.com/libp2p/go-libp2p/core/event"

@@ -7,10 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
 )
 
 func KeyCmd() *cobra.Command {

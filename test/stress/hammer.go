@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/client"
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/gatewayclient"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/utils/random"
+	"github.com/trufnetwork/kwil-db/core/client"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/gatewayclient"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
 )
 
 // runLooped executes a basic function with a specified delay between each call

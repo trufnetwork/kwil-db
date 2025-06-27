@@ -3,11 +3,11 @@ package utils
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/client"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
-	cTypes "github.com/kwilteam/kwil-db/core/client/types"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/client"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
+	cTypes "github.com/trufnetwork/kwil-db/core/client/types"
 )
 
 var (

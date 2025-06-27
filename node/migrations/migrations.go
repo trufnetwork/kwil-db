@@ -14,7 +14,7 @@
 //
 // The old network cannot deploy databases, drop them, transfer balances, vote on any resolutions, or change their validator power.
 //
-// For more information on conflict resolution, see https://github.com/kwilteam/kwil-db/wiki/Long%E2%80%90Running-Network-Migrations
+// For more information on conflict resolution, see https://github.com/trufnetwork/kwil-db/wiki/Long%E2%80%90Running-Network-Migrations
 package migrations
 
 import (
@@ -25,10 +25,10 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 // migrator instance responsible for managing zero downtime migrations.

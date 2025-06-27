@@ -6,7 +6,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 type NodeKeyFile struct {

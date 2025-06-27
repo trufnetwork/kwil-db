@@ -3,8 +3,8 @@ package voting
 import (
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 func Test_MarshalUnmarshalPowerRequest(t *testing.T) {

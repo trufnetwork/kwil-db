@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	ntypes "github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/core/types"
+	ntypes "github.com/trufnetwork/kwil-db/node/types"
 )
 
 type blockHashes struct { // meta

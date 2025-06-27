@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/app/shared"
+	"github.com/trufnetwork/kwil-db/app/shared"
 
 	"github.com/spf13/cobra"
 )

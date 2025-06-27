@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/client"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/client"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 var (

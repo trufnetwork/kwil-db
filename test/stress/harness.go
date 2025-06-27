@@ -8,10 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // harness is a Client driver designed around an embedded dataset Kuneiform

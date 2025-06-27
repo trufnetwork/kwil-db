@@ -11,13 +11,13 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/app/params"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
-	adminTypes "github.com/kwilteam/kwil-db/core/types/admin"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/trufnetwork/kwil-db/app/params"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
+	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 var ErrTxNotConfirmed = errors.New("transaction not confirmed")

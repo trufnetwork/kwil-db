@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/core/utils/random"
-	"github.com/kwilteam/kwil-db/node/metrics"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
+	"github.com/trufnetwork/kwil-db/node/metrics"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 
 	"github.com/jackc/pgx/v5"
 )

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/types/sql"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 func Test_Roles(t *testing.T) {

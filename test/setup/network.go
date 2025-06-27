@@ -8,9 +8,9 @@ import (
 
 	dockerNet "github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
-	"github.com/kwilteam/kwil-db/core/utils/random"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
 )
 
 const (

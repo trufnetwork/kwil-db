@@ -3,10 +3,10 @@ package common
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	client "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	client "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // BindTxFlags binds the flags for a transaction.

@@ -3,9 +3,9 @@ package node
 import (
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/app/custom"
-	"github.com/kwilteam/kwil-db/app/node/conf"
-	"github.com/kwilteam/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/app/custom"
+	"github.com/trufnetwork/kwil-db/app/node/conf"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
 
 	"github.com/spf13/cobra"
 )

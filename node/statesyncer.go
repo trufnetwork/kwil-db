@@ -21,15 +21,15 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/gzip"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/utils"
-	"github.com/kwilteam/kwil-db/node/meta"
-	"github.com/kwilteam/kwil-db/node/peers"
-	"github.com/kwilteam/kwil-db/node/snapshotter"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/node/meta"
+	"github.com/trufnetwork/kwil-db/node/peers"
+	"github.com/trufnetwork/kwil-db/node/snapshotter"
 )
 
 var (

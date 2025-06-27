@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/utils/order"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/utils/order"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 type ResolveFunc func(ctx context.Context, app *common.App, block *common.BlockContext, res *ResolutionMessage) error

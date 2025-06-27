@@ -8,13 +8,13 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/hooks"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/types/sql"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/hooks"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 const (

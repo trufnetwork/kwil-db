@@ -3,7 +3,7 @@ package syncmap_test
 import (
 	"testing"
 
-	"github.com/kwilteam/kwil-db/node/utils/syncmap"
+	"github.com/trufnetwork/kwil-db/node/utils/syncmap"
 )
 
 func Test_SyncMap(t *testing.T) {

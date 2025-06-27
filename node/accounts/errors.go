@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 var (

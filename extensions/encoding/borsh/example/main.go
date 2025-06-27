@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/kwilteam/kwil-db/core/types/serialize"
-	"github.com/kwilteam/kwil-db/extensions/encoding/borsh"
-	"github.com/kwilteam/kwil-db/extensions/encoding/rlp"
+	"github.com/trufnetwork/kwil-db/core/types/serialize"
+	"github.com/trufnetwork/kwil-db/extensions/encoding/borsh"
+	"github.com/trufnetwork/kwil-db/extensions/encoding/rlp"
 )
 
 type example1 struct {

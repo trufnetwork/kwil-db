@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/utils/conv"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/utils/conv"
 )
 
 func TestInt(t *testing.T) {

@@ -1,6 +1,6 @@
 package types
 
-import "github.com/kwilteam/kwil-db/core/types"
+import "github.com/trufnetwork/kwil-db/core/types"
 
 // Tx represents an immutable transaction. The constructor will compute the
 // hash, which it will return directly from the Hash method. This means that the

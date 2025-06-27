@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kwilteam/kwil-db/node/exts/erc20-bridge/utils"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 )
 
 func getSigner(t *testing.T) (*ecdsa.PrivateKey, *ecdsa.PublicKey) {

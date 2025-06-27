@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/metrics"
-	"github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/core/log"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/metrics"
+	"github.com/trufnetwork/kwil-db/node/types"
 
 	"github.com/dgraph-io/badger/v4"
 	boptions "github.com/dgraph-io/badger/v4/options"

@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 func TestSyncedRewardData_MarshalBinary(t *testing.T) {

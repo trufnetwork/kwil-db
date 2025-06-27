@@ -5,5 +5,5 @@ package extensions
 // it is imported by cmd/kwild/main.go, so any other files in this directory will be compiled
 
 import (
-	_ "github.com/kwilteam/kwil-db/extensions/listeners/eth_deposits"
+	_ "github.com/trufnetwork/kwil-db/extensions/listeners/eth_deposits"
 )
