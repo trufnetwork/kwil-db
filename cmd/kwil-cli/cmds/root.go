@@ -3,18 +3,18 @@ package cmds
 import (
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/app/custom"
-	"github.com/kwilteam/kwil-db/app/shared"
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/app/shared/version"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds/account"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds/configure"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds/database"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/cmds/utils"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/helpers"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/custom"
+	"github.com/trufnetwork/kwil-db/app/shared"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/app/shared/version"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds/account"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds/configure"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds/database"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/cmds/utils"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/helpers"
 )
 
 var longDesc = `Command line interface client for using ` + "`%s`." + `

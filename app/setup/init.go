@@ -10,18 +10,18 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/custom"
-	"github.com/kwilteam/kwil-db/app/key"
-	"github.com/kwilteam/kwil-db/app/node/conf"
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/utils"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
-	"github.com/kwilteam/kwil-db/node"
+	"github.com/trufnetwork/kwil-db/app/custom"
+	"github.com/trufnetwork/kwil-db/app/key"
+	"github.com/trufnetwork/kwil-db/app/node/conf"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/utils"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/node"
 )
 
 const (

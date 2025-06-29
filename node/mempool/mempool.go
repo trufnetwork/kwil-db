@@ -5,8 +5,8 @@ import (
 	"slices"
 	"sync"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 // Mempool maintains a thread-safe pool of unconfirmed transactions with size limits.

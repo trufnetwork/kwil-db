@@ -6,8 +6,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

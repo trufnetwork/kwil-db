@@ -11,16 +11,16 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/engine/interpreter"
-	"github.com/kwilteam/kwil-db/node/pg"
-	pgtest "github.com/kwilteam/kwil-db/node/pg/test"
-	"github.com/kwilteam/kwil-db/node/types/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	pgtest "github.com/trufnetwork/kwil-db/node/pg/test"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // func TestMain(m *testing.M) {
@@ -679,7 +679,7 @@ func Test_SQL(t *testing.T) {
 		},
 		{
 			// this is a regression test
-			// https://github.com/kwilteam/kwil-db/issues/1352
+			// https://github.com/trufnetwork/kwil-db/issues/1352
 			name: "alter table add and remove column",
 			sql: []string{
 				"CREATE TABLE users2 (id INT PRIMARY KEY, name TEXT);",

@@ -3,7 +3,7 @@
 package interpreter
 
 import (
-	"github.com/kwilteam/kwil-db/node/engine/parse"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 // mustParse is a helper function to parse an action and panic on error.

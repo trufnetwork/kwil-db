@@ -60,7 +60,7 @@ The supported versions of Kwil are now as follows:
 | v0.9.x  | ✓        |
 | < v0.9  | ❌        |
 
-See [SECURITY.md](https://github.com/kwilteam/kwil-db/blob/main/SECURITY.md) for details.
+See [SECURITY.md](https://github.com/trufnetwork/kwil-db/blob/main/SECURITY.md) for details.
 
 ## Notable Features and Changes
 
@@ -88,13 +88,13 @@ Permissions for what kinds of statements may be executed by a user are dictated 
 
 As before, executing a mutable action uses an `'execute'` *transaction* type, and a read-only action with the `view` modifier is called with the `'user.call'` *RPC request* rather than a transaction.
 
-This feature was introduced in commit [c21d062](https://github.com/kwilteam/kwil-db/commit/c21d06222a8e98d841ae8435f9be87d0a569b1b2).
+This feature was introduced in commit [c21d062](https://github.com/trufnetwork/kwil-db/commit/c21d06222a8e98d841ae8435f9be87d0a569b1b2).
 
 ### Native ERC20 bridge and reward system
 
 Kwil now has a native ERC20 bridge, allowing protocols to transfer ERC20 tokens to, from, and within a Kwil database. Tokens are deposited into a database by locking them up in an escrow contract. Tokens are released from the escrow contract by a multisig. Each key in the multisig runs a Kwil node to listen to the network and authorize withdrawals from the bridge. Each Kwil network has its own multisig and escrow contract, and thus can choose its own token, threshold, and EVM chain.
 
-See commits: [577a1c9](https://github.com/kwilteam/kwil-db/commit/577a1c9918b180323719480ab500e4480cc87765), [c812c47](https://github.com/kwilteam/kwil-db/commit/c812c4745546b354aec99a9050f299746a9e2b38), [2a7bdce](https://github.com/kwilteam/kwil-db/commit/2a7bdce1c7fc7a1c9b00814fde37f7bfb7354e47), [5ba8870](https://github.com/kwilteam/kwil-db/commit/5ba8870368fb6e24448bce34fbfb0da2819122e3), [8891cc7](https://github.com/kwilteam/kwil-db/commit/8891cc7f2f2d467b098176c7d49263be588d65f5), and [3f95602](https://github.com/kwilteam/kwil-db/commit/3f95602b27ab283c25c97d1a7da1914242613804).
+See commits: [577a1c9](https://github.com/trufnetwork/kwil-db/commit/577a1c9918b180323719480ab500e4480cc87765), [c812c47](https://github.com/trufnetwork/kwil-db/commit/c812c4745546b354aec99a9050f299746a9e2b38), [2a7bdce](https://github.com/trufnetwork/kwil-db/commit/2a7bdce1c7fc7a1c9b00814fde37f7bfb7354e47), [5ba8870](https://github.com/trufnetwork/kwil-db/commit/5ba8870368fb6e24448bce34fbfb0da2819122e3), [8891cc7](https://github.com/trufnetwork/kwil-db/commit/8891cc7f2f2d467b098176c7d49263be588d65f5), and [3f95602](https://github.com/trufnetwork/kwil-db/commit/3f95602b27ab283c25c97d1a7da1914242613804).
 
 ### New peer-to-peer (P2P) layer using `libp2p` protocols
 
@@ -149,10 +149,10 @@ As described above, much of Kwil's core functionality has been redesigned. This 
 * The extension system now supports custom key types. See `core/crypto/keys.go`.
 * Unknown settings in `config.toml` are now an error. This will catch obsolete or misspelled settings.
 * The `core` module no longer requires the `go-ethereum` or `zap` modules. All dependencies are under permissive licenses.
-* Added a blockchain statistics [collection tool](https://github.com/kwilteam/kwil-db/commit/b7ba978a3c3afa9011d5628a4ff3407b3a6e3935) for use with an offline block store.
+* Added a blockchain statistics [collection tool](https://github.com/trufnetwork/kwil-db/commit/b7ba978a3c3afa9011d5628a4ff3407b3a6e3935) for use with an offline block store.
 
 ## Diff summary
 
-<https://github.com/kwilteam/kwil-db/compare/41aa8672ce320573b303384f26d528e16f92f9ed^...v0.10.0>
+<https://github.com/trufnetwork/kwil-db/compare/41aa8672ce320573b303384f26d528e16f92f9ed^...v0.10.0>
 
 857 changed files with 122,633 additions and 64,846 deletions

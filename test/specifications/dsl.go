@@ -6,9 +6,9 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
-	client "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
+	client "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // A Dsl describes a set of interactions that could achieve a specific goal

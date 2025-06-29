@@ -11,7 +11,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
 
-	"github.com/kwilteam/kwil-db/core/utils/random"
+	"github.com/trufnetwork/kwil-db/core/utils/random"
 )
 
 // EnsureNetworkExist creates a new docker network with a random UUID name.

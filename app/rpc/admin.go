@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/node/conf"
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/config"
-	adminclient "github.com/kwilteam/kwil-db/node/admin"
+	"github.com/trufnetwork/kwil-db/app/node/conf"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/config"
+	adminclient "github.com/trufnetwork/kwil-db/node/admin"
 )
 
 const (

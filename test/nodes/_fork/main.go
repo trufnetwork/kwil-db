@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/kwilteam/kwil-db/cmd/kwild/root"
+	"github.com/trufnetwork/kwil-db/cmd/kwild/root"
 )
 
 func main() {

@@ -3,10 +3,10 @@ package migrations
 import (
 	"context"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/accounts"
-	"github.com/kwilteam/kwil-db/node/snapshotter"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/accounts"
+	"github.com/trufnetwork/kwil-db/node/snapshotter"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // snapshotter creates snapshots of the state at the migration height.

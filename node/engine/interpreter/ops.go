@@ -3,7 +3,7 @@ package interpreter
 import (
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/node/engine/parse"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 type comparisonOp uint8

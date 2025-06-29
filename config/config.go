@@ -16,11 +16,11 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	ethCommon "github.com/ethereum/go-ethereum/common"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/exts/evm-sync/chains"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 )
 
 var (
@@ -452,7 +452,7 @@ type StoreConfig struct {
 	Compression bool `toml:"compression" comment:"compress data when writing new data"`
 
 	// Internal block size and block cache size may be of use soon.
-	//   https://github.com/kwilteam/kwil-db/issues/1347
+	//   https://github.com/trufnetwork/kwil-db/issues/1347
 	// CacheSize int `toml:"cache_size" comment:"size of the block store cache in bytes"`
 	// ChunkSize int `toml:"chunk_size" comment:"size of the block store's internal blocks"`
 }

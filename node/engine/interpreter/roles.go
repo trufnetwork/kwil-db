@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // the following are built-in roles that are always available.

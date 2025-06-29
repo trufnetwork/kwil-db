@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/kwilteam/kwil-db/core/utils"
+	"github.com/trufnetwork/kwil-db/core/utils"
 )
 
 // KeyType is the type of key, which may be public or private depending on context.

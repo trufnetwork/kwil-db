@@ -5,8 +5,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
 )
 
 // PollFuncConstructor is a function that constructs a PollFunc. If it returns an error,

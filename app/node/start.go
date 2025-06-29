@@ -7,12 +7,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/custom"
-	"github.com/kwilteam/kwil-db/app/node/conf"
-	"github.com/kwilteam/kwil-db/app/shared/bind"
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/node/metrics"
-	"github.com/kwilteam/kwil-db/version"
+	"github.com/trufnetwork/kwil-db/app/custom"
+	"github.com/trufnetwork/kwil-db/app/node/conf"
+	"github.com/trufnetwork/kwil-db/app/shared/bind"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/node/metrics"
+	"github.com/trufnetwork/kwil-db/version"
 )
 
 const (

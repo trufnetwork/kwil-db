@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/core/log"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 )
 
 // JSONRPCClient will use the commands to make certain requests

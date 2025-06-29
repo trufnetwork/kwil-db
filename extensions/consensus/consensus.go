@@ -31,13 +31,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/types/serialize"
-	"github.com/kwilteam/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types/serialize"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions"
 
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
 )
 
 // Need fork order defined for unambiguous application of many at same height,

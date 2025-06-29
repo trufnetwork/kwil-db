@@ -1,6 +1,6 @@
 package userjson
 
-import jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
+import jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 
 const (
 	MethodHealth                jsonrpc.Method = "user.health"

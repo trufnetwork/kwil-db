@@ -12,10 +12,10 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
-	"github.com/kwilteam/kwil-db/extensions/resolutions/credit"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/extensions/resolutions/credit"
 )
 
 const ListenerName = "eth_deposits"

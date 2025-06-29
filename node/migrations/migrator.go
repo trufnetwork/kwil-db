@@ -12,15 +12,15 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/accounts"
-	"github.com/kwilteam/kwil-db/node/pg"
-	"github.com/kwilteam/kwil-db/node/types/sql"
-	"github.com/kwilteam/kwil-db/node/versioning"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/accounts"
+	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/versioning"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 var (
@@ -182,7 +182,7 @@ func (m *Migrator) NotifyHeight(ctx context.Context, block *common.BlockContext,
 		migration on the new chain. Im not sure of a way to guarantee this besdies literally enforcing that the old
 		chain runs the migration synchronously as part of consensus.
 
-		NOTE: https://github.com/kwilteam/kwil-db/pull/837#discussion_r1648036539
+		NOTE: https://github.com/trufnetwork/kwil-db/pull/837#discussion_r1648036539
 	*/
 
 	// if the current block height is the height at which the migration starts, then

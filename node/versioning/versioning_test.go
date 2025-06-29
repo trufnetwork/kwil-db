@@ -6,10 +6,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 
-	dbtest "github.com/kwilteam/kwil-db/node/pg/test"
-	"github.com/kwilteam/kwil-db/node/versioning"
+	dbtest "github.com/trufnetwork/kwil-db/node/pg/test"
+	"github.com/trufnetwork/kwil-db/node/versioning"
 
 	"github.com/stretchr/testify/require"
 )

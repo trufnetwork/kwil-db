@@ -6,8 +6,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/node/exts/erc20-bridge/utils"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 )
 
 // ethClient is a client for interacting with the ethereum blockchain

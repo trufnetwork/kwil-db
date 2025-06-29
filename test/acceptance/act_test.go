@@ -12,15 +12,15 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/config"
-	ctypes "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/test"
-	"github.com/kwilteam/kwil-db/test/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/config"
+	ctypes "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/test"
+	"github.com/trufnetwork/kwil-db/test/setup"
 )
 
 // TODO:

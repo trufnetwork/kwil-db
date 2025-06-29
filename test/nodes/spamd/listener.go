@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
 )
 
 const ListenerName = "spammer"

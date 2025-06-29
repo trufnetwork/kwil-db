@@ -3,7 +3,7 @@ package key
 import (
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 )
 
 func TestNodeKeyFileMarshalJSON(t *testing.T) {

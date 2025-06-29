@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/types"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // newTx creates a new Transaction signed by the Client's Signer

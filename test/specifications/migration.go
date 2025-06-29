@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kwilteam/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/config"
 )
 
 // Trigger migration

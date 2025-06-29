@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/helpers"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/helpers"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 func parseCmd() *cobra.Command {

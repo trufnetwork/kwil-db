@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 // SnapshotChunkReq is for ProtocolIDSnapshotChunk "/kwil/snapchunk/1.0.0"

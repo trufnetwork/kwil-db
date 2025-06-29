@@ -6,10 +6,10 @@ import (
 	"testing"
 	"unicode"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
-	pggenerate "github.com/kwilteam/kwil-db/node/engine/pg_generate"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
+	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
 )
 
 func Test_PgGenerate(t *testing.T) {

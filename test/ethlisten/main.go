@@ -9,11 +9,11 @@ import (
 	"syscall"
 
 	ethLog "github.com/ethereum/go-ethereum/log"
-	"github.com/kwilteam/kwil-db/config"
-	deposits "github.com/kwilteam/kwil-db/extensions/listeners/eth_deposits"
+	"github.com/trufnetwork/kwil-db/config"
+	deposits "github.com/trufnetwork/kwil-db/extensions/listeners/eth_deposits"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 var (

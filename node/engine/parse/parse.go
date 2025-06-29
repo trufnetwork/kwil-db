@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/kwilteam/kwil-db/node/engine/parse/gen"
+	"github.com/trufnetwork/kwil-db/node/engine/parse/gen"
 )
 
 // ParseResult is the result of parsing a SQL statement.

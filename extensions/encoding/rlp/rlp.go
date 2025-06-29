@@ -7,7 +7,7 @@ package rlp
 import (
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/kwilteam/kwil-db/core/types/serialize"
+	"github.com/trufnetwork/kwil-db/core/types/serialize"
 )
 
 func init() {

@@ -6,9 +6,9 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 func Test_NewParsedDecimal(t *testing.T) {

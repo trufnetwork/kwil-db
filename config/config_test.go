@@ -11,9 +11,9 @@ import (
 	gotoml "github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // TestMarshalDuration ensures that a time.Duration can be marshaled and

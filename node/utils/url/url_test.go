@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/kwilteam/kwil-db/node/utils/url"
+	"github.com/trufnetwork/kwil-db/node/utils/url"
 )
 
 func TestParseURL(t *testing.T) {

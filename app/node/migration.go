@@ -12,12 +12,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/client"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/migrations"
-	"github.com/kwilteam/kwil-db/node/snapshotter"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/client"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/migrations"
+	"github.com/trufnetwork/kwil-db/node/snapshotter"
 )
 
 // The migrationClient type is responsible for:

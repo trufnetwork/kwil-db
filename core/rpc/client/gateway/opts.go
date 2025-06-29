@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 
-	rpcclient "github.com/kwilteam/kwil-db/core/rpc/client"
+	rpcclient "github.com/trufnetwork/kwil-db/core/rpc/client"
 )
 
 type ClientOption func(*clientOptions)

@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"os"
 
-	rpcserver "github.com/kwilteam/kwil-db/node/services/jsonrpc"
-	"github.com/kwilteam/kwil-db/node/services/jsonrpc/usersvc"
+	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
+	"github.com/trufnetwork/kwil-db/node/services/jsonrpc/usersvc"
 )
 
 func main() {

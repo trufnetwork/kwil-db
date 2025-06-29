@@ -147,7 +147,7 @@ relies on it.
 ```plaintext
 # github.com/example/dependency
 (main module)
-github.com/kwilteam/kwildb
+github.com/trufnetwork/kwildb
 github.com/anothermodule/anotherpackage
 github.com/example/dependency
 ```

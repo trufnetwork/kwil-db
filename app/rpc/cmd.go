@@ -1,8 +1,8 @@
 package rpc
 
 import (
-	"github.com/kwilteam/kwil-db/app/shared/display"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
 )
 
 const adminExplain = "The `admin` command is used to get information about a running Kwil node using the administration RPC service."

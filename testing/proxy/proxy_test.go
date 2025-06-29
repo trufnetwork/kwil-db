@@ -10,7 +10,7 @@ import (
 	_ "embed"
 	"testing"
 
-	kwilTesting "github.com/kwilteam/kwil-db/testing"
+	kwilTesting "github.com/trufnetwork/kwil-db/testing"
 )
 
 // Test_Impl_1 tests the impl_1.kf file.

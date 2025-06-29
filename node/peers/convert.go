@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 
 	p2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"

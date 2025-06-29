@@ -10,8 +10,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/node/types"
 
 	"github.com/dgraph-io/badger/v4"
 )

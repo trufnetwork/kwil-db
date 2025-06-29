@@ -3,8 +3,8 @@ package validator
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/rpc"
-	"github.com/kwilteam/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/app/rpc"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
 )
 
 const validatorsLong = "The validators command provides functions for creating and broadcasting validator-related transactions (join/approve/leave), and retrieving information on the current validators and join requests."

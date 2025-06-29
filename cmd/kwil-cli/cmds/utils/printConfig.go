@@ -3,8 +3,8 @@ package utils
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
 )
 
 func printConfigCmd() *cobra.Command {

@@ -3,7 +3,7 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/kwilteam/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
 // tests that we have implemented all functions

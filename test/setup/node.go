@@ -15,16 +15,16 @@ import (
 
 	"github.com/docker/go-connections/nat"
 
-	"github.com/kwilteam/kwil-db/app/setup"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node"
-	ethdeployer "github.com/kwilteam/kwil-db/test/integration/eth-deployer"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/compose"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/trufnetwork/kwil-db/app/setup"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node"
+	ethdeployer "github.com/trufnetwork/kwil-db/test/integration/eth-deployer"
 )
 
 var userGroupID = flag.String("ugid", "", "user id and group id to use for the test containers; format: <user_id>:<group_id>")

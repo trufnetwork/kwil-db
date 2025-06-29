@@ -5,14 +5,14 @@ import (
 	"strings"
 
 	"github.com/decred/dcrd/container/lru"
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/extensions/precompiles"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
-	pggenerate "github.com/kwilteam/kwil-db/node/engine/pg_generate"
-	"github.com/kwilteam/kwil-db/node/engine/planner/logical"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/precompiles"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
+	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
+	"github.com/trufnetwork/kwil-db/node/engine/planner/logical"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // executionContext is the context of the entire execution.

@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/jpillora/backoff"
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/core/client"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/extensions/listeners"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/client"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/extensions/listeners"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 // Changeset Extension polls the changesets from the old chain  during migration.

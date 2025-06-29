@@ -127,10 +127,10 @@ jobs:
       - name: compile the core/client/example app
         run: go build -o /dev/null
         working-directory: core/client/example
-#
-#      - name: compile the core/gatewayclient/example app
-#        run: go build -o /dev/null
-#        working-directory: core/gatewayclient/example
+  #
+  #      - name: compile the core/gatewayclient/example app
+  #        run: go build -o /dev/null
+  #        working-directory: core/gatewayclient/example
 
       - name: Generate go vendor
         run: |

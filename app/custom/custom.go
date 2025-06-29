@@ -2,7 +2,7 @@
 // together the kwil-cli and kwild CLIs.
 package custom
 
-import "github.com/kwilteam/kwil-db/config"
+import "github.com/trufnetwork/kwil-db/config"
 
 // DefaultConfig is the function to return the default to all commands in this
 // app package. This is a var so that a custom binary may override the defaults,

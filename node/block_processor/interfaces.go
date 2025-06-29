@@ -4,16 +4,16 @@ import (
 	"context"
 	"math/big"
 
-	"github.com/kwilteam/kwil-db/common"
-	"github.com/kwilteam/kwil-db/config"
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/mempool"
-	"github.com/kwilteam/kwil-db/node/migrations"
-	"github.com/kwilteam/kwil-db/node/snapshotter"
-	"github.com/kwilteam/kwil-db/node/txapp"
-	"github.com/kwilteam/kwil-db/node/types"
-	"github.com/kwilteam/kwil-db/node/types/sql"
-	"github.com/kwilteam/kwil-db/node/voting"
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/config"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/mempool"
+	"github.com/trufnetwork/kwil-db/node/migrations"
+	"github.com/trufnetwork/kwil-db/node/snapshotter"
+	"github.com/trufnetwork/kwil-db/node/txapp"
+	"github.com/trufnetwork/kwil-db/node/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/voting"
 )
 
 // DB is the interface for the main SQL database. All queries must be executed

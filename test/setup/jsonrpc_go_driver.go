@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/core/client"
-	cTypes "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/gatewayclient"
-	"github.com/kwilteam/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/client"
+	cTypes "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/gatewayclient"
+	"github.com/trufnetwork/kwil-db/core/types"
 )
 
 // jsonrpcGoDriver uses the Go client to interact with the kwil node

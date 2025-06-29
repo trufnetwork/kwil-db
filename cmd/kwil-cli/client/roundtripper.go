@@ -9,12 +9,12 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/config"
-	"github.com/kwilteam/kwil-db/cmd/kwil-cli/helpers"
-	"github.com/kwilteam/kwil-db/core/client"
-	clientType "github.com/kwilteam/kwil-db/core/client/types"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/gatewayclient"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/config"
+	"github.com/trufnetwork/kwil-db/cmd/kwil-cli/helpers"
+	"github.com/trufnetwork/kwil-db/core/client"
+	clientType "github.com/trufnetwork/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/gatewayclient"
 )
 
 // These are bit flags used signal certain client features.

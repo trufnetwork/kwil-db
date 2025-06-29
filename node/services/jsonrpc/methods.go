@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"time"
 
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
-	"github.com/kwilteam/kwil-db/node/services/jsonrpc/openrpc"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/node/services/jsonrpc/openrpc"
 )
 
 // MethodHandler is a type of function that returns an interface containing a

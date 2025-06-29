@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kwilteam/kwil-db/core/types/serialize"
+	"github.com/trufnetwork/kwil-db/core/types/serialize"
 )
 
 type testBinaryMarshaler struct {

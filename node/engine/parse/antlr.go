@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	antlr "github.com/antlr4-go/antlr/v4"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/core/types/validation"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/engine/parse/gen"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/core/types/validation"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/parse/gen"
 )
 
 // schemaVisitor is a visitor for converting Kuneiform's ANTLR

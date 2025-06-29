@@ -14,8 +14,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pglogrepl"
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 type changesetIoWriter struct {

@@ -1,7 +1,7 @@
 package adminclient
 
 import (
-	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 type Opt func(*AdminClient)

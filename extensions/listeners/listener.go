@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/common"
 )
 
 // registeredListeners is a map of all registered event listeners.

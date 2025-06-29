@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kwilteam/kwil-db/node/engine"
 	"github.com/spf13/cobra"
+	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
 const (

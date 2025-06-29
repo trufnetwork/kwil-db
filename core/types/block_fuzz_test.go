@@ -4,7 +4,7 @@ package types_test
 import (
 	"testing"
 
-	types "github.com/kwilteam/kwil-db/core/types"
+	types "github.com/trufnetwork/kwil-db/core/types"
 )
 
 func FuzzDecodeBlock(f *testing.F) {

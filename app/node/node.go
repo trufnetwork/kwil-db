@@ -13,19 +13,19 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/kwilteam/kwil-db/app/key"
-	"github.com/kwilteam/kwil-db/config"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
-	"github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	authExt "github.com/kwilteam/kwil-db/extensions/auth"
-	"github.com/kwilteam/kwil-db/node"
-	"github.com/kwilteam/kwil-db/node/consensus"
-	"github.com/kwilteam/kwil-db/node/exts/erc20-bridge/signersvc"
-	"github.com/kwilteam/kwil-db/node/listeners"
-	rpcserver "github.com/kwilteam/kwil-db/node/services/jsonrpc"
-	"github.com/kwilteam/kwil-db/version"
+	"github.com/trufnetwork/kwil-db/app/key"
+	"github.com/trufnetwork/kwil-db/config"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	"github.com/trufnetwork/kwil-db/node"
+	"github.com/trufnetwork/kwil-db/node/consensus"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/signersvc"
+	"github.com/trufnetwork/kwil-db/node/listeners"
+	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
+	"github.com/trufnetwork/kwil-db/version"
 )
 
 type server struct {

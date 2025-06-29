@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 )
 
 type FunctionServiceClient interface {

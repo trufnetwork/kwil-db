@@ -21,7 +21,7 @@ functions on the command line. Go applications may use the package directly.
 The `client` package is part of the `core` Go sub-module of the `kwil-db` repository. To use the package in your Go application, add it as a `require` in your project's `go.mod`:
 
 ```sh
-go get github.com/kwilteam/kwil-db/core
+go get github.com/trufnetwork/kwil-db/core
 go mod tidy
 ```
 
@@ -37,7 +37,7 @@ module mykwilapp
 go 1.23
 
 require (
-    github.com/kwilteam/kwil-db/core v0.4.0
+    github.com/trufnetwork/kwil-db/core v0.4.2
 )
 ```
 
@@ -46,7 +46,7 @@ require (
 With the Kwil `core` module added to your `go.mod`, you can use the `client` package in your code by importing it:
 
 ```go
-import "github.com/kwilteam/kwil-db/core/client"
+import "github.com/trufnetwork/kwil-db/core/client"
 ```
 
 ## Using the `Client` type
@@ -64,10 +64,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/core/client"
-	klog "github.com/kwilteam/kwil-db/core/log"
-	"github.com/kwilteam/kwil-db/core/types"
-	ctypes "github.com/kwilteam/kwil-db/core/client/types"
+	"github.com/trufnetwork/kwil-db/core/client"
+	klog "github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
+	ctypes "github.com/trufnetwork/kwil-db/core/client/types"
 )
 
 const (
@@ -111,8 +111,8 @@ example, we can create and load a secp256k1 private key plus an Ethereum
 
 ```go
 import (
-   	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/core/crypto/auth"
+   	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 )
 
 func genKey() crypto.PrivateKey {
@@ -370,7 +370,7 @@ if err != nil {
 ```
 
 The `Call` method returns the data in the `core/types.CallResult`
-type. See the [godocs](https://pkg.go.dev/github.com/kwilteam/kwil-db/core/types#CallResult)
+type. See the [godocs](https://pkg.go.dev/github.com/trufnetwork/kwil-db/core/types#CallResult)
 for this type to see the methods available for accessing the records.
 
 ## Complete Example
@@ -379,5 +379,5 @@ For a complete example with the SQL used in the sections above, see the code
 in [`core/client/example`](./example/main.go).
 
 The `kwil-cli` CLI app is also built on the `Client` type, and
-[its code](https://github.com/kwilteam/kwil-db/tree/main/cmd/kwil-cli)
+[its code](https://github.com/trufnetwork/kwil-db/tree/main/cmd/kwil-cli)
 can be used as a reference.

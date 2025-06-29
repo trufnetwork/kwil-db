@@ -5,9 +5,9 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/node/utils/muhash"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/node/utils/muhash"
 )
 
 func TestMuHash_Add(t *testing.T) {

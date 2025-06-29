@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kwilteam/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // InitializeMigrationSchema initializes the migration schema in the database.

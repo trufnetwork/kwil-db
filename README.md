@@ -5,11 +5,11 @@ The database for Web3.
 ![banner](./kwil-banner.jpg)
 
 [![Github-License](https://img.shields.io/badge/license-Apache%202.0-green)](./LICENSE.md)
-[![Release](https://img.shields.io/github/v/release/kwilteam/kwil-db)](https://github.com/kwilteam/kwil-db/releases)
-[![Build-Status](https://github.com/kwilteam/kwil-db/actions/workflows/ci.yaml/badge.svg)](https://github.com/kwilteam/kwil-db/actions)
-[![Go-Version](https://img.shields.io/github/go-mod/go-version/kwilteam/kwil-db)](./go.mod)
-[![GoDoc](https://godoc.org/github.com/kwilteam/kwil-db?status.svg)](https://pkg.go.dev/github.com/kwilteam/kwil-db)
-[![Go-Report-Card](https://goreportcard.com/badge/github.com/kwilteam/kwil-db)](https://goreportcard.com/report/github.com/kwilteam/kwil-db)
+[![Release](https://img.shields.io/github/v/release/trufnetwork/kwil-db)](https://github.com/trufnetwork/kwil-db/releases)
+[![Build-Status](https://github.com/trufnetwork/kwil-db/actions/workflows/ci.yaml/badge.svg)](https://github.com/trufnetwork/kwil-db/actions)
+[![Go-Version](https://img.shields.io/github/go-mod/go-version/trufnetwork/kwil-db)](./go.mod)
+[![GoDoc](https://godoc.org/github.com/trufnetwork/kwil-db?status.svg)](https://pkg.go.dev/github.com/trufnetwork/kwil-db)
+[![Go-Report-Card](https://goreportcard.com/badge/github.com/trufnetwork/kwil-db)](https://goreportcard.com/report/github.com/trufnetwork/kwil-db)
 [![Discord](https://img.shields.io/discord/819855804554543114?logo=discord)](https://discord.com/invite/HzRPZ59Kay)
 
 Kwil is the node software for Kwil Networks. Built with [PostgreSQL](https://www.postgresql.org/), Kwil enables scalable and high-integrity networks for web3 to be built on top of relational databases.
@@ -59,7 +59,7 @@ go build
 Or without even cloning the source repository:
 
 ```shell
-go install github.com/kwilteam/kwil-db/cmd/kwild@v0.10.0
+go install github.com/trufnetwork/kwil-db/cmd/kwild@v0.10.0
 ```
 
 Just replace `v0.10.0` with the desired version or `latest`.

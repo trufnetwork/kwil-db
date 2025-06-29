@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	ktypes "github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/types"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 // AcceptProposal determines if the node should download the block for the given proposal.

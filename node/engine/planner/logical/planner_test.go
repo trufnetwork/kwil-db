@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/types"
-	"github.com/kwilteam/kwil-db/node/engine"
-	"github.com/kwilteam/kwil-db/node/engine/parse"
-	"github.com/kwilteam/kwil-db/node/engine/planner/logical"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
+	"github.com/trufnetwork/kwil-db/node/engine/planner/logical"
 )
 
 func Test_Planner(t *testing.T) {

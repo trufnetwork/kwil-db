@@ -13,9 +13,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ec "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/kwilteam/kwil-db/core/crypto"
-	"github.com/kwilteam/kwil-db/test/integration/eth-deployer/contracts"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/test/integration/eth-deployer/contracts"
 )
 
 type Deployer struct {

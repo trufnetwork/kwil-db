@@ -16,7 +16,7 @@ import (
 	tptu "github.com/libp2p/go-libp2p/p2p/net/upgrader"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 
-	"github.com/kwilteam/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 const SecChainID = "/noise-chainID"

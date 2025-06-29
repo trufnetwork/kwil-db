@@ -3,7 +3,7 @@ package version
 import (
 	"testing"
 
-	"github.com/kwilteam/kwil-db/app/shared/display"
+	"github.com/trufnetwork/kwil-db/app/shared/display"
 )
 
 func Example_versionInfo_text() {

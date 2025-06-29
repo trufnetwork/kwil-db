@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kwilteam/kwil-db/core/log"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/core/log"
 )
 
 type MockSnapshotter struct {

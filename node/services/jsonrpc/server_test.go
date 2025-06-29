@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kwilteam/kwil-db/core/log"
-	jsonrpc "github.com/kwilteam/kwil-db/core/rpc/json"
+	"github.com/trufnetwork/kwil-db/core/log"
+	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 )
 
 func ptrTo[T any](x T) *T {

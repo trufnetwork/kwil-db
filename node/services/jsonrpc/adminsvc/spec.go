@@ -1,7 +1,7 @@
 package adminsvc
 
 import (
-	"github.com/kwilteam/kwil-db/node/services/jsonrpc/openrpc"
+	"github.com/trufnetwork/kwil-db/node/services/jsonrpc/openrpc"
 )
 
 var (
