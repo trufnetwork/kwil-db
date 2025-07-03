@@ -521,16 +521,17 @@ func (pm *PeerMan) FindPeers(ctx context.Context, ns string, opts ...discovery.O
 	var wg sync.WaitGroup
 	wg.Add(len(peers))
 	for _, peerID := range peers {
+		peerIDCopy := peerID // capture the loop variable
 		go func() {
 			defer wg.Done()
-			if peerID == pm.h.ID() {
+			if peerIDCopy == pm.h.ID() {
 				return
 			}
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			peers, err := pm.RequestPeers(ctx, peerID)
+			peers, err := pm.RequestPeers(ctx, peerIDCopy)
 			if err != nil {
-				pm.log.Warnf("Failed to get peers from %v: %v", peerIDStringer(peerID), err)
+				pm.log.Warnf("Failed to get peers from %v: %v", peerIDStringer(peerIDCopy), err)
 				return
 			}
 
