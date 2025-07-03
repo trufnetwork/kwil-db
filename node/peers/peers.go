@@ -521,8 +521,8 @@ func (pm *PeerMan) FindPeers(ctx context.Context, ns string, opts ...discovery.O
 	var wg sync.WaitGroup
 	wg.Add(len(peers))
 	for _, peerID := range peers {
+		peerIDCopy := peerID // capture the loop variable
 		go func() {
-			peerIDCopy := peerID // capture the loop variable
 			defer wg.Done()
 			if peerIDCopy == pm.h.ID() {
 				return
