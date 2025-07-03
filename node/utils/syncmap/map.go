@@ -49,14 +49,14 @@ func (m *Map[K, V]) Set(key K, value V) {
 
 // Extract removes and returns the key's value, and whether it was found.
 func (m *Map[K, V]) Extract(key K) (value V, ok bool) {
-	m.mu.RLock()
+	m.mu.Lock()
 	if m.m == nil {
-		m.mu.RUnlock()
+		m.mu.Unlock()
 		return
 	}
 	value, ok = m.m[key]
 	delete(m.m, key)
-	m.mu.RUnlock()
+	m.mu.Unlock()
 	return
 }
 
