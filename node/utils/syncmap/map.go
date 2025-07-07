@@ -28,13 +28,12 @@ func New[K comparable, V any]() *Map[K, V] {
 // It returns the value, and whether it was found.
 func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.m == nil {
-		m.mu.RUnlock()
-		return
+		return value, false
 	}
 	value, ok = m.m[key]
-	m.mu.RUnlock()
-	return
+	return value, ok
 }
 
 // Set sets a value in the map.
