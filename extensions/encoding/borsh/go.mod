@@ -7,13 +7,13 @@ replace github.com/trufnetwork/kwil-db/core => ../../../core
 replace github.com/trufnetwork/kwil-db => ../../..
 
 require (
-	github.com/trufnetwork/kwil-db v0.9.2-0.20250127164258-c637b4dcd403
-	github.com/trufnetwork/kwil-db/core v0.3.1-0.20250127164258-c637b4dcd403
 	github.com/near/borsh-go v0.3.1
+	github.com/trufnetwork/kwil-db v0.9.2-0.20250127164258-c637b4dcd403
+	github.com/trufnetwork/kwil-db/core v0.4.2
 )
 
 require (
-	github.com/ethereum/go-ethereum v1.14.12 // indirect
+	github.com/ethereum/go-ethereum v1.14.13 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 
 )

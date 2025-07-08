@@ -102,7 +102,7 @@ func Test_Arithmetic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			makeVal := func(v any) scalarValue {
-				val, err := newValue(v)
+				val, err := NewValue(v)
 				require.NoError(t, err)
 				return val.(scalarValue)
 			}
@@ -373,8 +373,8 @@ func Test_Comparison(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			makeVal := func(v any) value {
-				val, err := newValue(v)
+			makeVal := func(v any) Value {
+				val, err := NewValue(v)
 				require.NoError(t, err)
 				return val
 			}
@@ -382,7 +382,7 @@ func Test_Comparison(t *testing.T) {
 			a := makeVal(tt.a)
 			b := makeVal(tt.b)
 
-			isErrOrResult := func(a, b value, op comparisonOp, want any) {
+			isErrOrResult := func(a, b Value, op comparisonOp, want any) {
 				t.Log(op.String())
 				res, err := a.Compare(b, op)
 				if wantErr, ok := want.(error); ok {
@@ -422,7 +422,7 @@ func Test_Cast(t *testing.T) {
 	// for this test, we want to test each type and array type,
 	// and ensure it can be casted to each other type and array type
 	// all numerics will be precision 10, scale 5.
-	// If a value is left as nil, it will expect an error when casted to that type.
+	// If a Value is left as nil, it will expect an error when casted to that type.
 	type testcase struct {
 		name       string
 		val        any
@@ -592,7 +592,7 @@ func Test_Cast(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			val, err := newValue(tt.val)
+			val, err := NewValue(tt.val)
 			require.NoError(t, err)
 
 			check := func(dataType *types.DataType, want any) {
@@ -649,10 +649,10 @@ func Test_Cast(t *testing.T) {
 }
 
 func Test_CastNumerics(t *testing.T) {
-	intVal, err := newValue(int64(10))
+	intVal, err := NewValue(int64(10))
 	require.NoError(t, err)
 
-	textVal, err := newValue("10")
+	textVal, err := NewValue("10")
 	require.NoError(t, err)
 
 	nt, err := types.NewNumericType(10, 5)
@@ -715,7 +715,7 @@ func Test_Unary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			val, err := newValue(tt.val)
+			val, err := NewValue(tt.val)
 			require.NoError(t, err)
 			scal, ok := val.(scalarValue)
 			require.True(t, ok)
@@ -797,7 +797,7 @@ func Test_MakeArray(t *testing.T) {
 
 			var vals []scalarValue
 			for _, v := range tt.vals {
-				val, err := newValue(v)
+				val, err := NewValue(v)
 				require.NoError(t, err)
 				vals = append(vals, val.(scalarValue))
 			}
@@ -903,9 +903,9 @@ func mustUUID(s string) *types.UUID {
 	return u
 }
 
-// testRoundTripParse is a helper function that formats a value to a string, then parses it back to a value.
+// testRoundTripParse is a helper function that formats a Value to a string, then parses it back to a Value.
 // It is meant to be used within these other tests.
-func testRoundTripParse(t *testing.T, v value) {
+func testRoundTripParse(t *testing.T, v Value) {
 	if _, ok := v.(*nullValue); ok {
 		return
 	}
@@ -937,7 +937,7 @@ func Test_blobValue_Cast(t *testing.T) {
 		name    string
 		fields  fields
 		args    args
-		want    value
+		want    Value
 		wantErr bool
 	}{
 		{

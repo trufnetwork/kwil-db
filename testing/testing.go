@@ -190,6 +190,14 @@ func (tc SchemaTest) Run(ctx context.Context, opts *Options) error {
 					return err
 				}
 
+				// Setup extensions if specified (after interpreter creates the schema)
+				if len(opts.Extensions) > 0 {
+					err = setupExtensions(ctx, outerTx, opts.Extensions)
+					if err != nil {
+						return fmt.Errorf("failed to setup extensions: %w", err)
+					}
+				}
+
 				err = interp.Execute(&common.EngineContext{
 					TxContext: &common.TxContext{
 						Ctx:    ctx,
@@ -654,6 +662,8 @@ type Options struct {
 	// true, then the container will be removed and recreated. If it
 	// returns false, then the test will fail.
 	ReplaceExistingContainer func() (bool, error)
+	// Extensions specifies the extensions to load during testing
+	Extensions []interpreter.StoredExtension
 }
 
 // ConnConfig groups the basic connection settings used to construct the DSN
