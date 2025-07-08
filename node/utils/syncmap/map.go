@@ -28,13 +28,12 @@ func New[K comparable, V any]() *Map[K, V] {
 // It returns the value, and whether it was found.
 func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.m == nil {
-		m.mu.RUnlock()
-		return
+		return value, false
 	}
 	value, ok = m.m[key]
-	m.mu.RUnlock()
-	return
+	return value, ok
 }
 
 // Set sets a value in the map.
@@ -49,14 +48,13 @@ func (m *Map[K, V]) Set(key K, value V) {
 
 // Extract removes and returns the key's value, and whether it was found.
 func (m *Map[K, V]) Extract(key K) (value V, ok bool) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.m == nil {
-		m.mu.RUnlock()
 		return
 	}
 	value, ok = m.m[key]
 	delete(m.m, key)
-	m.mu.RUnlock()
 	return
 }
 
