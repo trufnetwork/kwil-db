@@ -186,7 +186,7 @@ func (n *namespace) copy() *namespace {
 }
 
 // apply applies a previously created deep copy of the namespace.
-// The value passed from Apply will never be changed by the engine,
+// The Value passed from Apply will never be changed by the engine,
 func (n *namespace) apply(n2 *namespace) {
 	n.availableFunctions = n2.availableFunctions
 	n.tables = n2.tables
@@ -557,14 +557,14 @@ func (i *baseInterpreter) execute(ctx *common.EngineContext, db sql.DB, statemen
 		return err
 	}
 
-	// we convert each param (which is a key-value pair) to a value
+	// we convert each param (which is a key-Value pair) to a Value
 	// and set it as a variable in the execution context.
 	// We use the order package to ensure that we iterate over the
 	// variables in a deterministic order. This is important because if
 	// there is an error thrown due to two or more variables, nodes might
 	// execute them in different orders, yielding different error messages.
 	for _, param := range order.OrderMap(params) {
-		val, err := newValue(param.Value)
+		val, err := NewValue(param.Value)
 		if err != nil {
 			return err
 		}
@@ -687,7 +687,7 @@ func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, 
 		return nil, fmt.Errorf(`node bug: unknown executable type "%s"`, exec.Type)
 	}
 
-	argVals := make([]value, len(args))
+	argVals := make([]Value, len(args))
 
 	if exec.ExpectedArgs != nil {
 		expect := *exec.ExpectedArgs
@@ -708,7 +708,7 @@ func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, 
 		}
 	} else {
 		for i, arg := range args {
-			val, err := newValue(arg)
+			val, err := NewValue(arg)
 			if err != nil {
 				return nil, err
 			}
@@ -819,7 +819,7 @@ func copyBuiltinExecutables() map[string]*executable {
 func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefinition) *executable {
 	return &executable{
 		Name: funcName,
-		Func: func(e *executionContext, args []value, fn resultFunc) error {
+		Func: func(e *executionContext, args []Value, fn resultFunc) error {
 			//convert args to any
 			params := make([]string, len(args))
 			argTypes := make([]*types.DataType, len(args))
@@ -866,7 +866,7 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 
 				return fn(&row{
 					columns: []string{funcName},
-					Values:  []value{res},
+					Values:  []Value{res},
 				})
 			}
 			// we cannot recursively call Postgres, so if a query is active and we don't
@@ -904,7 +904,7 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 
 			return fn(&row{
 				columns: []string{funcName},
-				Values:  []value{zeroVal},
+				Values:  []Value{zeroVal},
 			})
 		},
 		Type: executableTypeFunction,
@@ -913,7 +913,7 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 
 // scalarFuncImpl is a function that implements a scalar function.
 // It allows us to replicate Postgres functions in Go.
-type scalarFuncImpl func([]value) (value, error)
+type scalarFuncImpl func([]Value) (Value, error)
 
 // builtInScalarFuncs is a map of built-in scalar functions to their implementations.
 var builtInScalarFuncs = map[string]scalarFuncImpl{
@@ -922,7 +922,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 	// to implement without being able to reference these functions within
 	// FOR loop over a set of rows.
 	// In the future, we can implement more functions.
-	"array_length": func(args []value) (value, error) {
+	"array_length": func(args []Value) (Value, error) {
 		if args[0].Null() {
 			return makeNull(types.IntType)
 		}
@@ -932,9 +932,9 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 			return nil, fmt.Errorf("expected array, got %s", args[0].Type())
 		}
 
-		return newValue(int64(arr.Len()))
+		return NewValue(int64(arr.Len()))
 	},
-	"array_append": func(args []value) (value, error) {
+	"array_append": func(args []Value) (Value, error) {
 		// handle array_append(NULL, element)
 		if args[0].Null() {
 			return oneLengthArray(args[1])
@@ -995,7 +995,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 
 		return arr2, nil
 	},
-	"array_prepend": func(args []value) (value, error) {
+	"array_prepend": func(args []Value) (Value, error) {
 		if args[0].Null() {
 			return oneLengthArray(args[1])
 		}
@@ -1010,7 +1010,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 			return nil, fmt.Errorf("expected scalar, got %s", args[1].Type())
 		}
 
-		// we will make a zero-value of the array and then set the first value to the scalar
+		// we will make a zero-Value of the array and then set the first Value to the scalar
 		newVal, err := newZeroValue(arr.Type())
 		if err != nil {
 			return nil, err
@@ -1040,7 +1040,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 
 		return arrVal, nil
 	},
-	"array_cat": func(args []value) (value, error) {
+	"array_cat": func(args []Value) (Value, error) {
 		if args[0].Null() {
 			return args[1], nil
 		}
@@ -1059,7 +1059,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 			return nil, fmt.Errorf("expected array, got %s", args[1].Type())
 		}
 
-		// we will make a zero-value of the array and then set the first value to the scalar
+		// we will make a zero-Value of the array and then set the first Value to the scalar
 		newVal, err := newZeroValue(arr1.Type())
 		if err != nil {
 			return nil, err
@@ -1096,7 +1096,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 
 		return arrVal, nil
 	},
-	"array_remove": func(args []value) (value, error) {
+	"array_remove": func(args []Value) (Value, error) {
 		if args[0].Null() {
 			return args[0], nil
 		}
@@ -1156,7 +1156,7 @@ var builtInScalarFuncs = map[string]scalarFuncImpl{
 
 // oneLengthArray makes an array with one element.
 // The arg must be a scalar.
-func oneLengthArray(v value) (arrayValue, error) {
+func oneLengthArray(v Value) (arrayValue, error) {
 	scal, ok := v.(scalarValue)
 	if !ok {
 		return nil, fmt.Errorf("expected scalar, got %s", v.Type())

@@ -14,7 +14,7 @@ import (
 
 // initializeExtension initializes an extension.
 func initializeExtension(ctx context.Context, svc *common.Service, db sql.DB, i precompiles.Initializer, alias string,
-	metadata map[string]value) (*namespace, *precompiles.Precompile, error) {
+	metadata map[string]Value) (*namespace, *precompiles.Precompile, error) {
 
 	convMetadata := make(map[string]any)
 	for k, v := range metadata {
@@ -44,7 +44,7 @@ func initializeExtension(ctx context.Context, svc *common.Service, db sql.DB, i 
 		exec := &executable{
 			Name:         lowerName,
 			ExpectedArgs: &expectedArgs,
-			Func: func(exec *executionContext, args []value, fn resultFunc) error {
+			Func: func(exec *executionContext, args []Value, fn resultFunc) error {
 				if err := exec.canExecute(alias, lowerName, method.AccessModifiers); err != nil {
 					return err
 				}
@@ -74,11 +74,11 @@ func initializeExtension(ctx context.Context, svc *common.Service, db sql.DB, i 
 				return method.Handler(exec2.engineCtx, exec2.app(), argVals, func(a []any) error {
 					// if no return is specified for this method, then the callback should never be called
 					if method.Returns == nil {
-						return fmt.Errorf(`%w: method "%s"."%s" returned no value, but expected one`, engine.ErrExtensionImplementation, alias, lowerName)
+						return fmt.Errorf(`%w: method "%s"."%s" returned no Value, but expected one`, engine.ErrExtensionImplementation, alias, lowerName)
 					}
 
 					colNames := make([]string, len(a))
-					returnVals := make([]value, len(a))
+					returnVals := make([]Value, len(a))
 
 					if len(method.Returns.Fields) != len(a) {
 						return fmt.Errorf("%w: method %s returned %d values, but expected %d", engine.ErrExtensionImplementation, lowerName, len(a), len(method.Returns.Fields))
@@ -90,11 +90,11 @@ func initializeExtension(ctx context.Context, svc *common.Service, db sql.DB, i 
 							return err
 						}
 						if !ok {
-							return fmt.Errorf(`%w: method "%s"."%s" returned a value of type %s, but expected %s. column: "%s"`, engine.ErrExtensionImplementation, alias, lowerName, newVal.Type(), method.Returns.Fields[i].Type, method.Returns.Fields[i].Name)
+							return fmt.Errorf(`%w: method "%s"."%s" returned a Value of type %s, but expected %s. column: "%s"`, engine.ErrExtensionImplementation, alias, lowerName, newVal.Type(), method.Returns.Fields[i].Type, method.Returns.Fields[i].Name)
 						}
 
 						if !method.Returns.Fields[i].Nullable && newVal.Null() {
-							return fmt.Errorf(`%w: method "%s"."%s" returned a null value for a non-nullable column. column: "%s"`, engine.ErrExtensionImplementation, alias, lowerName, method.Returns.Fields[i].Name)
+							return fmt.Errorf(`%w: method "%s"."%s" returned a null Value for a non-nullable column. column: "%s"`, engine.ErrExtensionImplementation, alias, lowerName, method.Returns.Fields[i].Name)
 						}
 
 						returnVals[i] = newVal

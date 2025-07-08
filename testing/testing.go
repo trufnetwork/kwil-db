@@ -645,16 +645,6 @@ func connectWithRetry(ctx context.Context, port string, n int) (*pg.DB, error) {
 	return nil, err
 }
 
-// ExtensionConfig specifies an extension to load during testing
-type ExtensionConfig struct {
-	// Name is the name of the extension to load (must be registered)
-	Name string
-	// Alias is the namespace alias for the extension (e.g., "ext_tn_cache")
-	Alias string
-	// Metadata contains initialization parameters for the extension
-	Metadata map[string]any
-}
-
 // Options configures optional parameters for running the test.
 // Either UseTestContainer should be true, or a valid
 // PostgreSQL connection should be specified.
@@ -673,7 +663,7 @@ type Options struct {
 	// returns false, then the test will fail.
 	ReplaceExistingContainer func() (bool, error)
 	// Extensions specifies the extensions to load during testing
-	Extensions []ExtensionConfig
+	Extensions []interpreter.StoredExtension
 }
 
 // ConnConfig groups the basic connection settings used to construct the DSN

@@ -23,7 +23,7 @@ var (
 	schemaInitSQL string
 )
 
-// queryOneInt64 queries for a single int64 value.
+// queryOneInt64 queries for a single int64 Value.
 func queryOneInt64(ctx context.Context, db sql.DB, query string, args ...any) (int64, error) {
 	var res *int64
 	err := queryRowFunc(ctx, db, query, []any{&res}, func() error { return nil }, args...)
@@ -367,8 +367,8 @@ func listActionsInBuiltInNamespace(ctx context.Context, db sql.DB, namespace str
 	return actions, nil
 }
 
-// registerExtensionInitialization registers that an extension was initialized with some values.
-func registerExtensionInitialization(ctx context.Context, db sql.DB, name, baseExtName string, metadata map[string]value) error {
+// RegisterExtensionInitialization registers that an extension was initialized with some values.
+func RegisterExtensionInitialization(ctx context.Context, db sql.DB, name, baseExtName string, metadata map[string]Value) error {
 	id, err := createNamespace(ctx, db, name, namespaceTypeExtension)
 	if err != nil {
 		return err
@@ -387,7 +387,7 @@ func registerExtensionInitialization(ctx context.Context, db sql.DB, name, baseE
 		return nil
 	}
 
-	insertMetaStmt := `INSERT INTO kwild_engine.extension_initialization_parameters (extension_id, key, value, scalar_type, is_array, metadata) VALUES `
+	insertMetaStmt := `INSERT INTO kwild_engine.extension_initialization_parameters (extension_id, key, Value, scalar_type, is_array, metadata) VALUES `
 	i := 2
 	rawVals := []any{extId}
 	for k, v := range metadata {
@@ -408,30 +408,30 @@ func registerExtensionInitialization(ctx context.Context, db sql.DB, name, baseE
 	return execute(ctx, db, insertMetaStmt, rawVals...)
 }
 
-// unregisterExtensionInitialization unregisters that an extension was initialized.
+// UnregisterExtensionInitialization unregisters that an extension was initialized.
 // It simply wraps dropNamespace, relying on foreign key constraints to delete all related data.
 // I wrap it in case we need to do more in the future.
-func unregisterExtensionInitialization(ctx context.Context, db sql.DB, alias string) error {
+func UnregisterExtensionInitialization(ctx context.Context, db sql.DB, alias string) error {
 	return dropNamespace(ctx, db, alias)
 }
 
-type storedExtension struct {
+type StoredExtension struct {
 	// ExtName is the name of the extension.
 	ExtName string
 	// Alias is the alias of the extension.
 	Alias string
 	// Metadata is the metadata of the extension.
-	Metadata map[string]value
+	Metadata map[string]Value
 }
 
 // getExtensionInitializationMetadata gets all initialized extensions and their metadata.
-func getExtensionInitializationMetadata(ctx context.Context, db sql.DB) ([]*storedExtension, error) {
-	extMap := make(map[string]*storedExtension) // maps the alias to the extension, will be sorted later
+func getExtensionInitializationMetadata(ctx context.Context, db sql.DB) ([]*StoredExtension, error) {
+	extMap := make(map[string]*StoredExtension) // maps the alias to the extension, will be sorted later
 
 	var extName, alias string
 	var key, val, dt *string
 	err := queryRowFunc(ctx, db, `
-	SELECT n.name AS alias, ie.base_extension AS ext_name, eip.key, eip.value, kwild_engine.format_type(eip.scalar_type, eip.is_array, eip.metadata) AS data_type
+	SELECT n.name AS alias, ie.base_extension AS ext_name, eip.key, eip.Value, kwild_engine.format_type(eip.scalar_type, eip.is_array, eip.metadata) AS data_type
 	FROM kwild_engine.initialized_extensions ie
 	JOIN kwild_engine.namespaces n ON ie.namespace_id = n.id
 	LEFT JOIN kwild_engine.extension_initialization_parameters eip ON ie.id = eip.extension_id`,
@@ -439,10 +439,10 @@ func getExtensionInitializationMetadata(ctx context.Context, db sql.DB) ([]*stor
 		func() error {
 			ext, ok := extMap[alias]
 			if !ok {
-				ext = &storedExtension{
+				ext = &StoredExtension{
 					Alias:    alias,
 					ExtName:  extName,
-					Metadata: make(map[string]value),
+					Metadata: make(map[string]Value),
 				}
 				extMap[alias] = ext
 			}
@@ -473,7 +473,7 @@ func getExtensionInitializationMetadata(ctx context.Context, db sql.DB) ([]*stor
 		return nil, err
 	}
 
-	var fin []*storedExtension
+	var fin []*StoredExtension
 	ordered := order.OrderMap(extMap)
 	for _, o := range ordered {
 		fin = append(fin, o.Value)
@@ -555,7 +555,7 @@ func getTypeMetadata(t *types.DataType) []byte {
 // query executes a SQL query with the given values.
 // It is a utility function to help reduce boilerplate when executing
 // SQL with Value types.
-func query(ctx context.Context, db sql.DB, query string, scanVals []any, fn func() error, args []value) error {
+func query(ctx context.Context, db sql.DB, query string, scanVals []any, fn func() error, args []Value) error {
 	argVals := make([]any, len(args))
 	for i, v := range args {
 		argVals[i] = v

@@ -255,8 +255,8 @@ func Test_built_in_sql(t *testing.T) {
 		{
 			name: "test store and load extensions",
 			fn: func(ctx context.Context, db sql.DB) {
-				vals := func() map[string]value {
-					return map[string]value{
+				vals := func() map[string]Value {
+					return map[string]Value{
 						"str":     mustNewVal("val1"),
 						"int":     mustNewVal(123),
 						"bool":    mustNewVal(true),
@@ -272,10 +272,10 @@ func Test_built_in_sql(t *testing.T) {
 					}
 				}
 
-				err := registerExtensionInitialization(ctx, db, "ext1_init", "ext1", vals())
+				err := RegisterExtensionInitialization(ctx, db, "ext1_init", "ext1", vals())
 				require.NoError(t, err)
 
-				err = registerExtensionInitialization(ctx, db, "ext2_init", "ext2", vals())
+				err = RegisterExtensionInitialization(ctx, db, "ext2_init", "ext2", vals())
 				require.NoError(t, err)
 
 				exts, err := getExtensionInitializationMetadata(ctx, db)
@@ -336,8 +336,8 @@ func namedTypesEq(t *testing.T, a, b []*engine.NamedType) {
 	}
 }
 
-func mustNewVal(v any) value {
-	val, err := newValue(v)
+func mustNewVal(v any) Value {
+	val, err := NewValue(v)
 	if err != nil {
 		panic(err)
 	}
@@ -402,11 +402,11 @@ func Test_Metadata(t *testing.T) {
 		    avatar        BYTEA,
 		    CONSTRAINT check_balance CHECK (balance >= 0)
 		);
-		
+
 		-- Single index on email
 		{%s}CREATE INDEX idx_users_email
 		    ON users (email);
-		
+
 		-- ========================
 		-- Table: products
 		-- - Single Primary Key (product_id)
@@ -421,10 +421,10 @@ func Test_Metadata(t *testing.T) {
 		    product_image BYTEA,
 		    is_active     BOOLEAN NOT NULL DEFAULT TRUE
 		);
-		
+
 		-- Composite index on (name, price)
 		{%s}CREATE INDEX ON products (name, price);
-		
+
 		-- ========================
 		-- Table: orders
 		-- - Single Primary Key (order_id)
@@ -441,7 +441,7 @@ func Test_Metadata(t *testing.T) {
 		        REFERENCES users(user_id)
 		        ON DELETE CASCADE
 		);
-		
+
 		-- ========================
 		-- Table: order_details
 		-- - Composite Primary Key (order_id, line_item)
@@ -453,11 +453,11 @@ func Test_Metadata(t *testing.T) {
 		    order_id   UUID NOT NULL,
 		    line_item  INT NOT NULL,
 		    product_id UUID NOT NULL,
-		
+
 		    -- Composite PK
 		    CONSTRAINT pk_order_details
 		        PRIMARY KEY (order_id, line_item),
-		
+
 		    -- Single FKs
 		    CONSTRAINT fk_order_details_orders
 		        FOREIGN KEY (order_id)
@@ -467,11 +467,11 @@ func Test_Metadata(t *testing.T) {
 		        FOREIGN KEY (product_id)
 		        REFERENCES products(product_id)
 		        ON DELETE RESTRICT,
-			
+
 			-- collide with constraint on users
 			CONSTRAINT check_balance CHECK (line_item >= 0)
 		);
-		
+
 		-- ========================
 		-- Table: shipment
 		-- - Single Primary Key (shipment_id)
@@ -482,7 +482,7 @@ func Test_Metadata(t *testing.T) {
 		    shipment_id  UUID PRIMARY KEY,
 		    order_id     UUID NOT NULL,
 		    line_item    INT NOT NULL,
-		
+
 		    -- Composite FK referencing order_details
 		    CONSTRAINT fk_shipment_order_details
 		        FOREIGN KEY (order_id, line_item)

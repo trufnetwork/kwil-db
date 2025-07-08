@@ -35,7 +35,7 @@ func Test_BuiltInScalars(t *testing.T) {
 			expected: ptrArr([]int64{4}),
 		},
 		{
-			name:     "array_append - null value",
+			name:     "array_append - null Value",
 			function: "array_append",
 			args: []any{
 				[]int64{1, 2, 3},
@@ -62,7 +62,7 @@ func Test_BuiltInScalars(t *testing.T) {
 			expected: ptrArr([]int64{4}),
 		},
 		{
-			name:     "array_prepend - null value",
+			name:     "array_prepend - null Value",
 			function: "array_prepend",
 			args: []any{
 				[]int64{1, 2, 3},
@@ -149,7 +149,7 @@ func Test_BuiltInScalars(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name:     "array_remove - null value",
+			name:     "array_remove - null Value",
 			function: "array_remove",
 			args: []any{
 				[]int64{1, 2, 3, 4},
@@ -158,7 +158,7 @@ func Test_BuiltInScalars(t *testing.T) {
 			expected: ptrArr([]int64{1, 2, 3, 4}),
 		},
 		{
-			name:     "array_remove - value not in array",
+			name:     "array_remove - Value not in array",
 			function: "array_remove",
 			args: []any{
 				[]int64{1, 2, 3, 4},
@@ -182,10 +182,10 @@ func Test_BuiltInScalars(t *testing.T) {
 			fn, ok := builtInScalarFuncs[tc.function]
 			require.True(t, ok, "function not found")
 
-			vals := make([]value, len(tc.args))
+			vals := make([]Value, len(tc.args))
 			for i, arg := range tc.args {
 				var err error
-				vals[i], err = newValue(arg)
+				vals[i], err = NewValue(arg)
 				require.NoError(t, err)
 			}
 

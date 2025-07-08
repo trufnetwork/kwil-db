@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
+
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
@@ -36,12 +38,18 @@ func TestExtensionLoadingExample(t *testing.T) {
 	// Configure test options with extension loading
 	options := &Options{
 		UseTestContainer: true,
-		Extensions: []ExtensionConfig{
+		Extensions: []interpreter.StoredExtension{
 			{
-				Name:  "test_extension",
-				Alias: "test_ext",
-				Metadata: map[string]any{
-					"test_param": "test_value",
+				ExtName: "test_extension",
+				Alias:   "test_ext",
+				Metadata: map[string]interpreter.Value{
+					"test_param": func() interpreter.Value {
+						value, err := interpreter.NewValue("test_value")
+						if err != nil {
+							panic("failed to create test_param value: " + err.Error())
+						}
+						return value
+					}(),
 				},
 			},
 		},

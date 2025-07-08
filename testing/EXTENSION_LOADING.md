@@ -1,6 +1,6 @@
 # Extension Loading Support in kwilTesting Framework
 
-The kwilTesting framework now supports loading and testing extensions during test execution. This enables comprehensive testing of extension-dependent functionality including SQL migrations, actions, and precompile functions.
+The kwilTesting framework now supports loading and testing extensions during test execution using the production extension loading functions. This ensures complete compatibility and eliminates code duplication while enabling comprehensive testing of extension-dependent functionality.
 
 ## Overview
 
@@ -10,24 +10,36 @@ Previously, the kwilTesting framework didn't support loading extensions, making 
 - Extension schemas and tables
 - Cache functionality and other extension features
 
-This enhancement adds extension loading support while maintaining full backward compatibility.
+This enhancement adds extension loading support by using the exported production functions (`interpreter.RegisterExtensionInitialization` and `interpreter.UnregisterExtensionInitialization`) while maintaining full backward compatibility.
+
+## Required Imports
+
+```go
+import (
+    "github.com/trufnetwork/kwil-db/node/engine/interpreter"
+    "github.com/trufnetwork/kwil-db/extensions/precompiles"
+    "github.com/trufnetwork/kwil-db/testing"
+)
+```
 
 ## Configuration
 
-### ExtensionConfig
+### StoredExtension
 
-Extensions are configured using the `ExtensionConfig` struct:
+Extensions are configured using the `interpreter.StoredExtension` struct from the production code:
 
 ```go
-type ExtensionConfig struct {
-    // Name is the name of the extension to load (must be registered)
-    Name string
+type StoredExtension struct {
+    // ExtName is the name of the extension to load (must be registered)
+    ExtName string
     // Alias is the namespace alias for the extension (e.g., "ext_tn_cache") 
     Alias string
     // Metadata contains initialization parameters for the extension
-    Metadata map[string]any
+    Metadata map[string]interpreter.Value
 }
 ```
+
+**Note**: This is the same type used in production, ensuring complete compatibility.
 
 ### Options
 
@@ -36,13 +48,19 @@ Extensions are specified in the test `Options`:
 ```go
 options := &testing.Options{
     UseTestContainer: true,
-    Extensions: []testing.ExtensionConfig{
+    Extensions: []interpreter.StoredExtension{
         {
-            Name:  "ext_tn_cache",
+            ExtName:  "ext_tn_cache",
             Alias: "ext_tn_cache", 
-            Metadata: map[string]any{
-                "enabled": true,
-                "max_cache_size": 1000,
+            Metadata: map[string]interpreter.Value{
+                "enabled": func() interpreter.Value {
+                    value, _ := interpreter.NewValue(true)
+                    return value
+                }(),
+                "max_cache_size": func() interpreter.Value {
+                    value, _ := interpreter.NewValue(1000)
+                    return value
+                }(),
             },
         },
     },
@@ -61,12 +79,15 @@ func TestWithExtension(t *testing.T) {
 
     options := &testing.Options{
         UseTestContainer: true,
-        Extensions: []testing.ExtensionConfig{
+        Extensions: []interpreter.StoredExtension{
             {
-                Name:  "my_extension",
+                ExtName:  "my_extension",
                 Alias: "my_ext",
-                Metadata: map[string]any{
-                    "param1": "value1",
+                Metadata: map[string]interpreter.Value{
+                    "param1": func() interpreter.Value {
+                        value, _ := interpreter.NewValue("value1")
+                        return value
+                    }(),
                 },
             },
         },
@@ -94,12 +115,15 @@ func TestWithExtension(t *testing.T) {
 func TestTnCache(t *testing.T) {
     options := &testing.Options{
         UseTestContainer: true,
-        Extensions: []testing.ExtensionConfig{
+        Extensions: []interpreter.StoredExtension{
             {
-                Name:  "ext_tn_cache",
+                ExtName:  "ext_tn_cache",
                 Alias: "ext_tn_cache",
-                Metadata: map[string]any{
-                    "enabled": true,
+                Metadata: map[string]interpreter.Value{
+                    "enabled": func() interpreter.Value {
+                        value, _ := interpreter.NewValue(true)
+                        return value
+                    }(),
                 },
             },
         },
@@ -126,16 +150,26 @@ func TestTnCache(t *testing.T) {
 }
 ```
 
-### Convenience Functions
+### Helper Functions
 
-For common testing scenarios, convenience functions are provided:
+For creating `interpreter.Value` objects in tests, use the `interpreter.NewValue()` function:
 
 ```go
-// Basic test options
-options := testing.GetTestOptions()
-
-// Test options with tn_cache extension pre-configured
-options := testing.GetTestOptionsWithTnCache()
+// Create metadata values
+metadata := map[string]interpreter.Value{
+    "string_param": func() interpreter.Value {
+        value, _ := interpreter.NewValue("test_value")
+        return value
+    }(),
+    "int_param": func() interpreter.Value {
+        value, _ := interpreter.NewValue(42)
+        return value
+    }(),
+    "bool_param": func() interpreter.Value {
+        value, _ := interpreter.NewValue(true)
+        return value
+    }(),
+}
 ```
 
 ## Extension Requirements
@@ -197,18 +231,21 @@ Extensions are registered in the test database using the same schema as producti
 
 ### Extension Loading Process
 
-1. **Pre-test Setup**: Extensions are registered in the database before interpreter creation
+1. **Pre-test Setup**: Extensions are registered using the production `interpreter.RegisterExtensionInitialization` function
 2. **Interpreter Creation**: The interpreter loads registered extensions from the database
 3. **Namespace Creation**: Extension namespaces and methods become available
 4. **Test Execution**: Tests can use extension functionality normally
 
 ### Metadata Handling
 
-Extension metadata is stored and retrieved using the same mechanisms as production:
+Extension metadata uses the production `interpreter.Value` type system:
 
+- All values must be created using `interpreter.NewValue()`
 - Supports all primitive types (string, int, float, bool)
 - Supports arrays of primitive types
-- Automatically handles type conversion and storage
+- Uses the same type conversion and storage mechanisms as production
+
+**Note**: The testing framework now uses the actual production extension loading functions (`interpreter.RegisterExtensionInitialization` and `interpreter.UnregisterExtensionInitialization`) ensuring complete compatibility and eliminating code duplication.
 
 ## Backward Compatibility
 
@@ -240,7 +277,7 @@ func init() {
 
 ```go
 // Configuration
-{Name: "my_extension", Alias: "my_ext"}
+{ExtName: "my_extension", Alias: "my_ext"}
 
 // Usage in SQL  
 "my_ext.some_method()"  // Must match alias
@@ -269,7 +306,21 @@ func TestCacheBasic(t *testing.T) {
 
 // After  
 func TestCacheBasic(t *testing.T) {
-    options := testing.GetTestOptionsWithTnCache()
+    options := &testing.Options{
+        UseTestContainer: true,
+        Extensions: []interpreter.StoredExtension{
+            {
+                ExtName: "ext_tn_cache",
+                Alias:   "ext_tn_cache",
+                Metadata: map[string]interpreter.Value{
+                    "enabled": func() interpreter.Value {
+                        value, _ := interpreter.NewValue(true)
+                        return value
+                    }(),
+                },
+            },
+        },
+    }
     testing.RunSchemaTest(t, testing.SchemaTest{
         // ... test definition
     }, options)
