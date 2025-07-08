@@ -206,21 +206,21 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	}, args)
 }
 
-func fromScanValues(scanVals []any) ([]value, error) {
-	scanValues := make([]value, len(scanVals))
+func fromScanValues(scanVals []any) ([]Value, error) {
+	scanValues := make([]Value, len(scanVals))
 	for i, val := range scanVals {
 		var ok bool
-		scanValues[i], ok = val.(value)
+		scanValues[i], ok = val.(Value)
 		if !ok {
-			return nil, fmt.Errorf("node bug: scan value is not a value")
+			return nil, fmt.Errorf("node bug: scan Value is not a Value")
 		}
 	}
 	return scanValues, nil
 }
 
 // getValues gets values of the names
-func (e *executionContext) getValues(names []string) ([]value, error) {
-	values := make([]value, len(names))
+func (e *executionContext) getValues(names []string) ([]Value, error) {
+	values := make([]Value, len(names))
 	for i, name := range names {
 		val, err := e.getVariable(name)
 		if err != nil {
@@ -234,7 +234,7 @@ func (e *executionContext) getValues(names []string) ([]value, error) {
 // prepareQuery prepares a query for execution.
 // It will check the cache for a prepared statement, and if it does not exist,
 // it will parse the SQL, create a logical plan, and cache the statement.
-func (e *executionContext) prepareQuery(sql string) (pgSql string, plan *logical.AnalyzedPlan, args []value, err error) {
+func (e *executionContext) prepareQuery(sql string) (pgSql string, plan *logical.AnalyzedPlan, args []Value, err error) {
 	cached, ok := statementCache.get(e.scope.namespace, sql)
 	if ok {
 		// if it is mutating state it must be deterministic
@@ -439,13 +439,13 @@ const (
 // execFunc is a block of code that can be called with a set of ordered inputs.
 // For example, built-in SQL functions like ABS() and FORMAT(), or user-defined
 // actions, all require arguments to be passed in a specific order.
-type execFunc func(exec *executionContext, args []value, returnFn resultFunc) error
+type execFunc func(exec *executionContext, args []Value, returnFn resultFunc) error
 
 // setVariable sets a variable in the current scope.
 // It will allocate the variable if it does not exist.
 // if we are setting a variable that was defined in an outer scope,
 // it will overwrite the variable in the outer scope.
-func (e *executionContext) setVariable(name string, value value) error {
+func (e *executionContext) setVariable(name string, value Value) error {
 	if strings.HasPrefix(name, "@") {
 		return fmt.Errorf("%w: cannot set system variable %s", engine.ErrInvalidVariable, name)
 	}
@@ -475,7 +475,7 @@ func (e *executionContext) setVariable(name string, value value) error {
 }
 
 // allocateVariable allocates a variable in the current scope.
-func (e *executionContext) allocateVariable(name string, value value) error {
+func (e *executionContext) allocateVariable(name string, value Value) error {
 	_, ok := e.scope.variables[name]
 	if ok {
 		return fmt.Errorf(`variable "%s" already exists`, name)
@@ -499,8 +499,8 @@ func (e *executionContext) allocateNullVariable(name string, dataType *types.Dat
 
 // getVariable gets a variable from the current scope.
 // It searches the parent scopes if the variable is not found.
-// It returns the value and a boolean indicating if the variable was found.
-func (e *executionContext) getVariable(name string) (value, error) {
+// It returns the Value and a boolean indicating if the variable was found.
+func (e *executionContext) getVariable(name string) (Value, error) {
 	if len(name) == 0 {
 		return nil, fmt.Errorf("%w: variable name is empty", engine.ErrInvalidVariable)
 	}
@@ -632,8 +632,8 @@ func (e *executionContext) app() *common.App {
 }
 
 // getVarFromScope recursively searches the scopes for a variable.
-// It returns the value, as well as the scope it was found in.
-func getVarFromScope(variable string, scope *scopeContext) (value, *scopeContext, bool) {
+// It returns the Value, as well as the scope it was found in.
+func getVarFromScope(variable string, scope *scopeContext) (Value, *scopeContext, bool) {
 	if v, ok := scope.variables[variable]; ok {
 		return v, scope, true
 	}
@@ -649,7 +649,7 @@ type scopeContext struct {
 	// if the parent is nil, this is the root
 	parent *scopeContext
 	// variables are the variables stored in memory.
-	variables map[string]value
+	variables map[string]Value
 	// namespace is the current namespace.
 	namespace string
 	// isTopLevel is true if this is the top level scope.
@@ -660,7 +660,7 @@ type scopeContext struct {
 // newScope creates a new scope.
 func newScope(namespace string) *scopeContext {
 	return &scopeContext{
-		variables: make(map[string]value),
+		variables: make(map[string]Value),
 		namespace: namespace,
 	}
 }
@@ -675,7 +675,7 @@ func (s *scopeContext) child() {
 		variables: s.variables,
 		namespace: s.namespace,
 	}
-	s.variables = make(map[string]value)
+	s.variables = make(map[string]Value)
 	s.namespace = s.parent.namespace
 }
 
