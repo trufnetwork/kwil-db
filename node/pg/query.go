@@ -202,7 +202,7 @@ func query(ctx context.Context, oidToDataType map[uint32]*datatype, cq connQuery
 		if err != nil {
 			return nil, err
 		}
-		return decodeFromPG(pgxVals, oids, oidToDataType)
+		return DecodeFromPG(pgxVals, oids, oidToDataType)
 	})
 
 	ctag := rows.CommandTag()
@@ -311,7 +311,7 @@ func QueryRowFuncAny(ctx context.Context, tx sql.Executor, stmt string,
 
 func queryRowFuncAny(ctx context.Context, conn *pgx.Conn, stmt string,
 	fn func(vals []any) error, args ...any) error {
-	oidTypes := oidTypesMap(conn.TypeMap())
+	oidTypes := OidTypesMap(conn.TypeMap())
 
 	rows, _ := conn.Query(ctx, stmt, args...)
 	fields := rows.FieldDescriptions()
