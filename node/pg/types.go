@@ -809,11 +809,11 @@ func decodeFromPGVal(val any, oid uint32, oidToDataType map[uint32]*datatype) (a
 	return dt.Decode(val)
 }
 
-// decodeFromPG decodes several pgx types to their corresponding Go types.
+// DecodeFromPG decodes several pgx types to their corresponding Go types.
 // It is capable of detecting special Kwil types and decoding them to their
 // corresponding Go types. This is used when scanning blindly (into any or
 // using row.Values()) when pgx uses whatever pgtype types it prefers.
-func decodeFromPG(vals []any, oids []uint32, oidToDataType map[uint32]*datatype) ([]any, error) {
+func DecodeFromPG(vals []any, oids []uint32, oidToDataType map[uint32]*datatype) ([]any, error) {
 	var results []any
 	for i, oid := range oids {
 		if oid == voidOID {
@@ -831,9 +831,9 @@ func decodeFromPG(vals []any, oids []uint32, oidToDataType map[uint32]*datatype)
 	return results, nil
 }
 
-// oidTypesMap makes a map mapping oids to the Kwil type definition.
+// OidTypesMap makes a map mapping oids to the Kwil type definition.
 // It needs to be called after registerTypes.
-func oidTypesMap(conn *pgtype.Map) map[uint32]*datatype {
+func OidTypesMap(conn *pgtype.Map) map[uint32]*datatype {
 	m := make(map[uint32]*datatype)
 	for dt := range datatypes {
 		oid := dt.OID(conn)

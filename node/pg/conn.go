@@ -212,7 +212,7 @@ func NewPool(ctx context.Context, cfg *PoolConfig) (*Pool, error) {
 		return nil, err
 	}
 	defer writerConn.Release()
-	oidTypes := oidTypesMap(writerConn.Conn().TypeMap())
+	oidTypes := OidTypesMap(writerConn.Conn().TypeMap())
 
 	pool := &Pool{
 		readers:     db,

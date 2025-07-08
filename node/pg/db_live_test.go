@@ -616,7 +616,7 @@ func TestSelectLiteralType(t *testing.T) {
 
 	// Now with our high level func and mode.
 	args2 := append([]any{QueryModeInferredArgTypes}, args...)
-	results, err := query(ctx, oidTypesMap(conn.TypeMap()), &cqWrapper{conn}, stmt, args2...)
+	results, err := query(ctx, OidTypesMap(conn.TypeMap()), &cqWrapper{conn}, stmt, args2...)
 	if err != nil {
 		t.Fatal(err)
 	}
