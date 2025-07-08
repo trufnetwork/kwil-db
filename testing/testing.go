@@ -190,6 +190,14 @@ func (tc SchemaTest) Run(ctx context.Context, opts *Options) error {
 					return err
 				}
 
+				// Setup extensions if specified (after interpreter creates the schema)
+				if len(opts.Extensions) > 0 {
+					err = setupExtensions(ctx, outerTx, opts.Extensions)
+					if err != nil {
+						return fmt.Errorf("failed to setup extensions: %w", err)
+					}
+				}
+
 				err = interp.Execute(&common.EngineContext{
 					TxContext: &common.TxContext{
 						Ctx:    ctx,
@@ -637,6 +645,16 @@ func connectWithRetry(ctx context.Context, port string, n int) (*pg.DB, error) {
 	return nil, err
 }
 
+// ExtensionConfig specifies an extension to load during testing
+type ExtensionConfig struct {
+	// Name is the name of the extension to load (must be registered)
+	Name string
+	// Alias is the namespace alias for the extension (e.g., "ext_tn_cache")
+	Alias string
+	// Metadata contains initialization parameters for the extension
+	Metadata map[string]any
+}
+
 // Options configures optional parameters for running the test.
 // Either UseTestContainer should be true, or a valid
 // PostgreSQL connection should be specified.
@@ -654,6 +672,8 @@ type Options struct {
 	// true, then the container will be removed and recreated. If it
 	// returns false, then the test will fail.
 	ReplaceExistingContainer func() (bool, error)
+	// Extensions specifies the extensions to load during testing
+	Extensions []ExtensionConfig
 }
 
 // ConnConfig groups the basic connection settings used to construct the DSN
