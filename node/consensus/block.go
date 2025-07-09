@@ -145,9 +145,7 @@ func (ce *ConsensusEngine) QueueTx(ctx context.Context, tx *types.Tx) error {
 	// and send a trigger to the CE if it's in the waiting state to start the new round.
 	if ce.role.Load() == types.RoleLeader {
 		ce.stateInfo.mtx.RLock()
-		status := ce.stateInfo.status
-
-		if status != Committed {
+		if ce.stateInfo.status != Committed {
 			// we do not defer r.Unlock because we dont want to hold a read
 			// lock through the cs.mempoolReadyChan <- struct{}{} call
 			ce.stateInfo.mtx.RUnlock()
