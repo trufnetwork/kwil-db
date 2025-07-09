@@ -146,13 +146,16 @@ func (ce *ConsensusEngine) QueueTx(ctx context.Context, tx *types.Tx) error {
 	if ce.role.Load() == types.RoleLeader {
 		ce.stateInfo.mtx.RLock()
 		status := ce.stateInfo.status
-		ce.stateInfo.mtx.RUnlock()
 
 		if status != Committed {
+			// we do not defer r.Unlock because we dont want to hold a read
+			// lock through the cs.mempoolReadyChan <- struct{}{} call
+			ce.stateInfo.mtx.RUnlock()
 			// send the mempoolReady trigger only during the
 			// newRound and waiting for blkProposal Timeout to elapse.
 			return nil
 		}
+		ce.stateInfo.mtx.RUnlock()
 
 		sz, _ := ce.mempool.Size()
 		if int64(sz) >= ce.ConsensusParams().MaxBlockSize {
