@@ -38,6 +38,8 @@ type executionContext struct {
 	queryActive bool
 	// inAction is true if the execution is currently in an action.
 	inAction bool
+	// profiler is the performance profiler instance.
+	profiler *Profiler
 }
 
 // subscope creates a new subscope execution context.
@@ -54,6 +56,7 @@ func (e *executionContext) subscope(namespace string) *executionContext {
 		interpreter:    e.interpreter,
 		logs:           e.logs,
 		inAction:       true,
+		profiler:       e.profiler,
 	}
 }
 
@@ -160,8 +163,20 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	e.queryActive = true
 	defer func() { e.queryActive = false }()
 
+	// Profile SQL query execution
+	var profileID string
+	if e.profiler != nil && e.profiler.config.EnableSQLProfiling {
+		metadata := map[string]interface{}{
+			"raw_sql": sql,
+		}
+		profileID = e.profiler.StartOperation("sql", "query", metadata)
+	}
+
 	generatedSQL, analyzed, args, err := e.prepareQuery(sql)
 	if err != nil {
+		if profileID != "" {
+			e.profiler.EndOperation(profileID, 1)
+		}
 		return err
 	}
 
@@ -186,7 +201,7 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 		cols[i] = field.Name
 	}
 
-	return query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
+	err = query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
 		if len(scanValues) != len(cols) {
 			// should never happen, but just in case
 			return fmt.Errorf("node bug: scan values and columns are not the same length")
@@ -204,6 +219,18 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 			Values:  vals,
 		})
 	}, args)
+	
+	// Record profiling information
+	if profileID != "" {
+		errorCount := int64(0)
+		if err != nil {
+			errorCount = 1
+		}
+		e.profiler.EndOperation(profileID, errorCount)
+		e.profiler.RecordSQLQuery(profileID, generatedSQL, 0) // Duration will be calculated by EndOperation
+	}
+	
+	return err
 }
 
 func fromScanValues(scanVals []any) ([]Value, error) {

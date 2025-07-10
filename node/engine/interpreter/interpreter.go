@@ -770,6 +770,7 @@ func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, nam
 		db:             db,
 		interpreter:    i,
 		logs:           &logs,
+		profiler:       ProfilerFromContext(txCtx.TxContext.Ctx),
 	}
 	e.scope.isTopLevel = toplevel
 

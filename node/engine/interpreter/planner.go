@@ -440,13 +440,29 @@ func (i *interpreterPlanner) VisitActionStmtCall(p0 *parse.ActionStmtCall) any {
 	}
 
 	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+		// Profile action call execution
+		var profileID string
+		if exec.profiler != nil && exec.profiler.config.EnableActionProfiling {
+			metadata := map[string]interface{}{
+				"namespace": p0.Call.Namespace,
+				"action": p0.Call.Name,
+			}
+			profileID = exec.profiler.StartOperation("action", p0.Call.Name, metadata)
+		}
+
 		ns, err := exec.getNamespace(p0.Call.Namespace)
 		if err != nil {
+			if profileID != "" {
+				exec.profiler.EndOperation(profileID, 1)
+			}
 			return err
 		}
 
 		funcDef, ok := ns.availableFunctions[p0.Call.Name]
 		if !ok {
+			if profileID != "" {
+				exec.profiler.EndOperation(profileID, 1)
+			}
 			return fmt.Errorf(`unknown action "%s" in namespace "%s"`, p0.Call.Name, p0.Call.Namespace)
 		}
 
@@ -486,11 +502,24 @@ func (i *interpreterPlanner) VisitActionStmtCall(p0 *parse.ActionStmtCall) any {
 
 			return nil
 		})
+		
+		// Record profiling information
+		if profileID != "" {
+			errorCount := int64(0)
+			if err != nil {
+				errorCount = 1
+			}
+			exec.profiler.EndOperation(profileID, errorCount)
+		}
+		
 		if err != nil {
 			return err
 		}
 		if len(receivers) > 0 {
 			if iter == 0 {
+				if profileID != "" {
+					exec.profiler.EndOperation(profileID, 1)
+				}
 				return fmt.Errorf(`%w: expected function or action "%s" to return a single record, but it returned nothing`, engine.ErrReturnShape, funcDef.Name)
 			}
 		}
@@ -525,7 +554,22 @@ func (i *interpreterPlanner) VisitActionStmtForLoop(p0 *parse.ActionStmtForLoop)
 	loopFn := p0.LoopTerm.Accept(i).(loopTermFunc)
 
 	return stmtFunc(func(exec *executionContext, fn resultFunc) error {
+		// Profile for loop execution
+		var profileID string
+		var iterationCount int64
+		if exec.profiler != nil && exec.profiler.config.EnableLoopProfiling {
+			metadata := map[string]interface{}{
+				"receiver": p0.Receiver.Name,
+				"loop_type": "for",
+			}
+			profileID = exec.profiler.StartOperation("loop", "for", metadata)
+		}
+
 		err := loopFn(exec, func(term Value) error {
+			if profileID != "" {
+				iterationCount++
+			}
+			
 			exec.scope.child()
 			defer exec.scope.popScope()
 			err := exec.allocateVariable(p0.Receiver.Name, term)
@@ -542,6 +586,17 @@ func (i *interpreterPlanner) VisitActionStmtForLoop(p0 *parse.ActionStmtForLoop)
 
 			return nil
 		})
+		
+		// Record profiling information
+		if profileID != "" {
+			errorCount := int64(0)
+			if err != nil && !errors.Is(err, errBreak) {
+				errorCount = 1
+			}
+			exec.profiler.EndOperation(profileID, errorCount)
+			exec.profiler.RecordLoopIteration(profileID, iterationCount)
+		}
+		
 		if errors.Is(err, errBreak) {
 			return nil // swallow break errors and exit
 		}
@@ -927,13 +982,29 @@ func (i *interpreterPlanner) VisitExpressionFunctionCall(p0 *parse.ExpressionFun
 	}
 
 	return cast(p0, func(exec *executionContext) (Value, error) {
+		// Profile function call execution
+		var profileID string
+		if exec.profiler != nil && exec.profiler.config.EnableFunctionProfiling {
+			metadata := map[string]interface{}{
+				"namespace": p0.Namespace,
+				"function": p0.Name,
+			}
+			profileID = exec.profiler.StartOperation("function", p0.Name, metadata)
+		}
+
 		ns, err := exec.getNamespace(p0.Namespace)
 		if err != nil {
+			if profileID != "" {
+				exec.profiler.EndOperation(profileID, 1)
+			}
 			return nil, err
 		}
 
 		execute, ok := ns.availableFunctions[p0.Name]
 		if !ok {
+			if profileID != "" {
+				exec.profiler.EndOperation(profileID, 1)
+			}
 			return nil, fmt.Errorf(`unknown function "%s" in namespace "%s"`, p0.Name, p0.Namespace)
 		}
 
@@ -959,13 +1030,29 @@ func (i *interpreterPlanner) VisitExpressionFunctionCall(p0 *parse.ExpressionFun
 
 			return nil
 		})
+		
+		// Record profiling information
+		if profileID != "" {
+			errorCount := int64(0)
+			if err != nil {
+				errorCount = 1
+			}
+			exec.profiler.EndOperation(profileID, errorCount)
+		}
+		
 		if err != nil {
 			return nil, err
 		}
 
 		if iters == 0 {
+			if profileID != "" {
+				exec.profiler.EndOperation(profileID, 1)
+			}
 			return nil, fmt.Errorf(`%w: expected function or action "%s" to return a single Value, but it returned nothing`, engine.ErrReturnShape, p0.Name)
 		} else if iters > 1 {
+			if profileID != "" {
+				exec.profiler.EndOperation(profileID, 1)
+			}
 			return nil, fmt.Errorf(`%w: expected function or action "%s" to return a single Value, but it returned %d values`, engine.ErrReturnShape, p0.Name, iters)
 		}
 
