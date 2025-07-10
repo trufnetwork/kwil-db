@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"time"
 
 	common "github.com/trufnetwork/kwil-db/common"
@@ -22,7 +23,15 @@ type ListenerManager struct {
 	vstore     ValidatorGetter
 	node       Node
 	service    *common.Service
-	cancel     context.CancelFunc // cancels the context for the listener manager
+	// mutex to protect the cancel function
+	// Even though context.CancelFunc is thread-safe, the ListenerManager
+	// starts with a nil cancel function. It is possible for us to call
+	// Stop() before Start() has assigned a non-nil cancel function,
+	// which would cause a panic.
+	// Therefore, we use this mutex to ensure that the cancel function
+	// has been assigned before we call it.
+	cancelMtx sync.Mutex
+	cancel    context.CancelFunc // cancels the context for the listener manager
 }
 
 // ValidatorGetter is able to read the current validator set.
@@ -50,7 +59,9 @@ func NewListenerManager(svc *common.Service, eventStore *voting.EventStore, vsto
 // is returned.
 func (omgr *ListenerManager) Start() (err error) {
 	ctx, cancel := context.WithCancel(context.Background()) // context that will be canceled when the manager shuts down
+	omgr.cancelMtx.Lock()
 	omgr.cancel = cancel
+	omgr.cancelMtx.Unlock()
 	defer cancel()
 
 	// Listen for status changes
@@ -143,6 +154,12 @@ func (omgr *ListenerManager) Start() (err error) {
 }
 
 func (omgr *ListenerManager) Stop() {
+	omgr.cancelMtx.Lock()
+	defer omgr.cancelMtx.Unlock()
+	if omgr.cancel == nil {
+		omgr.service.Logger.Warn("ListenerManager Stop called, but it has not been started yet")
+		return
+	}
 	omgr.cancel()
 }
 
