@@ -308,10 +308,13 @@ func (ce *ConsensusEngine) commit(ctx context.Context, syncing bool) error {
 		ce.mempool.Remove(txHash)
 
 		txRes := ce.state.blockRes.txResults[idx]
+
+		ce.subMtx.Lock()
 		subChan, ok := ce.txSubscribers[txHash]
 		if ok { // Notify the subscribers about the transaction result
 			subChan <- txRes
 		}
+		ce.subMtx.Unlock()
 	}
 
 	mets.RecordCommit(ctx, time.Since(ce.state.tExecuted), height) // keep this before nextState()
