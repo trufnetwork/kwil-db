@@ -2429,7 +2429,8 @@ func (i *interpreterPlanner) VisitForeignKeyOutOfLineConstraint(p0 *parse.Foreig
 	panic("interpreter planner should never be called for table constraints")
 }
 
-// evaluateDefaultValue evaluates a default value from the AST and returns a Value
+// evaluateDefaultValue evaluates a literal default value from the AST and returns a Value.
+// Only literal values are supported for security and performance reasons.
 func evaluateDefaultValue(defaultValue any, expectedType *types.DataType) (Value, error) {
 	if defaultValue == nil {
 		return nil, fmt.Errorf("no default value provided")
@@ -2441,18 +2442,8 @@ func evaluateDefaultValue(defaultValue any, expectedType *types.DataType) (Value
 		return nil, fmt.Errorf("default value does not implement ParameterDefaultValue interface")
 	}
 
-	// For literals, use the pre-evaluated value (fast path)
-	if paramDefault.IsLiteral() {
-		return createValueFromLiteral(paramDefault.GetLiteralValue(), expectedType)
-	}
-
-	// For complex expressions, evaluate the expression
-	// We need to cast the expression to the proper type for evaluation
-	if expr, ok := paramDefault.GetExpression().(parse.Expression); ok {
-		return evaluateExpression(expr, expectedType)
-	}
-
-	return nil, fmt.Errorf("invalid expression type in default value")
+	// Only handle literal values now
+	return createValueFromLiteral(paramDefault.GetLiteralValue(), expectedType)
 }
 
 // createValueFromLiteral creates a Value from a literal value
@@ -2475,140 +2466,4 @@ func createValueFromLiteral(literal any, expectedType *types.DataType) (Value, e
 	default:
 		return nil, fmt.Errorf("unsupported literal type: %T", literal)
 	}
-}
-
-// evaluateExpression evaluates a complex expression and returns a Value
-func evaluateExpression(expr parse.Expression, expectedType *types.DataType) (Value, error) {
-	// For Phase 3, we'll implement basic expression evaluation
-	// Complex expressions like arithmetic, function calls, etc. will be evaluated here
-
-	// For now, handle simple cases and return an error for complex ones
-	if expr == nil {
-		return nil, fmt.Errorf("no expression to evaluate")
-	}
-
-	// Handle ExpressionLiteral (should not reach here if IsLiteral is true, but safety check)
-	if literal, ok := expr.(*parse.ExpressionLiteral); ok {
-		return createValueFromLiteral(literal.Value, expectedType)
-	}
-
-	// For Phase 3, we'll implement basic arithmetic expressions
-	if arith, ok := expr.(*parse.ExpressionArithmetic); ok {
-		return evaluateArithmetic(arith, expectedType)
-	}
-
-	// For other complex expressions, return an error for now
-	return nil, fmt.Errorf("complex expression evaluation not yet implemented for type: %T", expr)
-}
-
-// evaluateArithmetic evaluates arithmetic expressions like 10 + 20
-func evaluateArithmetic(arith *parse.ExpressionArithmetic, expectedType *types.DataType) (Value, error) {
-	// Evaluate left operand
-	left, err := evaluateExpression(arith.Left, expectedType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate left operand: %w", err)
-	}
-
-	// Evaluate right operand
-	right, err := evaluateExpression(arith.Right, expectedType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate right operand: %w", err)
-	}
-
-	// Perform arithmetic operation
-	switch arith.Operator {
-	case "+":
-		return performAddition(left, right)
-	case "-":
-		return performSubtraction(left, right)
-	case "*":
-		return performMultiplication(left, right)
-	case "/":
-		return performDivision(left, right)
-	default:
-		return nil, fmt.Errorf("unsupported arithmetic operator: %s", arith.Operator)
-	}
-}
-
-// performAddition performs addition of two values
-func performAddition(left, right Value) (Value, error) {
-	// Handle integer addition
-	if left.Type().Equals(types.IntType) && right.Type().Equals(types.IntType) {
-		// Use Go's type assertion for int8Value
-		leftInt8, ok := left.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", left)
-		}
-		rightInt8, ok := right.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", right)
-		}
-		return makeInt8(leftInt8.Int64 + rightInt8.Int64), nil
-	}
-
-	// For other numeric types, use NewValue to handle conversion
-	return nil, fmt.Errorf("unsupported types for addition: %s + %s", left.Type(), right.Type())
-}
-
-// performSubtraction performs subtraction of two values
-func performSubtraction(left, right Value) (Value, error) {
-	// Handle integer subtraction
-	if left.Type().Equals(types.IntType) && right.Type().Equals(types.IntType) {
-		// Use Go's type assertion for int8Value
-		leftInt8, ok := left.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", left)
-		}
-		rightInt8, ok := right.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", right)
-		}
-		return makeInt8(leftInt8.Int64 - rightInt8.Int64), nil
-	}
-
-	// For other numeric types, use NewValue to handle conversion
-	return nil, fmt.Errorf("unsupported types for subtraction: %s - %s", left.Type(), right.Type())
-}
-
-// performMultiplication performs multiplication of two values
-func performMultiplication(left, right Value) (Value, error) {
-	// Handle integer multiplication
-	if left.Type().Equals(types.IntType) && right.Type().Equals(types.IntType) {
-		// Use Go's type assertion for int8Value
-		leftInt8, ok := left.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", left)
-		}
-		rightInt8, ok := right.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", right)
-		}
-		return makeInt8(leftInt8.Int64 * rightInt8.Int64), nil
-	}
-
-	// For other numeric types, use NewValue to handle conversion
-	return nil, fmt.Errorf("unsupported types for multiplication: %s * %s", left.Type(), right.Type())
-}
-
-// performDivision performs division of two values
-func performDivision(left, right Value) (Value, error) {
-	// Handle integer division
-	if left.Type().Equals(types.IntType) && right.Type().Equals(types.IntType) {
-		// Use Go's type assertion for int8Value
-		leftInt8, ok := left.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", left)
-		}
-		rightInt8, ok := right.(*int8Value)
-		if !ok {
-			return nil, fmt.Errorf("expected int8Value, got %T", right)
-		}
-		if rightInt8.Int64 == 0 {
-			return nil, fmt.Errorf("division by zero")
-		}
-		return makeInt8(leftInt8.Int64 / rightInt8.Int64), nil
-	}
-
-	// For other numeric types, use NewValue to handle conversion
-	return nil, fmt.Errorf("unsupported types for division: %s / %s", left.Type(), right.Type())
 }

@@ -85,32 +85,17 @@ The optional parameters feature demonstrates complete AST enhancement implementa
 
 #### 1. AST Data Structures
 ```go
-// DefaultValue struct for storing default parameter values
+// DefaultValue struct for storing literal default parameter values
 type DefaultValue struct {
-    Expression   Expression `json:"expression,omitempty"`
-    LiteralValue any       `json:"literal_value,omitempty"`
-    IsLiteral    bool      `json:"is_literal"`
+    LiteralValue any `json:"literal_value"`
 }
 ```
 
-#### 2. Enhanced Parameter Processing
+#### 2. Simplified Parameter Processing
 ```go
-func (s *schemaVisitor) processDefaultValue(ctx gen.IAction_exprContext) *DefaultValue {
-    expr := ctx.Accept(s).(Expression)
-
-    // Optimize for simple literals
-    if literal, ok := expr.(*ExpressionLiteral); ok {
-        return &DefaultValue{
-            Expression:   expr,
-            LiteralValue: literal.Value,
-            IsLiteral:    true,
-        }
-    }
-
-    // Complex expression - store AST only
+func (s *schemaVisitor) createDefaultValueFromLiteral(literalValue any) *DefaultValue {
     return &DefaultValue{
-        Expression: expr,
-        IsLiteral:  false,
+        LiteralValue: literalValue,
     }
 }
 ```
@@ -121,9 +106,7 @@ func (s *schemaVisitor) processDefaultValue(ctx gen.IAction_exprContext) *Defaul
   "name": "$use_cache",
   "type": {"name": "bool", "is_array": false},
   "default": {
-    "expression": {"type": "literal", "value": false},
-    "literal_value": false,
-    "is_literal": true
+    "literal_value": false
   }
 }
 ```

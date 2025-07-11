@@ -261,7 +261,7 @@ drop_action_statement:
 ;
 
 action_parameter:
-    VARIABLE type (DEFAULT action_expr)?
+    VARIABLE type (DEFAULT literal)?
 ;
 
 use_extension_statement:

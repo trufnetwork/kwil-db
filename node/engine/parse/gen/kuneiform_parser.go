@@ -468,7 +468,7 @@ func kuneiformparserParserInit() {
 		5, 113, 0, 0, 623, 625, 5, 71, 0, 0, 624, 622, 1, 0, 0, 0, 624, 625, 1,
 		0, 0, 0, 625, 626, 1, 0, 0, 0, 626, 627, 3, 6, 3, 0, 627, 69, 1, 0, 0,
 		0, 628, 629, 5, 149, 0, 0, 629, 632, 3, 12, 6, 0, 630, 631, 5, 56, 0, 0,
-		631, 633, 3, 116, 58, 0, 632, 630, 1, 0, 0, 0, 632, 633, 1, 0, 0, 0, 633,
+		631, 633, 3, 4, 2, 0, 632, 630, 1, 0, 0, 0, 632, 633, 1, 0, 0, 0, 633,
 		71, 1, 0, 0, 0, 634, 638, 5, 34, 0, 0, 635, 636, 5, 113, 0, 0, 636, 637,
 		5, 62, 0, 0, 637, 639, 5, 71, 0, 0, 638, 635, 1, 0, 0, 0, 638, 639, 1,
 		0, 0, 0, 639, 640, 1, 0, 0, 0, 640, 658, 3, 6, 3, 0, 641, 655, 5, 1, 0,
@@ -10764,7 +10764,7 @@ type IAction_parameterContext interface {
 	VARIABLE() antlr.TerminalNode
 	Type_() ITypeContext
 	DEFAULT() antlr.TerminalNode
-	Action_expr() IAction_exprContext
+	Literal() ILiteralContext
 
 	// IsAction_parameterContext differentiates from other interfaces.
 	IsAction_parameterContext()
@@ -10826,10 +10826,10 @@ func (s *Action_parameterContext) DEFAULT() antlr.TerminalNode {
 	return s.GetToken(KuneiformParserDEFAULT, 0)
 }
 
-func (s *Action_parameterContext) Action_expr() IAction_exprContext {
+func (s *Action_parameterContext) Literal() ILiteralContext {
 	var t antlr.RuleContext
 	for _, ctx := range s.GetChildren() {
-		if _, ok := ctx.(IAction_exprContext); ok {
+		if _, ok := ctx.(ILiteralContext); ok {
 			t = ctx.(antlr.RuleContext)
 			break
 		}
@@ -10839,7 +10839,7 @@ func (s *Action_parameterContext) Action_expr() IAction_exprContext {
 		return nil
 	}
 
-	return t.(IAction_exprContext)
+	return t.(ILiteralContext)
 }
 
 func (s *Action_parameterContext) GetRuleContext() antlr.RuleContext {
@@ -10896,7 +10896,7 @@ func (p *KuneiformParser) Action_parameter() (localctx IAction_parameterContext)
 		}
 		{
 			p.SetState(631)
-			p.action_expr(0)
+			p.Literal()
 		}
 
 	}
