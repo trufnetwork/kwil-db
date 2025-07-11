@@ -79,13 +79,8 @@ func evaluateDefaultValue(defaultValue any, expectedType *types.DataType) (Value
         return nil, fmt.Errorf("invalid default value type")
     }
 
-    // For literals, use the pre-evaluated value (fast path)
-    if defaultVal.IsLiteral {
-        return createValueFromLiteral(defaultVal.LiteralValue, expectedType)
-    }
-
-    // For complex expressions, evaluate the expression
-    return evaluateExpression(defaultVal.Expression, expectedType)
+    // Only handle literal values (literal-only implementation for security and performance)
+    return createValueFromLiteral(defaultVal.LiteralValue, expectedType)
 }
 ```
 

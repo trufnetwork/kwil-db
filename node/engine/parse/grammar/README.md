@@ -65,7 +65,7 @@ CREATE ACTION my_action(
     $required_param int,
     $optional_param bool DEFAULT false,
     $nullable_param text DEFAULT null,
-    $computed_param int DEFAULT 10 + 20
+    $timeout_param int DEFAULT 30
 ) public {
     // action body
 };
@@ -114,8 +114,8 @@ missing method VisitXXX
 ## Documentation
 
 For comprehensive grammar development guidelines, see:
-- [Grammar Development Guide](../../../docs/dev/grammar-development.md)
-- [Contributing Guidelines](../../../CONTRIBUTING.md#grammar-development)
+- [Grammar Development Guide](../../../../docs/dev/kuneiform-language-development.md)
+- [Contributing Guidelines](../../../../CONTRIBUTING.md#Kuneiform-Language-Feature-Development)
 
 ## Grammar Rules Reference
 

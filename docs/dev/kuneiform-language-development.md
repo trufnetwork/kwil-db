@@ -692,11 +692,11 @@ Extended grammar to support DEFAULT parameter syntax:
 
 ```antlr
 action_parameter:
-    VARIABLE type (DEFAULT action_expr)?
+    VARIABLE type (DEFAULT literal)?
 ;
 ```
 
-**Results**: Grammar accepts `DEFAULT false`, `DEFAULT null`, `DEFAULT 30`, `DEFAULT 10 + 20`
+**Results**: Grammar accepts `DEFAULT false`, `DEFAULT null`, `DEFAULT 30` (literal values only)
 
 ### AST Enhancement (Completed)
 
@@ -704,9 +704,7 @@ Added DefaultValue struct to store default value information:
 
 ```go
 type DefaultValue struct {
-    Expression   Expression `json:"expression,omitempty"`
-    LiteralValue any       `json:"literal_value,omitempty"`
-    IsLiteral    bool      `json:"is_literal"`
+    LiteralValue any `json:"literal_value"`
 }
 ```
 
@@ -721,15 +719,16 @@ type NamedType struct {
 ```
 
 **Key Features**:
-- **Dual Storage**: Both expression AST and pre-evaluated literals
-- **Optimization**: Direct literal access for performance
-- **JSON Support**: Complete serialization for API integration
+- **Literal-Only Storage**: Simplified structure for literal values only
+- **Performance**: Direct literal access without evaluation overhead
+- **JSON Support**: Clean serialization for API integration
+- **Security**: No expression injection risks
 
 **Test Coverage**:
 - Boolean defaults: `DEFAULT false`
 - Null defaults: `DEFAULT null`
 - Integer defaults: `DEFAULT 42`
-- Complex expressions: `DEFAULT 10 + 20`
+- String defaults: `DEFAULT 'text'`
 - Mixed parameters: Required and optional in same action
 
 ### Engine Integration (✅ COMPLETED)
