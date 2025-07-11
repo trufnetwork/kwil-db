@@ -12,6 +12,9 @@ Please follow the guidelines below when contributing. If you have any questions,
     - [Commit Messages](#commit-messages)
     - [Coding Style](#coding-style)
     - [Pull Request Process](#pull-request-process)
+- [Development Guidelines](#development-guidelines)
+    - [Grammar Development](#grammar-development)
+    - [Parser Testing](#parser-testing)
 - [License](#license)
 
 ## Discussions
@@ -129,6 +132,54 @@ Please ensure that all the commits in your git history match the commit message 
 6. Open a pull request to the `main` branch of the kwil-db repository. Please follow the PR template. If `main` updates while the PR is open, please update the branch with latest `main` (rebase or merge).
 
 7. Wait for a maintainer to review your PR. If there are any issues, you will be notified and you can make the necessary changes.
+
+## Development Guidelines
+
+### Grammar Development
+
+If you're modifying the Kuneiform grammar (`.g4` files), please follow the comprehensive [Grammar Development Guide](docs/dev/grammar-development.md). This covers:
+
+- ANTLR setup and Java requirements
+- Grammar modification workflow
+- Parser generation process
+- Go visitor implementation updates
+- Testing strategies for grammar changes
+
+**Quick reference for grammar changes:**
+
+1. **Prerequisites**: Ensure Java 17+ is installed
+2. **Backup**: Always backup grammar files before changes
+3. **Modify**: Edit `KuneiformParser.g4` and/or `KuneiformLexer.g4`
+4. **Generate**: Run `./generate.sh` in `node/engine/parse/grammar/`
+5. **Update**: Modify Go visitor code in `node/engine/parse/antlr.go`
+6. **Test**: Add test cases in `node/engine/parse/parse_test.go`
+7. **Verify**: Run `go test ./node/engine/parse/... -v`
+
+### Parser Testing
+
+When adding new language features or modifying existing ones:
+
+- **Add comprehensive test cases** covering normal usage, edge cases, and error conditions
+- **Follow existing test patterns** in `parse_test.go`
+- **Test both positive and negative scenarios** (valid syntax and syntax errors)
+- **Ensure all existing tests still pass** after changes
+- **Use descriptive test names** that explain what is being tested
+
+**Test case structure:**
+```go
+{
+    name:  "Descriptive test name",
+    input: "SQL or Kuneiform syntax to test",
+    expect: &ExpectedASTStructure{...},
+    err:   nil, // or expected error
+},
+```
+
+For grammar changes, tests should verify that:
+1. New syntax parses correctly
+2. AST structure matches expectations  
+3. Existing functionality remains unaffected
+4. Error handling works for invalid syntax
 
 ## License
 

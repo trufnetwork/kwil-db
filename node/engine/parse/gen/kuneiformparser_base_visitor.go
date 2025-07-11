@@ -195,6 +195,10 @@ func (v *BaseKuneiformParserVisitor) VisitDrop_action_statement(ctx *Drop_action
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseKuneiformParserVisitor) VisitAction_parameter(ctx *Action_parameterContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseKuneiformParserVisitor) VisitUse_extension_statement(ctx *Use_extension_statementContext) interface{} {
 	return v.VisitChildren(ctx)
 }

@@ -2950,6 +2950,59 @@ func TestCreateActionStatements(t *testing.T) {
 			input: `CREATE ACTION duplicate_returns() PUBLIC RETURNS (id int, id text) {};`,
 			err:   ErrDuplicateResultColumnName,
 		},
+		{
+			name:  "Create action with default parameter (boolean)",
+			input: "CREATE ACTION my_action($param1 int, $use_cache bool DEFAULT false) public {};",
+			expect: &CreateActionStatement{
+				Name:      "my_action",
+				Modifiers: []string{"public"},
+				Parameters: []*engine.NamedType{
+					{Name: "$param1", Type: types.IntType},
+					{Name: "$use_cache", Type: types.BoolType},
+				},
+				Returns: nil,
+			},
+		},
+		{
+			name:  "Create action with default parameter (null)",
+			input: "CREATE ACTION my_action($param1 int, $param2 text DEFAULT null) public {};",
+			expect: &CreateActionStatement{
+				Name:      "my_action",
+				Modifiers: []string{"public"},
+				Parameters: []*engine.NamedType{
+					{Name: "$param1", Type: types.IntType},
+					{Name: "$param2", Type: &types.DataType{Name: "text"}},
+				},
+				Returns: nil,
+			},
+		},
+		{
+			name:  "Create action with default parameter (integer)",
+			input: "CREATE ACTION my_action($param1 text, $timeout int DEFAULT 30) public {};",
+			expect: &CreateActionStatement{
+				Name:      "my_action",
+				Modifiers: []string{"public"},
+				Parameters: []*engine.NamedType{
+					{Name: "$param1", Type: &types.DataType{Name: "text"}},
+					{Name: "$timeout", Type: types.IntType},
+				},
+				Returns: nil,
+			},
+		},
+		{
+			name:  "Create action with multiple default parameters",
+			input: "CREATE ACTION my_action($param1 text, $use_cache bool DEFAULT false, $timeout int DEFAULT 30) public {};",
+			expect: &CreateActionStatement{
+				Name:      "my_action",
+				Modifiers: []string{"public"},
+				Parameters: []*engine.NamedType{
+					{Name: "$param1", Type: &types.DataType{Name: "text"}},
+					{Name: "$use_cache", Type: types.BoolType},
+					{Name: "$timeout", Type: types.IntType},
+				},
+				Returns: nil,
+			},
+		},
 	}
 
 	for _, tt := range tests {
