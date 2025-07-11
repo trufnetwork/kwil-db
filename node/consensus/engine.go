@@ -837,6 +837,8 @@ func (ce *ConsensusEngine) setLastCommitInfo(height int64, appHash []byte, blk *
 	ce.state.lc.blk = blk
 	ce.state.lc.commitInfo = ci
 
+	ce.stateInfo.mtx.Lock()
+	defer ce.stateInfo.mtx.Unlock()
 	ce.stateInfo.height = height
 	ce.stateInfo.status = Committed
 	ce.stateInfo.blkProp = nil
