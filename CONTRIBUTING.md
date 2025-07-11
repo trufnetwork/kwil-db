@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking the time to contribute to kwil-db! 
+Thanks for taking the time to contribute to kwil-db!
 
 Please follow the guidelines below when contributing. If you have any questions, please feel free to reach out to us on [Discord](https://discord.com/invite/HzRPZ59Kay) or use the [discussions](https://github.com/trufnetwork/kwil-db/discussions) feature on GitHub.
 
@@ -39,7 +39,7 @@ For opening issues, please follow the following guidelines:
 
 - **Use templates** for creating issues about bugs, feature requests, or documentation requests.
 - **Search** the issue tracker before opening an issue to avoid duplicates.
-- **Be clear & detailed** about what you are reporting. If reporting a bug, please include a minimal reproducible example, a detailed explanation of your KwilD configuration, and any logs or error messages that may be relevant. 
+- **Be clear & detailed** about what you are reporting. If reporting a bug, please include a minimal reproducible example, a detailed explanation of your KwilD configuration, and any logs or error messages that may be relevant.
 
 We strongly recommended submitting an issue before submitting a pull request, especially for pull requests that will require significant effort on your part. This is to ensure that the issue is not already being worked on and that your pull request will be accepted. Some features or fixes are intentionally not included in kwil-db - use issues to check with maintainers and save time!
 
@@ -111,11 +111,11 @@ docker compose -f ./deployments/compose/postgres/docker-compose.yml up
 
 ```bash
 task install:deps # If first time contributing
-task fmt  
-task lint  
-task tidy  
-task test:unit  
-task test:act 
+task fmt
+task lint
+task tidy
+task test:unit
+task test:act
 ```
 
 5. Push your branch to github.
@@ -135,25 +135,54 @@ Please ensure that all the commits in your git history match the commit message 
 
 ## Development Guidelines
 
-### Grammar Development
+### Kuneiform Language Feature Development
 
-If you're modifying the Kuneiform grammar (`.g4` files), please follow the comprehensive [Grammar Development Guide](docs/dev/grammar-development.md). This covers:
+When adding new language features to Kuneiform (Kwil DB's SQL dialect), please follow the comprehensive [Language Feature Development Guide](docs/dev/kuneiform-language-development.md).
 
-- ANTLR setup and Java requirements
-- Grammar modification workflow
-- Parser generation process
-- Go visitor implementation updates
-- Testing strategies for grammar changes
+Language features is recommeded to be implemented using our **3-Stage Development Approach**:
 
-**Quick reference for grammar changes:**
+#### **Grammar Extension**
+- Extend ANTLR grammar files (`.g4`) to accept new syntax
+- Generate parsers and update Go visitor interfaces
+- Add comprehensive test cases for syntax acceptance
+- **Goal**: Make the grammar accept new syntax without breaking existing functionality
+
+#### **AST Enhancement**
+- Add data structures to store new language constructs
+- Update visitor implementation to process new syntax
+- Add JSON serialization support for API integration
+- **Goal**: Properly store and represent new language features in the AST
+
+#### **Engine Integration**
+- Implement execution logic for new language features
+- Add runtime validation and error handling
+- Update core engine components (interpreter, planner, etc.)
+- **Goal**: Enable actual execution of new language features
+
+**Quick reference for language feature development:**
 
 1. **Prerequisites**: Ensure Java 17+ is installed
-2. **Backup**: Always backup grammar files before changes
-3. **Modify**: Edit `KuneiformParser.g4` and/or `KuneiformLexer.g4`
-4. **Generate**: Run `./generate.sh` in `node/engine/parse/grammar/`
-5. **Update**: Modify Go visitor code in `node/engine/parse/antlr.go`
-6. **Test**: Add test cases in `node/engine/parse/parse_test.go`
-7. **Verify**: Run `go test ./node/engine/parse/... -v`
+2. **Grammar Extension**:
+   - Backup grammar files
+   - Edit `KuneiformParser.g4` and/or `KuneiformLexer.g4`
+   - Run `./generate.sh` in `node/engine/parse/grammar/`
+   - Update Go visitor interfaces
+   - Add syntax tests
+3. **AST Enhancement**:
+   - Add AST data structures in `node/engine/parse/ast.go`
+   - Update visitor implementation in `node/engine/parse/antlr.go`
+   - Add comprehensive test cases
+   - Ensure JSON serialization works
+4. **Engine Integration**:
+   - Update engine components (interpreter, planner, etc.)
+   - Add execution logic and validation
+   - Create integration tests
+   - Verify end-to-end functionality
+
+**Component Documentation:**
+- **Grammar**: See `node/engine/parse/grammar/README.md`
+- **Parser**: See `node/engine/parse/README.md`
+- **Engine Integration**: See `node/engine/interpreter/README.md`
 
 ### Parser Testing
 
@@ -177,7 +206,7 @@ When adding new language features or modifying existing ones:
 
 For grammar changes, tests should verify that:
 1. New syntax parses correctly
-2. AST structure matches expectations  
+2. AST structure matches expectations
 3. Existing functionality remains unaffected
 4. Error handling works for invalid syntax
 
