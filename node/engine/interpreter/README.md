@@ -109,30 +109,6 @@ func createValueFromLiteral(literal any, expectedType *types.DataType) (Value, e
 }
 ```
 
-### Complex Expression Evaluation (`planner.go`)
-
-Framework for evaluating complex expressions:
-
-```go
-func evaluateExpression(expr parse.Expression, expectedType *types.DataType) (Value, error) {
-    if expr == nil {
-        return nil, fmt.Errorf("no expression to evaluate")
-    }
-
-    // Handle ExpressionLiteral
-    if literal, ok := expr.(*parse.ExpressionLiteral); ok {
-        return createValueFromLiteral(literal.Value, expectedType)
-    }
-
-    // Handle arithmetic expressions
-    if arith, ok := expr.(*parse.ExpressionArithmetic); ok {
-        return evaluateArithmetic(arith, expectedType)
-    }
-
-    return nil, fmt.Errorf("unsupported expression type: %T", expr)
-}
-```
-
 ## Implementation Example: Optional Parameters
 
 ### Engine Integration Implementation
