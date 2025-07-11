@@ -1,6 +1,8 @@
 package parse
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -2958,7 +2960,11 @@ func TestCreateActionStatements(t *testing.T) {
 				Modifiers: []string{"public"},
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: types.IntType},
-					{Name: "$use_cache", Type: types.BoolType},
+					{Name: "$use_cache", Type: types.BoolType, DefaultValue: &DefaultValue{
+						Expression:   nil,
+						LiteralValue: false,
+						IsLiteral:    true,
+					}},
 				},
 				Returns: nil,
 			},
@@ -2971,7 +2977,11 @@ func TestCreateActionStatements(t *testing.T) {
 				Modifiers: []string{"public"},
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: types.IntType},
-					{Name: "$param2", Type: &types.DataType{Name: "text"}},
+					{Name: "$param2", Type: &types.DataType{Name: "text"}, DefaultValue: &DefaultValue{
+						Expression:   nil,
+						LiteralValue: nil,
+						IsLiteral:    true,
+					}},
 				},
 				Returns: nil,
 			},
@@ -2984,7 +2994,11 @@ func TestCreateActionStatements(t *testing.T) {
 				Modifiers: []string{"public"},
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: &types.DataType{Name: "text"}},
-					{Name: "$timeout", Type: types.IntType},
+					{Name: "$timeout", Type: types.IntType, DefaultValue: &DefaultValue{
+						Expression:   nil,
+						LiteralValue: int64(30),
+						IsLiteral:    true,
+					}},
 				},
 				Returns: nil,
 			},
@@ -2997,8 +3011,33 @@ func TestCreateActionStatements(t *testing.T) {
 				Modifiers: []string{"public"},
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: &types.DataType{Name: "text"}},
-					{Name: "$use_cache", Type: types.BoolType},
-					{Name: "$timeout", Type: types.IntType},
+					{Name: "$use_cache", Type: types.BoolType, DefaultValue: &DefaultValue{
+						Expression:   nil,
+						LiteralValue: false,
+						IsLiteral:    true,
+					}},
+					{Name: "$timeout", Type: types.IntType, DefaultValue: &DefaultValue{
+						Expression:   nil,
+						LiteralValue: int64(30),
+						IsLiteral:    true,
+					}},
+				},
+				Returns: nil,
+			},
+		},
+		{
+			name:  "Create action with complex default expression",
+			input: "CREATE ACTION my_action($param1 text, $computed int DEFAULT 10 + 20) public {};",
+			expect: &CreateActionStatement{
+				Name:      "my_action",
+				Modifiers: []string{"public"},
+				Parameters: []*engine.NamedType{
+					{Name: "$param1", Type: &types.DataType{Name: "text"}},
+					{Name: "$computed", Type: types.IntType, DefaultValue: &DefaultValue{
+						Expression:   nil,
+						LiteralValue: nil,
+						IsLiteral:    false,
+					}},
 				},
 				Returns: nil,
 			},
@@ -3020,9 +3059,156 @@ func TestCreateActionStatements(t *testing.T) {
 
 			assertPositionsAreSet(t, res[0])
 
+			// For tests with default parameters, clear the Expression field from actual result
+			// since we only care about the LiteralValue and IsLiteral fields in these tests
+			actualStmt := res[0].(*CreateActionStatement)
+			if strings.Contains(tt.name, "default parameter") || strings.Contains(tt.name, "default expression") {
+				for _, param := range actualStmt.Parameters {
+					if param.DefaultValue != nil {
+						if defaultVal, ok := param.DefaultValue.(*DefaultValue); ok {
+							defaultVal.Expression = nil
+						}
+					}
+				}
+			}
+
 			if !deepCompare(tt.expect, res[0]) {
 				t.Errorf("unexpected AST:%s", diff(tt.expect, res[0]))
 			}
 		})
 	}
+}
+
+// TestCreateActionStatementsPhase2 tests default value storage in Phase 2
+func TestCreateActionStatementsPhase2(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []struct {
+			name         string
+			hasDefault   bool
+			literalValue any
+			isLiteral    bool
+		}
+	}{
+		{
+			name:  "Boolean default parameter",
+			input: "CREATE ACTION test($param bool DEFAULT false) public {};",
+			expected: []struct {
+				name         string
+				hasDefault   bool
+				literalValue any
+				isLiteral    bool
+			}{
+				{name: "$param", hasDefault: true, literalValue: false, isLiteral: true},
+			},
+		},
+		{
+			name:  "Null default parameter",
+			input: "CREATE ACTION test($param text DEFAULT null) public {};",
+			expected: []struct {
+				name         string
+				hasDefault   bool
+				literalValue any
+				isLiteral    bool
+			}{
+				{name: "$param", hasDefault: true, literalValue: nil, isLiteral: true},
+			},
+		},
+		{
+			name:  "Integer default parameter",
+			input: "CREATE ACTION test($param int DEFAULT 42) public {};",
+			expected: []struct {
+				name         string
+				hasDefault   bool
+				literalValue any
+				isLiteral    bool
+			}{
+				{name: "$param", hasDefault: true, literalValue: int64(42), isLiteral: true},
+			},
+		},
+		{
+			name:  "Mixed parameters with and without defaults",
+			input: "CREATE ACTION test($required text, $optional bool DEFAULT true, $timeout int DEFAULT 30) public {};",
+			expected: []struct {
+				name         string
+				hasDefault   bool
+				literalValue any
+				isLiteral    bool
+			}{
+				{name: "$required", hasDefault: false},
+				{name: "$optional", hasDefault: true, literalValue: true, isLiteral: true},
+				{name: "$timeout", hasDefault: true, literalValue: int64(30), isLiteral: true},
+			},
+		},
+		{
+			name:  "Complex expression default",
+			input: "CREATE ACTION test($param int DEFAULT 10 + 20) public {};",
+			expected: []struct {
+				name         string
+				hasDefault   bool
+				literalValue any
+				isLiteral    bool
+			}{
+				{name: "$param", hasDefault: true, literalValue: nil, isLiteral: false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := Parse(tt.input)
+			require.NoError(t, err)
+			require.Len(t, res, 1)
+
+			stmt := res[0].(*CreateActionStatement)
+			require.Len(t, stmt.Parameters, len(tt.expected))
+
+			for i, expected := range tt.expected {
+				param := stmt.Parameters[i]
+				require.Equal(t, expected.name, param.Name)
+
+				if expected.hasDefault {
+					require.NotNil(t, param.DefaultValue, "Parameter %s should have default value", expected.name)
+					defaultVal := param.DefaultValue.(*DefaultValue)
+					require.Equal(t, expected.literalValue, defaultVal.LiteralValue, "Literal value mismatch for %s", expected.name)
+					require.Equal(t, expected.isLiteral, defaultVal.IsLiteral, "IsLiteral mismatch for %s", expected.name)
+					require.NotNil(t, defaultVal.Expression, "Expression should be populated for %s", expected.name)
+				} else {
+					require.Nil(t, param.DefaultValue, "Parameter %s should not have default value", expected.name)
+				}
+			}
+		})
+	}
+}
+
+// TestJSONSerialization tests JSON serialization of default values
+func TestJSONSerialization(t *testing.T) {
+	input := "CREATE ACTION test($required text, $optional bool DEFAULT true) public {};"
+	res, err := Parse(input)
+	require.NoError(t, err)
+	require.Len(t, res, 1)
+
+	stmt := res[0].(*CreateActionStatement)
+
+	// Test JSON marshaling
+	jsonData, err := json.Marshal(stmt) //nolint:musttag
+	require.NoError(t, err)
+
+	// Test JSON unmarshaling
+	var unmarshaled CreateActionStatement
+	err = json.Unmarshal(jsonData, &unmarshaled) //nolint:musttag
+	require.NoError(t, err)
+
+	// Verify the unmarshaled structure
+	require.Equal(t, stmt.Name, unmarshaled.Name)
+	require.Len(t, unmarshaled.Parameters, 2)
+
+	// Check required parameter (no default)
+	require.Equal(t, "$required", unmarshaled.Parameters[0].Name)
+	require.Nil(t, unmarshaled.Parameters[0].DefaultValue)
+
+	// Check optional parameter (has default)
+	require.Equal(t, "$optional", unmarshaled.Parameters[1].Name)
+	require.NotNil(t, unmarshaled.Parameters[1].DefaultValue)
 }

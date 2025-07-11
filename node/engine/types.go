@@ -194,6 +194,9 @@ type NamedType struct {
 	Name string `json:"name"`
 	// Type is the type of the parameter.
 	Type *types.DataType `json:"type"`
+	// DefaultValue is the default value for the parameter, if any.
+	// It is nil for required parameters.
+	DefaultValue any `json:"default,omitempty"`
 }
 
 // MakeTypeCast returns the string that type casts a value to the given type.

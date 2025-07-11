@@ -59,22 +59,35 @@ Kuneiform supports:
 
 ### Recent Changes
 
-**Optional Parameters (Phase 1)** - Added support for DEFAULT parameter syntax:
+**Optional Parameters (Phase 1 & 2)** - Added support for DEFAULT parameter syntax:
 
 ```kuneiform
 CREATE ACTION my_action(
     $required_param int,
     $optional_param bool DEFAULT false,
-    $nullable_param text DEFAULT null
+    $nullable_param text DEFAULT null,
+    $computed_param int DEFAULT 10 + 20
 ) public {
     // action body
 };
 ```
 
-**Implementation:**
+**Phase 1 Implementation (Grammar Extension):**
 - Added `action_parameter` rule to support optional DEFAULT clause
 - Modified `create_action_statement` to use new parameter rule
 - Extended test coverage for default parameter scenarios
+
+**Phase 2 Implementation (AST Enhancement):**
+- Added `DefaultValue` struct to store default value information
+- Extended `NamedType` to include default values in AST
+- Implemented literal value optimization for performance
+- Added comprehensive test coverage for default value storage
+- Enabled JSON serialization for API integration
+
+**Supported Default Types:**
+- Literals: `DEFAULT false`, `DEFAULT null`, `DEFAULT 42`, `DEFAULT 'text'`
+- Expressions: `DEFAULT 10 + 20`, `DEFAULT @caller`, `DEFAULT function_call()`
+- All default values are stored with both expression AST and optimized literal values
 
 ## Troubleshooting
 

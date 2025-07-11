@@ -50,6 +50,20 @@ type Expression interface {
 	Node
 }
 
+// DefaultValue represents a default value for a parameter.
+// It stores both the parsed expression and evaluates literal values for efficiency.
+type DefaultValue struct {
+	// Expression is the parsed AST expression for the default value.
+	// This is used for complex expressions that need runtime evaluation.
+	Expression Expression `json:"expression,omitempty"`
+	// LiteralValue is the pre-evaluated value for simple literals.
+	// This is used for constants like numbers, strings, booleans, and null.
+	LiteralValue any `json:"literal_value,omitempty"`
+	// IsLiteral indicates whether this is a simple literal value.
+	// If true, LiteralValue can be used directly without evaluation.
+	IsLiteral bool `json:"is_literal"`
+}
+
 // Assignable is an interface for all expressions that can be assigned to.
 type Assignable interface {
 	Expression

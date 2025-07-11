@@ -357,3 +357,93 @@ When extending grammar:
 4. **Phase 4**: Update client SDKs and documentation
 
 This phased approach allows for incremental development and testing.
+
+## Complete Implementation Example: Optional Parameters
+
+### Phase 1: Grammar Extension (Completed)
+
+Extended grammar to support DEFAULT parameter syntax:
+
+```antlr
+action_parameter:
+    VARIABLE type (DEFAULT action_expr)?
+;
+```
+
+**Results**: Grammar accepts `DEFAULT false`, `DEFAULT null`, `DEFAULT 30`, `DEFAULT 10 + 20`
+
+### Phase 2: AST Enhancement (Completed)
+
+Added DefaultValue struct to store default value information:
+
+```go
+type DefaultValue struct {
+    Expression   Expression `json:"expression,omitempty"`
+    LiteralValue any       `json:"literal_value,omitempty"`
+    IsLiteral    bool      `json:"is_literal"`
+}
+```
+
+Extended NamedType to include default values:
+
+```go
+type NamedType struct {
+    Name         string     `json:"name"`
+    Type         *DataType  `json:"type"`
+    DefaultValue any        `json:"default,omitempty"`
+}
+```
+
+**Key Features**:
+- **Dual Storage**: Both expression AST and pre-evaluated literals
+- **Optimization**: Direct literal access for performance
+- **JSON Support**: Complete serialization for API integration
+
+**Test Coverage**:
+- Boolean defaults: `DEFAULT false`
+- Null defaults: `DEFAULT null`
+- Integer defaults: `DEFAULT 42`
+- Complex expressions: `DEFAULT 10 + 20`
+- Mixed parameters: Required and optional in same action
+
+### Phase 3: Engine Integration (Planned)
+
+Will implement parameter validation with default value injection:
+
+```go
+func validateAndFillDefaults(args []Value, params []*NamedType) ([]Value, error) {
+    // Fill missing arguments with defaults
+    for i := len(args); i < len(params); i++ {
+        if params[i].DefaultValue == nil {
+            return nil, fmt.Errorf("missing required argument %d", i+1)
+        }
+        
+        defaultVal, err := evaluateDefault(params[i].DefaultValue)
+        if err != nil {
+            return nil, fmt.Errorf("default evaluation failed: %v", err)
+        }
+        
+        result[i] = defaultVal
+    }
+    
+    return result, nil
+}
+```
+
+### Phase 4: SQL Action Updates (Planned)
+
+Will update existing SQL actions to use new DEFAULT syntax:
+
+```sql
+-- Before
+CREATE ACTION get_record($data_provider TEXT, $stream_id TEXT, $use_cache BOOL) public {
+    -- Must pass explicit null for $use_cache
+};
+
+-- After  
+CREATE ACTION get_record($data_provider TEXT, $stream_id TEXT, $use_cache BOOL DEFAULT false) public {
+    -- $use_cache defaults to false when not provided
+};
+```
+
+This demonstrates the complete grammar extension lifecycle from parsing through execution.
