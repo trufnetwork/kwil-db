@@ -406,29 +406,59 @@ type NamedType struct {
 - Complex expressions: `DEFAULT 10 + 20`
 - Mixed parameters: Required and optional in same action
 
-### Phase 3: Engine Integration (Planned)
+### Phase 3: Engine Integration (✅ COMPLETED)
 
-Will implement parameter validation with default value injection:
+Implemented parameter validation with default value injection:
 
 ```go
-func validateAndFillDefaults(args []Value, params []*NamedType) ([]Value, error) {
-    // Fill missing arguments with defaults
-    for i := len(args); i < len(params); i++ {
-        if params[i].DefaultValue == nil {
-            return nil, fmt.Errorf("missing required argument %d", i+1)
-        }
-        
-        defaultVal, err := evaluateDefault(params[i].DefaultValue)
-        if err != nil {
-            return nil, fmt.Errorf("default evaluation failed: %v", err)
-        }
-        
-        result[i] = defaultVal
+func evaluateDefaultValue(defaultValue any, expectedType *types.DataType) (Value, error) {
+    defaultVal, ok := defaultValue.(*parse.DefaultValue)
+    if !ok {
+        return nil, fmt.Errorf("invalid default value type: %T", defaultValue)
     }
-    
-    return result, nil
+
+    // For literals, use the pre-evaluated value
+    if defaultVal.IsLiteral {
+        return createValueFromLiteral(defaultVal.LiteralValue, expectedType)
+    }
+
+    // For complex expressions, evaluate the expression
+    return evaluateExpression(defaultVal.Expression, expectedType)
 }
 ```
+
+**Key Features Implemented:**
+- **Parameter Validation**: Enhanced `validateArgs` function handles fewer arguments than parameters
+- **Default Value Evaluation**: Complete system for literal and complex expression evaluation
+- **Arithmetic Operations**: Support for +, -, *, / in default expressions
+- **Type Safety**: Proper Value constructor usage and type assertions
+- **Error Handling**: Comprehensive error reporting for invalid defaults
+
+**Test Coverage:**
+- Unit tests for default value evaluation (`default_values_test.go`)
+- Integration tests with complete action execution
+- Regression tests ensuring backward compatibility
+
+**Usage Examples:**
+```sql
+-- Basic optional parameters
+CREATE ACTION get_users($limit INT DEFAULT 10, $active BOOL DEFAULT true) {
+    SELECT * FROM users WHERE active = $active LIMIT $limit;
+};
+
+-- Complex expression defaults
+CREATE ACTION process_batch(
+    $data_source TEXT,
+    $batch_size INT DEFAULT 50 * 2,    -- Evaluates to 100
+    $timeout INT DEFAULT 30 + 30       -- Evaluates to 60
+) {
+    -- Action implementation
+};
+```
+
+**Files Modified:**
+- `node/engine/interpreter/planner.go` - Core parameter validation and evaluation
+- `node/engine/interpreter/default_values_test.go` - Comprehensive test coverage
 
 ### Phase 4: SQL Action Updates (Planned)
 
