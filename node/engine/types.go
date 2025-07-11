@@ -186,6 +186,14 @@ const (
 	InternalEnginePGSchema = "kwild_engine"
 )
 
+// ParameterDefaultValue represents a literal default value for a parameter.
+// Only literal values are supported for security and performance reasons.
+type ParameterDefaultValue interface {
+	// GetLiteralValue returns the literal value for the default.
+	// Supported types: numbers, strings, booleans, and null.
+	GetLiteralValue() any
+}
+
 // NamedType is a parameter in an action.
 type NamedType struct {
 	// Name is the name of the parameter.
@@ -194,6 +202,10 @@ type NamedType struct {
 	Name string `json:"name"`
 	// Type is the type of the parameter.
 	Type *types.DataType `json:"type"`
+	// DefaultValue is the default value for the parameter, if any.
+	// It is nil for required parameters.
+	// Note: This uses `any` instead of ParameterDefaultValue interface to avoid JSON marshaling issues
+	DefaultValue any `json:"default,omitempty"`
 }
 
 // MakeTypeCast returns the string that type casts a value to the given type.

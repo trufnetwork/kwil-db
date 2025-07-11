@@ -50,6 +50,21 @@ type Expression interface {
 	Node
 }
 
+// DefaultValue represents a literal default value for a parameter.
+// Only literal values are supported for security and performance reasons.
+// This struct implements the engine.ParameterDefaultValue interface.
+type DefaultValue struct {
+	// LiteralValue is the literal value for the default.
+	// Supported types: numbers, strings, booleans, and null.
+	LiteralValue any `json:"literal_value"`
+}
+
+// GetLiteralValue returns the literal value for the default.
+// This implements the engine.ParameterDefaultValue interface.
+func (d *DefaultValue) GetLiteralValue() any {
+	return d.LiteralValue
+}
+
 // Assignable is an interface for all expressions that can be assigned to.
 type Assignable interface {
 	Expression

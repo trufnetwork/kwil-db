@@ -250,7 +250,7 @@ privilege:
 
 create_action_statement:
     CREATE (OR REPLACE)? ACTION (IF NOT EXISTS)? identifier
-    LPAREN (VARIABLE type (COMMA VARIABLE type)*)? RPAREN
+    LPAREN (action_parameter (COMMA action_parameter)*)? RPAREN
     identifier*
     action_return?
     LBRACE action_statement* RBRACE
@@ -258,6 +258,10 @@ create_action_statement:
 
 drop_action_statement:
     DROP ACTION (IF EXISTS)? identifier
+;
+
+action_parameter:
+    VARIABLE type (DEFAULT literal)?
 ;
 
 use_extension_statement:

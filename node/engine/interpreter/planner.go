@@ -29,11 +29,15 @@ func makeActionToExecutable(namespace string, act *action) *executable {
 	}
 
 	validateArgs := func(v []Value) ([]Value, error) {
-		newVal := make([]Value, len(v))
-		if len(v) != len(act.Parameters) {
-			return nil, fmt.Errorf("expected %d arguments, got %d", len(act.Parameters), len(v))
+		// Check for too many arguments
+		if len(v) > len(act.Parameters) {
+			return nil, fmt.Errorf("expected at most %d arguments, got %d", len(act.Parameters), len(v))
 		}
 
+		// Prepare result array with full parameter count
+		newVal := make([]Value, len(act.Parameters))
+
+		// Process provided arguments
 		for i, arg := range v {
 			if !act.Parameters[i].Type.Equals(arg.Type()) {
 				return nil, fmt.Errorf("%w: expected argument %d to be %s, got %s", engine.ErrType, i+1, act.Parameters[i].Type, arg.Type())
@@ -45,6 +49,22 @@ func makeActionToExecutable(namespace string, act *action) *executable {
 			if err != nil {
 				return nil, err
 			}
+		}
+
+		// Fill missing arguments with defaults
+		for i := len(v); i < len(act.Parameters); i++ {
+			param := act.Parameters[i]
+			if param.DefaultValue == nil {
+				return nil, fmt.Errorf("missing required argument %d (%s)", i+1, param.Name)
+			}
+
+			// Evaluate default value
+			defaultVal, err := evaluateDefaultValue(param.DefaultValue, param.Type)
+			if err != nil {
+				return nil, fmt.Errorf("failed to evaluate default value for parameter %s: %w", param.Name, err)
+			}
+
+			newVal[i] = defaultVal
 		}
 
 		return newVal, nil
@@ -2407,4 +2427,43 @@ func (i *interpreterPlanner) VisitForeignKeyReferences(p0 *parse.ForeignKeyRefer
 
 func (i *interpreterPlanner) VisitForeignKeyOutOfLineConstraint(p0 *parse.ForeignKeyOutOfLineConstraint) any {
 	panic("interpreter planner should never be called for table constraints")
+}
+
+// evaluateDefaultValue evaluates a literal default value from the AST and returns a Value.
+// Only literal values are supported for security and performance reasons.
+func evaluateDefaultValue(defaultValue any, expectedType *types.DataType) (Value, error) {
+	if defaultValue == nil {
+		return nil, fmt.Errorf("no default value provided")
+	}
+
+	// Cast the any type to our interface
+	paramDefault, ok := defaultValue.(engine.ParameterDefaultValue)
+	if !ok {
+		return nil, fmt.Errorf("default value does not implement ParameterDefaultValue interface")
+	}
+
+	// Only handle literal values now
+	return createValueFromLiteral(paramDefault.GetLiteralValue(), expectedType)
+}
+
+// createValueFromLiteral creates a Value from a literal value
+func createValueFromLiteral(literal any, expectedType *types.DataType) (Value, error) {
+	if literal == nil {
+		return makeNull(expectedType)
+	}
+
+	// Create a Value based on the literal type
+	switch v := literal.(type) {
+	case bool:
+		return makeBool(v), nil
+	case int64:
+		return makeInt8(v), nil
+	case float64:
+		// Use NewValue for decimal conversion
+		return NewValue(v)
+	case string:
+		return makeText(v), nil
+	default:
+		return nil, fmt.Errorf("unsupported literal type: %T", literal)
+	}
 }

@@ -148,6 +148,9 @@ type KuneiformParserVisitor interface {
 	// Visit a parse tree produced by KuneiformParser#drop_action_statement.
 	VisitDrop_action_statement(ctx *Drop_action_statementContext) interface{}
 
+	// Visit a parse tree produced by KuneiformParser#action_parameter.
+	VisitAction_parameter(ctx *Action_parameterContext) interface{}
+
 	// Visit a parse tree produced by KuneiformParser#use_extension_statement.
 	VisitUse_extension_statement(ctx *Use_extension_statementContext) interface{}
 

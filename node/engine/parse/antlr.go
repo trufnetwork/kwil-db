@@ -121,7 +121,7 @@ func (s *schemaVisitor) VisitCreate_action_statement(ctx *gen.Create_action_stat
 		IfNotExists: ctx.EXISTS() != nil,
 		OrReplace:   ctx.REPLACE() != nil,
 		Name:        s.getIdent(ctx.Identifier(0)),
-		Parameters:  arr[*engine.NamedType](len(ctx.AllType_())),
+		Parameters:  arr[*engine.NamedType](len(ctx.AllAction_parameter())),
 		Statements:  arr[ActionStmt](len(ctx.AllAction_statement())),
 		Raw:         s.getTextFromStream(ctx.GetStart().GetStart(), ctx.GetStop().GetStop()),
 	}
@@ -144,8 +144,9 @@ func (s *schemaVisitor) VisitCreate_action_statement(ctx *gen.Create_action_stat
 	}
 
 	paramSet := make(map[string]struct{})
-	for i, t := range ctx.AllType_() {
-		name := s.cleanStringIdent(ctx, ctx.VARIABLE(i).GetText())
+	for i, param := range ctx.AllAction_parameter() {
+		paramCtx := param.(*gen.Action_parameterContext)
+		name := s.cleanStringIdent(ctx, paramCtx.VARIABLE().GetText())
 
 		// check for duplicate parameters
 		if _, ok := paramSet[name]; ok {
@@ -158,10 +159,21 @@ func (s *schemaVisitor) VisitCreate_action_statement(ctx *gen.Create_action_stat
 			s.errs.RuleErr(ctx, ErrSyntax, "parameter name must start with $")
 		}
 
-		typ := t.Accept(s).(*types.DataType)
+		typ := paramCtx.Type_().Accept(s).(*types.DataType)
+
+		// Extract default value if present
+		var defaultValue engine.ParameterDefaultValue
+		if paramCtx.DEFAULT() != nil && paramCtx.Literal() != nil {
+			literalExpr := paramCtx.Literal().Accept(s).(Expression)
+			if literal, ok := literalExpr.(*ExpressionLiteral); ok {
+				defaultValue = s.createDefaultValueFromLiteral(literal.Value)
+			}
+		}
+
 		cas.Parameters[i] = &engine.NamedType{
-			Name: name,
-			Type: typ,
+			Name:         name,
+			Type:         typ,
+			DefaultValue: defaultValue,
 		}
 	}
 
@@ -184,6 +196,12 @@ func (s *schemaVisitor) VisitDrop_action_statement(ctx *gen.Drop_action_statemen
 	}
 	das.Set(ctx)
 	return das
+}
+
+func (s *schemaVisitor) VisitAction_parameter(ctx *gen.Action_parameterContext) any {
+	// This visitor method is required by the interface but not used
+	// Parameters are handled directly in VisitCreateActionStatement
+	return nil
 }
 
 func (s *schemaVisitor) VisitCreate_namespace_statement(ctx *gen.Create_namespace_statementContext) any {
@@ -2440,3 +2458,11 @@ func (s *schemaVisitor) validateVariableIdentifier(i antlr.ParserRuleContext, st
 
 // pg max is 63, but Kwil sometimes adds extra characters
 var maxIdentifierLength = 32
+
+// createDefaultValueFromLiteral creates a DefaultValue from a literal value.
+// Only literal values are supported for security and performance reasons.
+func (s *schemaVisitor) createDefaultValueFromLiteral(literalValue any) *DefaultValue {
+	return &DefaultValue{
+		LiteralValue: literalValue,
+	}
+}
