@@ -163,9 +163,11 @@ func (s *schemaVisitor) VisitCreate_action_statement(ctx *gen.Create_action_stat
 
 		// Extract default value if present
 		var defaultValue engine.ParameterDefaultValue
-		if paramCtx.DEFAULT() != nil && paramCtx.Action_expr() != nil {
-			defaultExpr := paramCtx.Action_expr().Accept(s).(Expression)
-			defaultValue = s.createDefaultValue(defaultExpr)
+		if paramCtx.DEFAULT() != nil && paramCtx.Literal() != nil {
+			literalExpr := paramCtx.Literal().Accept(s).(Expression)
+			if literal, ok := literalExpr.(*ExpressionLiteral); ok {
+				defaultValue = s.createDefaultValueFromLiteral(literal.Value)
+			}
 		}
 
 		cas.Parameters[i] = &engine.NamedType{
@@ -2457,20 +2459,10 @@ func (s *schemaVisitor) validateVariableIdentifier(i antlr.ParserRuleContext, st
 // pg max is 63, but Kwil sometimes adds extra characters
 var maxIdentifierLength = 32
 
-// createDefaultValue creates a DefaultValue from an Expression.
-// It optimizes simple literals by pre-evaluating them.
-func (s *schemaVisitor) createDefaultValue(expr Expression) *DefaultValue {
-	defaultVal := &DefaultValue{
-		Expression: expr,
+// createDefaultValueFromLiteral creates a DefaultValue from a literal value.
+// Only literal values are supported for security and performance reasons.
+func (s *schemaVisitor) createDefaultValueFromLiteral(literalValue any) *DefaultValue {
+	return &DefaultValue{
+		LiteralValue: literalValue,
 	}
-
-	// Check if it's a simple literal that can be pre-evaluated
-	if literal, ok := expr.(*ExpressionLiteral); ok {
-		defaultVal.IsLiteralValue = true
-		defaultVal.LiteralValue = literal.Value
-	} else {
-		defaultVal.IsLiteralValue = false
-	}
-
-	return defaultVal
 }

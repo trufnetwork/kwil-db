@@ -186,21 +186,12 @@ const (
 	InternalEnginePGSchema = "kwild_engine"
 )
 
-// ParameterDefaultValue represents a default value for a parameter.
-// This interface provides type safety while allowing different implementations
-// for literal values, complex expressions, and null defaults.
+// ParameterDefaultValue represents a literal default value for a parameter.
+// Only literal values are supported for security and performance reasons.
 type ParameterDefaultValue interface {
-	// IsLiteral returns true if this is a simple literal value that can be
-	// directly used without evaluation (e.g., constants like 42, "hello", true, null)
-	IsLiteral() bool
-
-	// GetLiteralValue returns the pre-evaluated literal value if IsLiteral() is true.
-	// For complex expressions, this may return nil.
+	// GetLiteralValue returns the literal value for the default.
+	// Supported types: numbers, strings, booleans, and null.
 	GetLiteralValue() any
-
-	// GetExpression returns the AST expression that can be evaluated at runtime.
-	// This is used for complex expressions that need runtime evaluation.
-	GetExpression() any // This could be more specific if we define an Expression interface
 }
 
 // NamedType is a parameter in an action.

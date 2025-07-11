@@ -19,8 +19,7 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "Boolean literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteralValue: true,
-				LiteralValue:   true,
+				LiteralValue: true,
 			},
 			expectedType: types.BoolType,
 			expectError:  false,
@@ -28,8 +27,7 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "Integer literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteralValue: true,
-				LiteralValue:   int64(42),
+				LiteralValue: int64(42),
 			},
 			expectedType: types.IntType,
 			expectError:  false,
@@ -37,8 +35,7 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "String literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteralValue: true,
-				LiteralValue:   "hello",
+				LiteralValue: "hello",
 			},
 			expectedType: types.TextType,
 			expectError:  false,
@@ -46,8 +43,7 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "Null literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteralValue: true,
-				LiteralValue:   nil,
+				LiteralValue: nil,
 			},
 			expectedType: types.IntType,
 			expectError:  false,

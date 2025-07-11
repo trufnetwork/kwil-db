@@ -1,4 +1,3 @@
-
 # Kuneiform Grammar
 
 This directory contains the ANTLR 4 grammar files for the Kuneiform language used in Kwil DB.
@@ -6,7 +5,7 @@ This directory contains the ANTLR 4 grammar files for the Kuneiform language use
 ## Files
 
 - **`KuneiformLexer.g4`** - Defines tokens (keywords, operators, literals)
-- **`KuneiformParser.g4`** - Defines syntax rules and language structure  
+- **`KuneiformParser.g4`** - Defines syntax rules and language structure
 - **`generate.sh`** - Script to generate Go parser code from grammar
 - **`antlr-4.13.1-complete.jar`** - ANTLR tool (auto-downloaded)
 
@@ -86,8 +85,8 @@ CREATE ACTION my_action(
 
 **Supported Default Types:**
 - Literals: `DEFAULT false`, `DEFAULT null`, `DEFAULT 42`, `DEFAULT 'text'`
-- Expressions: `DEFAULT 10 + 20`, `DEFAULT @caller`, `DEFAULT function_call()`
-- All default values are stored with both expression AST and optimized literal values
+- Only literal values are supported for security and performance reasons
+- Complex expressions are no longer supported in default values
 
 ## Troubleshooting
 
@@ -116,7 +115,7 @@ missing method VisitXXX
 
 For comprehensive grammar development guidelines, see:
 - [Grammar Development Guide](../../../docs/dev/grammar-development.md)
-- [Contributing Guidelines](../../../../CONTRIBUTING.md#grammar-development)
+- [Contributing Guidelines](../../../CONTRIBUTING.md#grammar-development)
 
 ## Grammar Rules Reference
 
@@ -131,7 +130,7 @@ For comprehensive grammar development guidelines, see:
 ### Token Categories
 
 - **Keywords:** `CREATE`, `ACTION`, `DEFAULT`, `PUBLIC`, etc.
-- **Operators:** `+`, `-`, `*`, `/`, `=`, `!=`, etc.  
+- **Operators:** `+`, `-`, `*`, `/`, `=`, `!=`, etc.
 - **Literals:** Numbers, strings, booleans, null
 - **Identifiers:** Table names, column names, variables
 

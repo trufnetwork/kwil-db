@@ -321,12 +321,12 @@ CREATE ACTION get_users($limit INT DEFAULT 10, $active BOOL DEFAULT true) {
 };
 ```
 
-### Complex Expression Defaults
+### Literal-Only Defaults
 ```sql
 CREATE ACTION process_batch(
     $data_source TEXT,
-    $batch_size INT DEFAULT 50 * 2,    -- Evaluates to 100
-    $timeout INT DEFAULT 30 + 30       -- Evaluates to 60
+    $batch_size INT DEFAULT 100,       -- Literal values only
+    $timeout INT DEFAULT 60            -- Pre-computed values
 ) {
     -- Action implementation
 };
@@ -338,7 +338,7 @@ CREATE ACTION process_data(
     $data_source TEXT,                    -- Required
     $max_records INT DEFAULT 100,         -- Optional with default
     $use_cache BOOL DEFAULT true,         -- Optional with default
-    $timeout INT DEFAULT 30 + 30          -- Optional with complex default
+    $timeout INT DEFAULT 60               -- Optional with literal default
 ) {
     -- Process data implementation
 };
