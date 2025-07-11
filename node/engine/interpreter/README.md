@@ -249,13 +249,8 @@ go build ./node/engine/interpreter/...
 Phase 3 implements performance optimizations for common cases:
 
 ```go
-// Fast path for pre-evaluated literals
-if defaultVal.IsLiteral {
-    return createValueFromLiteral(defaultVal.LiteralValue, expectedType)
-}
-
-// Slow path for complex expressions
-return evaluateExpression(defaultVal.Expression, expectedType)
+// Literal-only implementation for security and performance
+return createValueFromLiteral(defaultVal.LiteralValue, expectedType)
 ```
 
 ### Type-Safe Operations
