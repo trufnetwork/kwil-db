@@ -225,7 +225,7 @@ go test ./node/engine/interpreter/... -v
 
 # Run specific test suites
 go test ./node/engine/interpreter/... -v -run "TestDefaultValueEvaluation"
-go test ./node/engine/interpreter/... -v -run "TestPhase3"
+go test ./node/engine/interpreter/... -v -run "TestCreateValueFromLiteral"
 
 # Run integration tests
 go test -run TestIntegration
@@ -352,11 +352,11 @@ CREATE ACTION process_data(
 result, err := client.Execute("process_data", []any{"source", 50, false, 120})
 
 // Call with partial parameters (uses defaults)
-result, err := client.Execute("process_data", []any{"source", 50})  
+result, err := client.Execute("process_data", []any{"source", 50})
 // Uses: use_cache = true, timeout = 60
 
 // Call with minimal parameters (uses multiple defaults)
-result, err := client.Execute("process_data", []any{"source"})      
+result, err := client.Execute("process_data", []any{"source"})
 // Uses: max_records = 100, use_cache = true, timeout = 60
 ```
 

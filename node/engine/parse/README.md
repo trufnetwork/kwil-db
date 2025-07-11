@@ -54,12 +54,12 @@ Implements the ANTLR visitor pattern to convert parsed grammar into AST:
 func (s *schemaVisitor) VisitAction_parameter(ctx *gen.Action_parameterContext) any {
     name := s.cleanStringIdent(ctx, ctx.VARIABLE().GetText())
     typ := ctx.Type_().Accept(s).(*types.DataType)
-    
+
     var defaultValue any
     if ctx.DEFAULT() != nil {
         defaultValue = s.processDefaultValue(ctx.Action_expr())
     }
-    
+
     return &engine.NamedType{
         Name:         name,
         Type:         typ,
@@ -97,7 +97,7 @@ type DefaultValue struct {
 ```go
 func (s *schemaVisitor) processDefaultValue(ctx gen.IAction_exprContext) *DefaultValue {
     expr := ctx.Accept(s).(Expression)
-    
+
     // Optimize for simple literals
     if literal, ok := expr.(*ExpressionLiteral); ok {
         return &DefaultValue{
@@ -106,7 +106,7 @@ func (s *schemaVisitor) processDefaultValue(ctx gen.IAction_exprContext) *Defaul
             IsLiteral:    true,
         }
     }
-    
+
     // Complex expression - store AST only
     return &DefaultValue{
         Expression: expr,
@@ -146,7 +146,7 @@ go test ./node/engine/parse/... -v
 
 # Run specific test suites
 go test ./node/engine/parse/... -v -run "TestCreateActionStatements"
-go test ./node/engine/parse/... -v -run "TestPhase2"
+go test ./node/engine/parse/... -v -run "TestCreateActionStatementsWithOptionalParams"
 
 # Test JSON serialization
 go test -run TestJSONSerialization

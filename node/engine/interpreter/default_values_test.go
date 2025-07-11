@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
@@ -11,15 +12,15 @@ import (
 func TestDefaultValueEvaluation(t *testing.T) {
 	tests := []struct {
 		name         string
-		defaultValue *parse.DefaultValue
+		defaultValue any
 		expectedType *types.DataType
 		expectError  bool
 	}{
 		{
 			name: "Boolean literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteral:    true,
-				LiteralValue: true,
+				IsLiteralValue: true,
+				LiteralValue:   true,
 			},
 			expectedType: types.BoolType,
 			expectError:  false,
@@ -27,8 +28,8 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "Integer literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteral:    true,
-				LiteralValue: int64(42),
+				IsLiteralValue: true,
+				LiteralValue:   int64(42),
 			},
 			expectedType: types.IntType,
 			expectError:  false,
@@ -36,8 +37,8 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "String literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteral:    true,
-				LiteralValue: "hello",
+				IsLiteralValue: true,
+				LiteralValue:   "hello",
 			},
 			expectedType: types.TextType,
 			expectError:  false,
@@ -45,8 +46,8 @@ func TestDefaultValueEvaluation(t *testing.T) {
 		{
 			name: "Null literal default",
 			defaultValue: &parse.DefaultValue{
-				IsLiteral:    true,
-				LiteralValue: nil,
+				IsLiteralValue: true,
+				LiteralValue:   nil,
 			},
 			expectedType: types.IntType,
 			expectError:  false,
@@ -72,8 +73,8 @@ func TestDefaultValueEvaluation(t *testing.T) {
 			}
 
 			// Basic type compatibility check
-			if tt.defaultValue.LiteralValue != nil {
-				switch tt.defaultValue.LiteralValue.(type) {
+			if paramDefault, ok := tt.defaultValue.(engine.ParameterDefaultValue); ok && paramDefault.GetLiteralValue() != nil {
+				switch paramDefault.GetLiteralValue().(type) {
 				case bool:
 					if !result.Type().Equals(types.BoolType) {
 						t.Errorf("expected bool type, got %s", result.Type())

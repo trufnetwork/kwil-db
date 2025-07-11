@@ -162,7 +162,7 @@ func (s *schemaVisitor) VisitCreate_action_statement(ctx *gen.Create_action_stat
 		typ := paramCtx.Type_().Accept(s).(*types.DataType)
 
 		// Extract default value if present
-		var defaultValue any
+		var defaultValue engine.ParameterDefaultValue
 		if paramCtx.DEFAULT() != nil && paramCtx.Action_expr() != nil {
 			defaultExpr := paramCtx.Action_expr().Accept(s).(Expression)
 			defaultValue = s.createDefaultValue(defaultExpr)
@@ -2466,10 +2466,10 @@ func (s *schemaVisitor) createDefaultValue(expr Expression) *DefaultValue {
 
 	// Check if it's a simple literal that can be pre-evaluated
 	if literal, ok := expr.(*ExpressionLiteral); ok {
-		defaultVal.IsLiteral = true
+		defaultVal.IsLiteralValue = true
 		defaultVal.LiteralValue = literal.Value
 	} else {
-		defaultVal.IsLiteral = false
+		defaultVal.IsLiteralValue = false
 	}
 
 	return defaultVal

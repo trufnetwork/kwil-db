@@ -286,7 +286,7 @@ func (s *schemaVisitor) processDefaultValue(ctx gen.IAction_exprContext) *Defaul
 Create Phase 2 specific tests:
 
 ```go
-func TestCreateActionStatementsPhase2(t *testing.T) {
+func TestCreateActionStatementsWithOptionalParams(t *testing.T) {
     tests := []struct {
         name   string
         input  string

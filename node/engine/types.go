@@ -186,6 +186,23 @@ const (
 	InternalEnginePGSchema = "kwild_engine"
 )
 
+// ParameterDefaultValue represents a default value for a parameter.
+// This interface provides type safety while allowing different implementations
+// for literal values, complex expressions, and null defaults.
+type ParameterDefaultValue interface {
+	// IsLiteral returns true if this is a simple literal value that can be
+	// directly used without evaluation (e.g., constants like 42, "hello", true, null)
+	IsLiteral() bool
+
+	// GetLiteralValue returns the pre-evaluated literal value if IsLiteral() is true.
+	// For complex expressions, this may return nil.
+	GetLiteralValue() any
+
+	// GetExpression returns the AST expression that can be evaluated at runtime.
+	// This is used for complex expressions that need runtime evaluation.
+	GetExpression() any // This could be more specific if we define an Expression interface
+}
+
 // NamedType is a parameter in an action.
 type NamedType struct {
 	// Name is the name of the parameter.
@@ -196,6 +213,7 @@ type NamedType struct {
 	Type *types.DataType `json:"type"`
 	// DefaultValue is the default value for the parameter, if any.
 	// It is nil for required parameters.
+	// Note: This uses `any` instead of ParameterDefaultValue interface to avoid JSON marshaling issues
 	DefaultValue any `json:"default,omitempty"`
 }
 

@@ -52,6 +52,7 @@ type Expression interface {
 
 // DefaultValue represents a default value for a parameter.
 // It stores both the parsed expression and evaluates literal values for efficiency.
+// This struct implements the engine.ParameterDefaultValue interface.
 type DefaultValue struct {
 	// Expression is the parsed AST expression for the default value.
 	// This is used for complex expressions that need runtime evaluation.
@@ -59,9 +60,30 @@ type DefaultValue struct {
 	// LiteralValue is the pre-evaluated value for simple literals.
 	// This is used for constants like numbers, strings, booleans, and null.
 	LiteralValue any `json:"literal_value,omitempty"`
-	// IsLiteral indicates whether this is a simple literal value.
+	// IsLiteralValue indicates whether this is a simple literal value.
 	// If true, LiteralValue can be used directly without evaluation.
-	IsLiteral bool `json:"is_literal"`
+	IsLiteralValue bool `json:"is_literal"`
+}
+
+// IsLiteral returns true if this is a simple literal value that can be
+// directly used without evaluation (e.g., constants like 42, "hello", true, null).
+// This implements the engine.ParameterDefaultValue interface.
+func (d *DefaultValue) IsLiteral() bool {
+	return d.IsLiteralValue
+}
+
+// GetLiteralValue returns the pre-evaluated literal value if IsLiteral() is true.
+// For complex expressions, this may return nil.
+// This implements the engine.ParameterDefaultValue interface.
+func (d *DefaultValue) GetLiteralValue() any {
+	return d.LiteralValue
+}
+
+// GetExpression returns the AST expression that can be evaluated at runtime.
+// This is used for complex expressions that need runtime evaluation.
+// This implements the engine.ParameterDefaultValue interface.
+func (d *DefaultValue) GetExpression() any {
+	return d.Expression
 }
 
 // Assignable is an interface for all expressions that can be assigned to.

@@ -2961,9 +2961,9 @@ func TestCreateActionStatements(t *testing.T) {
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: types.IntType},
 					{Name: "$use_cache", Type: types.BoolType, DefaultValue: &DefaultValue{
-						Expression:   nil,
-						LiteralValue: false,
-						IsLiteral:    true,
+						Expression:     nil,
+						LiteralValue:   false,
+						IsLiteralValue: true,
 					}},
 				},
 				Returns: nil,
@@ -2978,9 +2978,9 @@ func TestCreateActionStatements(t *testing.T) {
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: types.IntType},
 					{Name: "$param2", Type: &types.DataType{Name: "text"}, DefaultValue: &DefaultValue{
-						Expression:   nil,
-						LiteralValue: nil,
-						IsLiteral:    true,
+						Expression:     nil,
+						LiteralValue:   nil,
+						IsLiteralValue: true,
 					}},
 				},
 				Returns: nil,
@@ -2995,9 +2995,9 @@ func TestCreateActionStatements(t *testing.T) {
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: &types.DataType{Name: "text"}},
 					{Name: "$timeout", Type: types.IntType, DefaultValue: &DefaultValue{
-						Expression:   nil,
-						LiteralValue: int64(30),
-						IsLiteral:    true,
+						Expression:     nil,
+						LiteralValue:   int64(30),
+						IsLiteralValue: true,
 					}},
 				},
 				Returns: nil,
@@ -3012,14 +3012,14 @@ func TestCreateActionStatements(t *testing.T) {
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: &types.DataType{Name: "text"}},
 					{Name: "$use_cache", Type: types.BoolType, DefaultValue: &DefaultValue{
-						Expression:   nil,
-						LiteralValue: false,
-						IsLiteral:    true,
+						Expression:     nil,
+						LiteralValue:   false,
+						IsLiteralValue: true,
 					}},
 					{Name: "$timeout", Type: types.IntType, DefaultValue: &DefaultValue{
-						Expression:   nil,
-						LiteralValue: int64(30),
-						IsLiteral:    true,
+						Expression:     nil,
+						LiteralValue:   int64(30),
+						IsLiteralValue: true,
 					}},
 				},
 				Returns: nil,
@@ -3034,9 +3034,9 @@ func TestCreateActionStatements(t *testing.T) {
 				Parameters: []*engine.NamedType{
 					{Name: "$param1", Type: &types.DataType{Name: "text"}},
 					{Name: "$computed", Type: types.IntType, DefaultValue: &DefaultValue{
-						Expression:   nil,
-						LiteralValue: nil,
-						IsLiteral:    false,
+						Expression:     nil,
+						LiteralValue:   nil,
+						IsLiteralValue: false,
 					}},
 				},
 				Returns: nil,
@@ -3079,8 +3079,8 @@ func TestCreateActionStatements(t *testing.T) {
 	}
 }
 
-// TestCreateActionStatementsPhase2 tests default value storage in Phase 2
-func TestCreateActionStatementsPhase2(t *testing.T) {
+// TestCreateActionStatementsWithOptionalParams tests default value storage in Phase 2
+func TestCreateActionStatementsWithOptionalParams(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -3172,7 +3172,7 @@ func TestCreateActionStatementsPhase2(t *testing.T) {
 					require.NotNil(t, param.DefaultValue, "Parameter %s should have default value", expected.name)
 					defaultVal := param.DefaultValue.(*DefaultValue)
 					require.Equal(t, expected.literalValue, defaultVal.LiteralValue, "Literal value mismatch for %s", expected.name)
-					require.Equal(t, expected.isLiteral, defaultVal.IsLiteral, "IsLiteral mismatch for %s", expected.name)
+					require.Equal(t, expected.isLiteral, defaultVal.IsLiteralValue, "IsLiteral mismatch for %s", expected.name)
 					require.NotNil(t, defaultVal.Expression, "Expression should be populated for %s", expected.name)
 				} else {
 					require.Nil(t, param.DefaultValue, "Parameter %s should not have default value", expected.name)

@@ -2435,19 +2435,24 @@ func evaluateDefaultValue(defaultValue any, expectedType *types.DataType) (Value
 		return nil, fmt.Errorf("no default value provided")
 	}
 
-	// Cast to DefaultValue from parse package
-	defaultVal, ok := defaultValue.(*parse.DefaultValue)
+	// Cast the any type to our interface
+	paramDefault, ok := defaultValue.(engine.ParameterDefaultValue)
 	if !ok {
-		return nil, fmt.Errorf("invalid default value type: %T", defaultValue)
+		return nil, fmt.Errorf("default value does not implement ParameterDefaultValue interface")
 	}
 
-	// For literals, use the pre-evaluated value
-	if defaultVal.IsLiteral {
-		return createValueFromLiteral(defaultVal.LiteralValue, expectedType)
+	// For literals, use the pre-evaluated value (fast path)
+	if paramDefault.IsLiteral() {
+		return createValueFromLiteral(paramDefault.GetLiteralValue(), expectedType)
 	}
 
 	// For complex expressions, evaluate the expression
-	return evaluateExpression(defaultVal.Expression, expectedType)
+	// We need to cast the expression to the proper type for evaluation
+	if expr, ok := paramDefault.GetExpression().(parse.Expression); ok {
+		return evaluateExpression(expr, expectedType)
+	}
+
+	return nil, fmt.Errorf("invalid expression type in default value")
 }
 
 // createValueFromLiteral creates a Value from a literal value
