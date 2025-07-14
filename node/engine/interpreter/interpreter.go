@@ -691,8 +691,9 @@ func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, 
 
 	if exec.ExpectedArgs != nil {
 		expect := *exec.ExpectedArgs
-		if len(expect) != len(args) {
-			return nil, fmt.Errorf(`%w: action "%s" expected %d arguments, but got %d`, engine.ErrActionInvocation, action, len(expect), len(args))
+		// Allow fewer arguments than expected for actions with DEFAULT parameters
+		if len(args) > len(expect) {
+			return nil, fmt.Errorf(`%w: action "%s" expected at most %d arguments, but got %d`, engine.ErrActionInvocation, action, len(expect), len(args))
 		}
 
 		for i, arg := range args {
