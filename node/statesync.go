@@ -171,9 +171,21 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	}
 
 	// request and commit the block to the blockstore
-	_, rawBlk, ci, _, err := getBlkHeight(ctx, height, ss.host, ss.log, ss.blockSyncCfg)
+	const maxBlockRetries = 20
+	const retryBackoff = 2 * time.Second
+	var rawBlk []byte
+	var ci *ktypes.CommitInfo
+	for attempt := 1; attempt <= maxBlockRetries; attempt++ {
+		ss.log.Info("Attempting to fetch statesync block", "height", height, "attempt", attempt)
+		_, rawBlk, ci, _, err = getBlkHeight(ctx, height, ss.host, ss.log, ss.blockSyncCfg)
+		if err == nil {
+			break
+		}
+		ss.log.Warn("Block fetch failed, retrying after backoff", "error", err, "backoff", retryBackoff)
+		time.Sleep(retryBackoff)
+	}
 	if err != nil {
-		return false, fmt.Errorf("failed to get statesync block %d: %w", height, err)
+		return false, fmt.Errorf("failed to get statesync block %d after %d attempts: %w", height, maxBlockRetries, err)
 	}
 	blk, err := ktypes.DecodeBlock(rawBlk)
 	if err != nil {
