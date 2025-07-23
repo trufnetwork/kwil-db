@@ -3,6 +3,7 @@ package testing
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
 
@@ -22,9 +23,7 @@ func setupExtensions(ctx context.Context, db sql.DB, extensions []interpreter.St
 
 		// Register the extension initialization in the database
 		metadata := make(map[string]interpreter.Value)
-		for k, v := range ext.Metadata {
-			metadata[k] = v
-		}
+		maps.Copy(metadata, ext.Metadata)
 
 		// Create namespace and register extension
 		err := interpreter.RegisterExtensionInitialization(ctx, db, ext.Alias, ext.ExtName, metadata)

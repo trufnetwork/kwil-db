@@ -1,6 +1,7 @@
 package blockprocessor
 
 import (
+	"maps"
 	"slices"
 	"time"
 
@@ -32,9 +33,7 @@ func (bp *BlockProcessor) BlockExecutionStatus() *ktypes.BlockExecutionStatus {
 		TxStatus:  make(map[ktypes.Hash]bool, len(bp.status.txStatus)),
 	}
 
-	for k, v := range bp.status.txStatus {
-		status.TxStatus[k] = v
-	}
+	maps.Copy(status.TxStatus, bp.status.txStatus)
 
 	return status
 }
