@@ -23,6 +23,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/node/accounts"
 	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
+	"github.com/trufnetwork/kwil-db/node/meta"
 	"github.com/trufnetwork/kwil-db/node/pg"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 	"github.com/trufnetwork/kwil-db/node/voting"
@@ -188,6 +189,14 @@ func (tc SchemaTest) Run(ctx context.Context, opts *Options) error {
 				}, accs, votes, nil)
 				if err != nil {
 					return err
+				}
+
+				// Setup meta store if requested (creates kwild_chain schema for blockchain state testing)
+				if opts.SetupMetaStore {
+					err = setupMetaStoreForTesting(ctx, outerTx, opts.InitialHeight, opts.InitialAppHash)
+					if err != nil {
+						return fmt.Errorf("failed to setup meta store for testing: %w", err)
+					}
 				}
 
 				// Setup extensions if specified (after interpreter creates the schema)
@@ -455,6 +464,30 @@ func (p *Platform) Txid() string {
 	return hex.EncodeToString(b[:])
 }
 
+// setupMetaStoreForTesting initializes kwild_chain schema for test environments
+func setupMetaStoreForTesting(ctx context.Context, tx sql.DB, height int64, appHash []byte) error {
+	// Initialize meta store (creates kwild_chain schema and tables)
+	err := meta.InitializeMetaStore(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("initialize meta store: %w", err)
+	}
+	
+	// Set initial chain state
+	if height <= 0 {
+		height = 1 // Default height
+	}
+	if appHash == nil {
+		appHash = []byte("test-genesis-hash") // Default app hash
+	}
+	
+	err = meta.SetChainState(ctx, tx, height, appHash, false)
+	if err != nil {
+		return fmt.Errorf("set initial chain state: %w", err)
+	}
+	
+	return nil
+}
+
 // runWithPostgres runs the callback function with a postgres container.
 func runWithPostgres(ctx context.Context, opts *Options, fn func(context.Context, *pg.DB, Logger) error) (err error) {
 	if !opts.UseTestContainer {
@@ -664,6 +697,13 @@ type Options struct {
 	ReplaceExistingContainer func() (bool, error)
 	// Extensions specifies the extensions to load during testing
 	Extensions []interpreter.StoredExtension
+	
+	// SetupMetaStore enables kwild_chain schema creation for blockchain state testing
+	SetupMetaStore bool
+	// InitialHeight sets the initial blockchain height (default: 1)
+	InitialHeight int64
+	// InitialAppHash sets the initial app hash (default: "test-genesis-hash")
+	InitialAppHash []byte
 }
 
 // ConnConfig groups the basic connection settings used to construct the DSN
