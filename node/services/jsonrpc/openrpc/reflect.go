@@ -3,6 +3,7 @@ package openrpc
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"math/big"
 	"reflect"
 	"slices"
@@ -203,9 +204,7 @@ func reflectTypeInfo(t reflect.Type, knownSchemas map[reflect.Type]Schema) Schem
 				if fieldType.Kind() == reflect.Struct { // merge properties of embedded struct
 					reflectTypeInfo(fieldType, knownSchemas)
 					anonSchema := knownSchemas[fieldType] // non-$ref schema
-					for propName, propSchema := range anonSchema.Properties {
-						schema.Properties[propName] = propSchema
-					}
+					maps.Copy(schema.Properties, anonSchema.Properties)
 				} else { // non-struct, include the field itself
 					fieldName := fieldType.Name()
 					if fieldName == "" {

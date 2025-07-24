@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -57,9 +58,7 @@ func StartCmd() *cobra.Command {
 					existing = make(map[string]string)
 				}
 
-				for k, v := range extConf {
-					existing[k] = v
-				}
+				maps.Copy(existing, extConf)
 
 				cfg.Extensions[extName] = existing
 			}
