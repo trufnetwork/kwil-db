@@ -10,6 +10,13 @@ package pg
 // It recognizes UPDATEs to a special kwild_internal.sentry table, and captures
 // a sequence value to identify the committed transaction. If none was set, as
 // would be done by the DB type, it remains -1.
+//
+// TODO: Future enhancements for monitoring and telemetry:
+// - Add WAL-free-space telemetry and fail early if below threshold
+// - Add Prometheus metrics for abort/rollback events
+// - Consider surfacing hard errors to Precommit for immediate block execution failure
+// - Implement comprehensive health checks for PostgreSQL replication
+// See monitoring_backup/ directory for initial implementation that can be refined
 
 import (
 	"bytes"
@@ -297,6 +304,22 @@ func (ws *walStats) reset() {
 	*ws = walStats{}
 }
 
+// resetTransactionState cleans up all transaction-related state when a transaction
+// is aborted or rolled back, preventing AppHash divergence from dirty state.
+func resetTransactionState(hasher *muhash.MuHash, stats *walStats, changesetWriter *changesetIoWriter, seq *int64) {
+	hasher.Reset()
+	stats.reset()
+	changesetWriter.finalize()
+	*seq = -1
+
+	// TODO: Add telemetry for state reset events
+	// - Increment state_reset_total counter with reason (abort/rollback)
+	// - Record timestamp and validator ID
+	// - Track frequency to identify patterns
+
+	logger.Debugf("Transaction state reset after abort/rollback")
+}
+
 // decodeWALData decodes a wal data message given known relations, returning
 // true if it was a commit message, or a non-negative seq value if it was a
 // special update message on the internal sentry table
@@ -495,9 +518,13 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 			logicalMsg.UserGID, logicalMsg.RollbackLSN, uint64(logicalMsg.RollbackLSN),
 			logicalMsg.EndLSN, uint64(logicalMsg.EndLSN))
 
-		// ROLLBACK PREPARED would happen after PREPARE transaction, which is
-		// where we finalized the changeset. The caller that aborted will simply
-		// discard the changeset hash that they already received.
+		// TODO: Add telemetry/metrics for rollback prepared events
+		// - Increment rollback_prepared_total counter
+		// - Record event with validator ID and timestamp
+		// - Consider surfacing hard error to Precommit for immediate block execution failure
+
+		// Reset transaction state to prevent AppHash divergence
+		resetTransactionState(hasher, stats, changesetWriter, &seq)
 
 	// v2 Stream control messages.  Only expected with large transactions.
 	case *pglogrepl.StreamStartMessageV2:
@@ -510,6 +537,15 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 		logger.Warnf("Stream commit message: xid %d", logicalMsg.Xid)
 	case *pglogrepl.StreamAbortMessageV2:
 		logger.Warnf("Stream abort message: xid %d", logicalMsg.Xid)
+
+		// TODO: Add telemetry/metrics for stream abort events
+		// - Increment stream_abort_total counter
+		// - Add WAL-free-space telemetry and fail early if below threshold
+		// - Check if abort was caused by disk space exhaustion
+		// - Consider surfacing hard error to Precommit for immediate block execution failure
+
+		// Reset transaction state to prevent AppHash divergence
+		resetTransactionState(hasher, stats, changesetWriter, &seq)
 
 	default:
 		logger.Warnf("Unknown message type in pgoutput stream: %T", logicalMsg)
