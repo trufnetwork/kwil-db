@@ -311,12 +311,12 @@ func resetTransactionState(hasher *muhash.MuHash, stats *walStats, changesetWrit
 	stats.reset()
 	changesetWriter.finalize()
 	*seq = -1
-	
+
 	// TODO: Add telemetry for state reset events
 	// - Increment state_reset_total counter with reason (abort/rollback)
 	// - Record timestamp and validator ID
 	// - Track frequency to identify patterns
-	
+
 	logger.Debugf("Transaction state reset after abort/rollback")
 }
 
@@ -537,13 +537,13 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 		logger.Warnf("Stream commit message: xid %d", logicalMsg.Xid)
 	case *pglogrepl.StreamAbortMessageV2:
 		logger.Warnf("Stream abort message: xid %d", logicalMsg.Xid)
-		
+
 		// TODO: Add telemetry/metrics for stream abort events
 		// - Increment stream_abort_total counter
 		// - Add WAL-free-space telemetry and fail early if below threshold
 		// - Check if abort was caused by disk space exhaustion
 		// - Consider surfacing hard error to Precommit for immediate block execution failure
-		
+
 		// Reset transaction state to prevent AppHash divergence
 		resetTransactionState(hasher, stats, changesetWriter, &seq)
 

@@ -148,7 +148,7 @@ func TestResetTransactionState(t *testing.T) {
 	// Setup hasher with some data
 	hasher := muhash.New()
 	hasher.Add([]byte("test data"))
-	
+
 	// Setup stats with some counts
 	stats := &walStats{
 		inserts: 5,
@@ -156,7 +156,7 @@ func TestResetTransactionState(t *testing.T) {
 		deletes: 2,
 		truncs:  1,
 	}
-	
+
 	// Setup changeset writer with mock channel
 	changesetChan := make(chan any, 10)
 	changesetWriter := &changesetIoWriter{
@@ -168,10 +168,10 @@ func TestResetTransactionState(t *testing.T) {
 			Relations: []*Relation{{Schema: "test", Table: "table"}},
 		},
 	}
-	
+
 	// Setup sequence with non-default value
 	seq := int64(42)
-	
+
 	// Verify initial state is dirty
 	if hasher.DigestHash() == [32]byte{} {
 		t.Error("hasher should have data before reset")
@@ -182,26 +182,26 @@ func TestResetTransactionState(t *testing.T) {
 	if seq == -1 {
 		t.Error("seq should not be -1 before reset")
 	}
-	
+
 	// Call resetTransactionState
 	resetTransactionState(hasher, stats, changesetWriter, &seq)
-	
+
 	// Verify hasher is reset
 	emptyHash := muhash.New().DigestHash()
 	if hasher.DigestHash() != emptyHash {
 		t.Error("hasher should be reset to empty state")
 	}
-	
+
 	// Verify stats are reset
 	if stats.inserts != 0 || stats.updates != 0 || stats.deletes != 0 || stats.truncs != 0 {
 		t.Error("stats should be reset to zero")
 	}
-	
+
 	// Verify sequence is reset
 	if seq != -1 {
 		t.Errorf("seq should be reset to -1, got %d", seq)
 	}
-	
+
 	// Verify changeset writer finalize was called (channel should be closed)
 	select {
 	case _, ok := <-changesetChan:
@@ -218,10 +218,10 @@ func TestStreamAbortMessageV2StateReset(t *testing.T) {
 	// Setup dirty state
 	hasher := muhash.New()
 	hasher.Add([]byte("dirty data"))
-	
+
 	stats := &walStats{inserts: 1, updates: 2}
 	seq := int64(100)
-	
+
 	changesetChan := make(chan any, 1)
 	changesetWriter := &changesetIoWriter{
 		csChan: changesetChan,
@@ -229,17 +229,17 @@ func TestStreamAbortMessageV2StateReset(t *testing.T) {
 			relationIdx: make(map[[2]string]int),
 		},
 	}
-	
+
 	// Test the reset function directly (simulating StreamAbortMessageV2 handling)
 	resetTransactionState(hasher, stats, changesetWriter, &seq)
-	
+
 	// Verify state was reset
 	emptyHash := muhash.New().DigestHash()
 	if hasher.DigestHash() != emptyHash {
 		t.Error("hasher should be reset after StreamAbortMessageV2")
 	}
 	if stats.inserts != 0 || stats.updates != 0 {
-		t.Error("stats should be reset after StreamAbortMessageV2")  
+		t.Error("stats should be reset after StreamAbortMessageV2")
 	}
 	if seq != -1 {
 		t.Error("seq should be reset to -1 after StreamAbortMessageV2")
@@ -251,16 +251,16 @@ func TestRollbackPreparedMessageV3StateReset(t *testing.T) {
 	// Setup dirty state
 	hasher := muhash.New()
 	hasher.Add([]byte("prepared transaction data"))
-	
+
 	stats := &walStats{
 		inserts: 10,
 		updates: 5,
 		deletes: 3,
 		truncs:  1,
 	}
-	
+
 	seq := int64(200)
-	
+
 	changesetChan := make(chan any, 1)
 	changesetWriter := &changesetIoWriter{
 		csChan: changesetChan,
@@ -268,10 +268,10 @@ func TestRollbackPreparedMessageV3StateReset(t *testing.T) {
 			relationIdx: make(map[[2]string]int),
 		},
 	}
-	
+
 	// Test the reset function directly (simulating RollbackPreparedMessageV3 handling)
 	resetTransactionState(hasher, stats, changesetWriter, &seq)
-	
+
 	// Verify state was reset
 	emptyHash := muhash.New().DigestHash()
 	if hasher.DigestHash() != emptyHash {
@@ -290,41 +290,41 @@ func TestAppHashConsistencyAfterAbort(t *testing.T) {
 	// Create two identical hashers
 	hasher1 := muhash.New()
 	hasher2 := muhash.New()
-	
+
 	// Both hashers process same initial data
 	testData := []byte("some transaction data")
 	hasher1.Add(testData)
 	hasher2.Add(testData)
-	
+
 	// Verify they have same hash
 	hash1 := hasher1.DigestHash()
 	hash2 := hasher2.DigestHash()
 	if hash1 != hash2 {
 		t.Error("initial hashes should be identical")
 	}
-	
+
 	// Simulate abort scenario: hasher1 gets aborted and reset, hasher2 continues
 	stats1 := &walStats{}
 	seq1 := int64(50)
 	changesetWriter1 := &changesetIoWriter{
 		metadata: &changesetMetadata{relationIdx: make(map[[2]string]int)},
 	}
-	
+
 	// hasher1 experiences abort and gets reset
 	resetTransactionState(hasher1, stats1, changesetWriter1, &seq1)
-	
+
 	// hasher2 continues without abort (simulating validator with sufficient disk space)
 	// Both now process the same next transaction
 	nextData := []byte("next successful transaction")
 	hasher1.Add(nextData)
 	hasher2.Reset() // hasher2 also resets because it commits successfully
 	hasher2.Add(nextData)
-	
+
 	// Final hashes should be identical
 	finalHash1 := hasher1.DigestHash()
 	finalHash2 := hasher2.DigestHash()
 	if finalHash1 != finalHash2 {
-		t.Errorf("final hashes should be identical after proper reset, got %x vs %x", 
+		t.Errorf("final hashes should be identical after proper reset, got %x vs %x",
 			finalHash1, finalHash2)
 	}
 }
