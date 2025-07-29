@@ -317,9 +317,7 @@ func NewInterpreter(ctx context.Context, db sql.DB, service *common.Service, acc
 		if existing, ok := interpreter.namespaces[ext.Alias]; ok {
 			// kuneiform actions should overwrite methods,
 			// so any actions already read should just overwrite the methods
-			for k, v := range existing.availableFunctions {
-				namespace.availableFunctions[k] = v
-			}
+			maps.Copy(namespace.availableFunctions, existing.availableFunctions)
 
 			namespace.tables = existing.tables
 		}
@@ -804,9 +802,7 @@ var builtInExecutables = func() map[string]*executable {
 // copyBuiltinExecutables returns a map of built-in functions to their executables.
 func copyBuiltinExecutables() map[string]*executable {
 	b := make(map[string]*executable)
-	for k, v := range builtInExecutables {
-		b[k] = v
-	}
+	maps.Copy(b, builtInExecutables)
 
 	return b
 }
