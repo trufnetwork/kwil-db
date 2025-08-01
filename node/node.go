@@ -53,8 +53,9 @@ var mets metrics.NodeMetrics = metrics.Node
 const AppVersion = 1
 
 const (
-	blockTxCount    = 50 // for "mining"
-	txReAnnInterval = 30 * time.Second
+	blockTxCount           = 50 // for "mining"
+	txReAnnInterval        = 30 * time.Second
+	mempoolCleanupInterval = 5 * time.Minute // periodic mempool cleanup interval
 )
 
 type peerManager interface {
@@ -345,6 +346,9 @@ func (n *Node) Start(ctx context.Context) error {
 	// This dummy method will make create+announce new pretend transactions.
 	// It also periodically rebroadcasts txns.
 	n.startTxAnns(ctx, txReAnnInterval)
+
+	// Start periodic mempool cleanup to remove stale transactions
+	n.startMempoolCleanup(ctx, mempoolCleanupInterval)
 
 	// mine is our block anns goroutine, which must be only for leader
 	n.wg.Add(1)

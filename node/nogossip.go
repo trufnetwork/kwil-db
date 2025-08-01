@@ -342,6 +342,30 @@ func (n *Node) startTxAnns(ctx context.Context, reannouncePeriod time.Duration) 
 	}()
 }
 
+// startMempoolCleanup handles periodic mempool validation to remove stale transactions
+func (n *Node) startMempoolCleanup(ctx context.Context, cleanupPeriod time.Duration) {
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		
+		ticker := time.NewTicker(cleanupPeriod)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := n.ce.RecheckMempool(ctx); err != nil {
+					n.log.Error("periodic mempool cleanup failed", "error", err)
+				} else {
+					n.log.Debug("periodic mempool cleanup completed")
+				}
+			}
+		}
+	}()
+}
+
 // startOrderedTxQueueAnns ensures that transaction announcements are broadcasted
 // in the order they are received, maintaining FIFO order for nonce consistency.
 func (n *Node) startOrderedTxQueueAnns(ctx context.Context) {

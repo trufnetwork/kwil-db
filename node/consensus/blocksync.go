@@ -121,6 +121,12 @@ SYNC:
 			}
 
 			if errors.Is(err, types.ErrBlkNotFound) || errors.Is(err, types.ErrNotFound) {
+				// Before assuming sync completion, verify we're not orphaned
+				if ce.isLikelyOrphaned(ctx, height) {
+					ce.log.Warn("detected potential orphan state, attempting resync from earlier block")
+					// Attempt resync from an earlier block
+					return ce.attemptOrphanRecovery(ctx, height)
+				}
 				break SYNC // no peers have this block, assume block sync is complete, continue with consensus
 			}
 

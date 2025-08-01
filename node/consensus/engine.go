@@ -1254,3 +1254,70 @@ func (ce *ConsensusEngine) getLeaderUpdates() *leaderUpdate {
 
 	return ce.leaderUpdates
 }
+
+// RecheckMempool triggers revalidation of all transactions in the mempool
+func (ce *ConsensusEngine) RecheckMempool(ctx context.Context) error {
+	ce.mempoolMtx.PriorityLock()
+	defer ce.mempoolMtx.Unlock()
+	
+	lh, t := ce.lastBlockInternal()
+	return ce.blockProcessor.RecheckTxs(ctx, lh, t)
+}
+
+// isLikelyOrphaned checks if this node might be on an orphaned chain
+func (ce *ConsensusEngine) isLikelyOrphaned(ctx context.Context, currentHeight int64) bool {
+	// Get chain tip from multiple peers
+	peerTips, err := ce.getPeerChainTips(ctx)
+	if err != nil || len(peerTips) == 0 {
+		return false // Cannot determine, assume not orphaned
+	}
+	
+	// If majority of peers are significantly ahead, we're likely orphaned
+	majorityHeight := ce.calculateMajorityHeight(peerTips)
+	return majorityHeight > currentHeight + 1 // More than 1 block behind majority
+}
+
+// getPeerChainTips queries peers for their current block heights
+func (ce *ConsensusEngine) getPeerChainTips(ctx context.Context) (map[string]int64, error) {
+	// TODO: Implementation to query peer heights via network calls
+	// For now, return empty map to avoid breaking functionality
+	// This will be implemented in a future iteration
+	ce.log.Debug("getPeerChainTips not yet implemented, orphan detection disabled")
+	return map[string]int64{}, nil
+}
+
+// calculateMajorityHeight finds the height that majority of peers agree on
+func (ce *ConsensusEngine) calculateMajorityHeight(peerTips map[string]int64) int64 {
+	if len(peerTips) == 0 {
+		return 0
+	}
+	
+	// Count height frequencies
+	heightCounts := make(map[int64]int)
+	for _, height := range peerTips {
+		heightCounts[height]++
+	}
+	
+	// Find height with most votes, preferring higher heights in case of ties
+	maxCount := 0
+	majorityHeight := int64(0)
+	for height, count := range heightCounts {
+		if count > maxCount || (count == maxCount && height > majorityHeight) {
+			maxCount = count
+			majorityHeight = height
+		}
+	}
+	
+	return majorityHeight
+}
+
+// attemptOrphanRecovery tries to recover from orphaned state
+func (ce *ConsensusEngine) attemptOrphanRecovery(ctx context.Context, currentHeight int64) error {
+	ce.log.Info("attempting orphan recovery", "current_height", currentHeight)
+	
+	// For Phase 1, we'll just log the detection and return an error
+	// requiring manual intervention. In Phase 2, we can implement
+	// automatic recovery mechanisms.
+	ce.log.Warn("orphan state detected, manual intervention required", "current_height", currentHeight)
+	return fmt.Errorf("orphan recovery requires manual intervention - node appears to be on orphaned chain at height %d", currentHeight)
+}
