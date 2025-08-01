@@ -421,6 +421,10 @@ func (f *dummyCE) PromoteLeader(leader crypto.PublicKey, height int64) error {
 	return nil
 }
 
+func (f *dummyCE) RecheckMempool(ctx context.Context) error {
+	return nil
+}
+
 // Fake gets the methods to talk back to the Node, dictating CE logic manually.
 // These could just be methods on the CE, but this makes their relationship clearer.
 func (ce *dummyCE) Fake() *faker {

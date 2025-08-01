@@ -39,6 +39,9 @@ type ConsensusEngine interface {
 
 	// PromoteLeader is used to promote a validator to leader starting from the specified height
 	PromoteLeader(leader crypto.PublicKey, height int64) error
+
+	// RecheckMempool triggers revalidation of all transactions in the mempool
+	RecheckMempool(ctx context.Context) error
 }
 
 type BlockProcessor interface {
