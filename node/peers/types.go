@@ -2,6 +2,7 @@ package peers
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -121,5 +122,78 @@ func (p *PersistentPeerInfo) UnmarshalJSON(data []byte) error {
 	for _, protoStr := range aux.Protos {
 		p.Protos = append(p.Protos, protocol.ID(protoStr))
 	}
+	return nil
+}
+
+// BlacklistEntry represents a blacklisted peer with metadata about why and when it was blacklisted.
+type BlacklistEntry struct {
+	PeerID    peer.ID   `json:"peer_id"`
+	Reason    string    `json:"reason"`
+	Timestamp time.Time `json:"timestamp"`
+	Permanent bool      `json:"permanent"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"` // Only set for temporary blacklists
+}
+
+// IsExpired returns true if this is a temporary blacklist entry that has expired.
+func (be BlacklistEntry) IsExpired() bool {
+	if be.Permanent {
+		return false
+	}
+	return time.Now().After(be.ExpiresAt)
+}
+
+// MarshalJSON implements custom JSON marshaling for BlacklistEntry.
+func (be BlacklistEntry) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		PeerID    string `json:"peer_id"`
+		Reason    string `json:"reason"`
+		Timestamp string `json:"timestamp"`
+		Permanent bool   `json:"permanent"`
+		ExpiresAt string `json:"expires_at,omitempty"`
+	}{
+		PeerID:    be.PeerID.String(),
+		Reason:    be.Reason,
+		Timestamp: be.Timestamp.Format(time.RFC3339),
+		Permanent: be.Permanent,
+		ExpiresAt: func() string {
+			if be.Permanent || be.ExpiresAt.IsZero() {
+				return ""
+			}
+			return be.ExpiresAt.Format(time.RFC3339)
+		}(),
+	})
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for BlacklistEntry.
+func (be *BlacklistEntry) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		PeerID    string `json:"peer_id"`
+		Reason    string `json:"reason"`
+		Timestamp string `json:"timestamp"`
+		Permanent bool   `json:"permanent"`
+		ExpiresAt string `json:"expires_at,omitempty"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	peerID, err := peer.Decode(aux.PeerID)
+	if err != nil {
+		return err
+	}
+	be.PeerID = peerID
+	be.Reason = aux.Reason
+	be.Permanent = aux.Permanent
+
+	if be.Timestamp, err = time.Parse(time.RFC3339, aux.Timestamp); err != nil {
+		return err
+	}
+
+	if aux.ExpiresAt != "" {
+		if be.ExpiresAt, err = time.Parse(time.RFC3339, aux.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
