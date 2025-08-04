@@ -1169,9 +1169,13 @@ func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Durat
 		return
 	}
 
-	pm.blacklistMtx.Lock()
-	defer pm.blacklistMtx.Unlock()
+	// Prevent self-blacklisting
+	if pid == pm.h.ID() {
+		pm.log.Warnf("Attempted to blacklist self (peer ID: %s), ignoring", peerIDStringer(pid))
+		return
+	}
 
+	pm.blacklistMtx.Lock()
 	entry := BlacklistEntry{
 		PeerID:    pid,
 		Reason:    reason,
@@ -1184,10 +1188,11 @@ func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Durat
 	}
 
 	pm.blacklistedPeers[pid] = entry
+	pm.blacklistMtx.Unlock()
 
 	pm.log.Infof("Blacklisted peer %s (reason: %s, permanent: %v)", peerIDStringer(pid), reason, entry.Permanent)
 
-	// Remove the peer immediately if it's connected
+	// Remove the peer immediately if it's connected (called after releasing lock)
 	pm.removePeer(pid)
 }
 
