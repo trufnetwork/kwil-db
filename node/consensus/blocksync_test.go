@@ -63,17 +63,6 @@ func TestReplayBlockFromNetwork_CallsRecheckTxsOnErrBlkNotFound(t *testing.T) {
 		height: 1,
 	}
 
-	// Initialize state.lc which is needed by lastBlockInternal
-	ce.state.lc = &lastCommit{
-		blk: &ktypes.Block{
-			Header: &ktypes.BlockHeader{
-				Height:    1,
-				Timestamp: now,
-			},
-		},
-		height: 1,
-	}
-
 	// Mock block requester to return ErrBlkNotFound
 	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
 		return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
