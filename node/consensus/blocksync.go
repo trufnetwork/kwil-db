@@ -121,6 +121,10 @@ SYNC:
 			}
 
 			if errors.Is(err, types.ErrBlkNotFound) || errors.Is(err, types.ErrNotFound) {
+				// Recheck all mempool transactions to remove any that are no longer valid
+				// This handles the case where we might be orphaned with stale transactions
+				lh, t := ce.lastBlockInternal()
+				ce.blockProcessor.RecheckTxs(ctx, lh, t)
 				break SYNC // no peers have this block, assume block sync is complete, continue with consensus
 			}
 
