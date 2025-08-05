@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/utils/random"
 	"github.com/trufnetwork/kwil-db/node/metrics"
@@ -91,6 +92,11 @@ type PeerMan struct {
 	wlMtx               sync.RWMutex
 	persistentWhitelist map[peer.ID]bool // whitelist to persist
 
+	// blacklist management
+	blacklistMtx     sync.RWMutex
+	blacklistedPeers map[peer.ID]BlacklistEntry
+	blacklistConfig  config.BlacklistConfig
+
 	requiredProtocols []protocol.ID
 
 	chainID           string
@@ -129,6 +135,7 @@ type Config struct {
 	Logger            log.Logger
 	ConnGater         *WhitelistGater
 	RequiredProtocols []protocol.ID
+	BlacklistConfig   config.BlacklistConfig
 }
 
 type idService interface {
@@ -155,6 +162,8 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 		cg:                  cfg.ConnGater,
 		idService:           hi.IDService(),
 		persistentWhitelist: make(map[peer.ID]bool),
+		blacklistedPeers:    make(map[peer.ID]BlacklistEntry),
+		blacklistConfig:     cfg.BlacklistConfig,
 		log:                 logger,
 		done:                done,
 		close: sync.OnceFunc(func() {
@@ -1126,6 +1135,9 @@ func (pm *PeerMan) removeOldPeers() {
 		case <-ticker.C:
 		}
 
+		// Clean up expired blacklist entries
+		pm.cleanupExpiredBlacklist()
+
 		now := time.Now()
 		func() {
 			pm.mtx.Lock()
@@ -1146,5 +1158,120 @@ func (pm *PeerMan) removeOldPeers() {
 				}
 			}
 		}()
+	}
+}
+
+// BlacklistPeer adds a peer to the blacklist with the given reason and duration.
+// If duration is 0, the peer is permanently blacklisted.
+func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Duration) {
+	if !pm.blacklistConfig.Enable {
+		pm.log.Debugf("Blacklisting disabled, ignoring blacklist request for peer %s", peerIDStringer(pid))
+		return
+	}
+
+	// Prevent self-blacklisting
+	if pid == pm.h.ID() {
+		pm.log.Warnf("Attempted to blacklist self (peer ID: %s), ignoring", peerIDStringer(pid))
+		return
+	}
+
+	pm.blacklistMtx.Lock()
+	entry := BlacklistEntry{
+		PeerID:    pid,
+		Reason:    reason,
+		Timestamp: time.Now(),
+		Permanent: duration == 0,
+	}
+
+	if !entry.Permanent {
+		entry.ExpiresAt = time.Now().Add(duration)
+	}
+
+	pm.blacklistedPeers[pid] = entry
+	pm.blacklistMtx.Unlock()
+
+	pm.log.Infof("Blacklisted peer %s (reason: %s, permanent: %v)", peerIDStringer(pid), reason, entry.Permanent)
+
+	// Remove the peer immediately if it's connected (called after releasing lock)
+	pm.removePeer(pid)
+}
+
+// RemoveFromBlacklist removes a peer from the blacklist.
+func (pm *PeerMan) RemoveFromBlacklist(pid peer.ID) bool {
+	pm.blacklistMtx.Lock()
+	defer pm.blacklistMtx.Unlock()
+
+	if _, exists := pm.blacklistedPeers[pid]; !exists {
+		return false
+	}
+
+	delete(pm.blacklistedPeers, pid)
+	pm.log.Infof("Removed peer %s from blacklist", peerIDStringer(pid))
+	return true
+}
+
+// IsBlacklisted checks if a peer is currently blacklisted, cleaning up expired entries.
+func (pm *PeerMan) IsBlacklisted(pid peer.ID) bool {
+	if !pm.blacklistConfig.Enable {
+		return false
+	}
+
+	pm.blacklistMtx.Lock()
+	defer pm.blacklistMtx.Unlock()
+
+	entry, exists := pm.blacklistedPeers[pid]
+	if !exists {
+		return false
+	}
+
+	// Clean up expired temporary blacklists
+	if !entry.Permanent && entry.IsExpired() {
+		delete(pm.blacklistedPeers, pid)
+		pm.log.Infof("Expired blacklist entry removed for peer %s", peerIDStringer(pid))
+		return false
+	}
+
+	return true
+}
+
+// ListBlacklisted returns a copy of all currently active blacklist entries.
+func (pm *PeerMan) ListBlacklisted() []BlacklistEntry {
+	pm.blacklistMtx.RLock()
+	defer pm.blacklistMtx.RUnlock()
+
+	var entries []BlacklistEntry
+	now := time.Now()
+
+	for _, entry := range pm.blacklistedPeers {
+		// Skip expired temporary entries (but don't remove them here to avoid race conditions)
+		if !entry.Permanent && now.After(entry.ExpiresAt) {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries
+}
+
+// cleanupExpiredBlacklist removes expired temporary blacklist entries.
+// This should be called periodically (e.g., from removeOldPeers).
+func (pm *PeerMan) cleanupExpiredBlacklist() {
+	if !pm.blacklistConfig.Enable {
+		return
+	}
+
+	pm.blacklistMtx.Lock()
+	defer pm.blacklistMtx.Unlock()
+
+	var expiredPeers []peer.ID
+	for pid, entry := range pm.blacklistedPeers {
+		if !entry.Permanent && entry.IsExpired() {
+			expiredPeers = append(expiredPeers, pid)
+		}
+	}
+
+	for _, pid := range expiredPeers {
+		delete(pm.blacklistedPeers, pid)
+		pm.log.Infof("Expired blacklist entry cleaned up for peer %s", peerIDStringer(pid))
 	}
 }

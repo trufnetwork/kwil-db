@@ -301,6 +301,11 @@ func DefaultConfig() *Config {
 			Pex:               true,
 			BootNodes:         []string{},
 			TargetConnections: 20,
+			Blacklist: BlacklistConfig{
+				Enable:                    true,
+				AutoBlacklistOnMaxRetries: true,
+				PersistToAddressBook:      true,
+			},
 		},
 		Consensus: ConsensusConfig{
 			ProposeTimeout:        types.Duration(1000 * time.Millisecond),
@@ -436,13 +441,28 @@ type MempoolConfig struct {
 
 // PeerConfig corresponds to the [p2p] section of the config.
 type PeerConfig struct {
-	ListenAddress     string   `toml:"listen" comment:"address in host:port format to listen on for P2P connections"`
-	Pex               bool     `toml:"pex" comment:"enable peer exchange"`
-	BootNodes         []string `toml:"bootnodes" comment:"bootnodes to connect to on startup"`
-	PrivateMode       bool     `toml:"private" comment:"operate in private mode using a node ID whitelist"`
-	Whitelist         []string `toml:"whitelist" comment:"allowed node IDs when in private mode"`
-	TargetConnections int      `toml:"target_connections" comment:"target number of connections to maintain"`
-	ExternalAddress   string   `toml:"external_address" comment:"external address in host:port format to advertise to the network"`
+	ListenAddress     string          `toml:"listen" comment:"address in host:port format to listen on for P2P connections"`
+	Pex               bool            `toml:"pex" comment:"enable peer exchange"`
+	BootNodes         []string        `toml:"bootnodes" comment:"bootnodes to connect to on startup"`
+	PrivateMode       bool            `toml:"private" comment:"operate in private mode using a node ID whitelist"`
+	Whitelist         []string        `toml:"whitelist" comment:"allowed node IDs when in private mode"`
+	TargetConnections int             `toml:"target_connections" comment:"target number of connections to maintain"`
+	ExternalAddress   string          `toml:"external_address" comment:"external address in host:port format to advertise to the network"`
+	Blacklist         BlacklistConfig `toml:"blacklist" comment:"peer blacklisting configuration"`
+}
+
+// BlacklistConfig contains configuration options for peer blacklisting functionality.
+type BlacklistConfig struct {
+	Enable                    bool `toml:"enable" comment:"enable peer blacklisting functionality"`
+	AutoBlacklistOnMaxRetries bool `toml:"auto_blacklist_on_max_retries" comment:"automatically blacklist peers that exhaust connection retries"`
+	PersistToAddressBook      bool `toml:"persist_to_address_book" comment:"persist blacklist data to address book for restart survival"`
+}
+
+// Validate validates the BlacklistConfig and returns an error if the configuration is invalid.
+func (cfg *BlacklistConfig) Validate() error {
+	// Currently no validation needed as all fields are simple booleans
+	// Future validation could include checking for conflicting settings or dependencies
+	return nil
 }
 
 // StoreConfig contains options related to the block store. This is the embedded
@@ -689,6 +709,11 @@ func LoadConfig(filename string) (*Config, error) {
 	// Validate StateSyncConfig
 	if err := nc.StateSync.Validate(); err != nil {
 		return nil, err
+	}
+
+	// Validate BlacklistConfig
+	if err := nc.P2P.Blacklist.Validate(); err != nil {
+		return nil, fmt.Errorf("p2p.blacklist: %w", err)
 	}
 
 	return &nc, nil
