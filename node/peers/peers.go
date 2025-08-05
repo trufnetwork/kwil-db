@@ -206,6 +206,12 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 		})
 	}
 
+	// If we have a WhitelistGater, set the PeerMan reference for blacklist checking
+	if cfg.ConnGater != nil {
+		// Update the WhitelistGater with PeerMan reference
+		pm.cg = NewWhitelistGater(cfg.ConnGater.Allowed(), WithLogger(cfg.ConnGater.logger), WithPeerMan(pm))
+	}
+
 	return pm, nil
 }
 
@@ -1251,9 +1257,9 @@ func (pm *PeerMan) RemoveFromBlacklist(pid peer.ID) bool {
 }
 
 // IsBlacklisted checks if a peer is currently blacklisted, cleaning up expired entries.
-func (pm *PeerMan) IsBlacklisted(pid peer.ID) bool {
+func (pm *PeerMan) IsBlacklisted(pid peer.ID) (bool, string) {
 	if !pm.blacklistConfig.Enable {
-		return false
+		return false, ""
 	}
 
 	pm.blacklistMtx.Lock()
@@ -1261,17 +1267,17 @@ func (pm *PeerMan) IsBlacklisted(pid peer.ID) bool {
 
 	entry, exists := pm.blacklistedPeers[pid]
 	if !exists {
-		return false
+		return false, ""
 	}
 
 	// Clean up expired temporary blacklists
 	if !entry.Permanent && entry.IsExpired() {
 		delete(pm.blacklistedPeers, pid)
 		pm.log.Infof("Expired blacklist entry removed for peer %s", peerIDStringer(pid))
-		return false
+		return false, ""
 	}
 
-	return true
+	return true, entry.Reason
 }
 
 // ListBlacklisted returns a copy of all currently active blacklist entries.
