@@ -304,7 +304,6 @@ func DefaultConfig() *Config {
 			Blacklist: BlacklistConfig{
 				Enable:                    true,
 				AutoBlacklistOnMaxRetries: true,
-				PersistToAddressBook:      true,
 			},
 		},
 		Consensus: ConsensusConfig{
@@ -452,10 +451,10 @@ type PeerConfig struct {
 }
 
 // BlacklistConfig contains configuration options for peer blacklisting functionality.
+// Note: Blacklist data is always persisted to address book for restart survival
 type BlacklistConfig struct {
 	Enable                    bool `toml:"enable" comment:"enable peer blacklisting functionality"`
 	AutoBlacklistOnMaxRetries bool `toml:"auto_blacklist_on_max_retries" comment:"automatically blacklist peers that exhaust connection retries"`
-	PersistToAddressBook      bool `toml:"persist_to_address_book" comment:"persist blacklist data to address book for restart survival"`
 }
 
 // Validate validates the BlacklistConfig and returns an error if the configuration is invalid.
