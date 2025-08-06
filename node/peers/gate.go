@@ -22,7 +22,7 @@ type WhitelistGater struct {
 
 	mtx       sync.RWMutex // very infrequent whitelist updates
 	permitted map[peer.ID]bool
-	
+
 	// Reference to PeerMan for blacklist checking
 	peerMan interface {
 		IsBlacklisted(peer.ID) (bool, string)
@@ -147,20 +147,20 @@ func (g *WhitelistGater) Allowed() []peer.ID {
 	return allowed
 }
 
-// IsAllowed indicates if a peer is in the whitelist and not blacklisted. 
+// IsAllowed indicates if a peer is in the whitelist and not blacklisted.
 // This is mainly for the connmgr.ConnectionGater methods.
 func (g *WhitelistGater) IsAllowed(p peer.ID) bool {
 	if g == nil {
 		return true
 	}
-	
+
 	// Check blacklist first - blacklisted peers are never allowed
 	if g.peerMan != nil {
 		if blacklisted, _ := g.peerMan.IsBlacklisted(p); blacklisted {
 			return false
 		}
 	}
-	
+
 	g.mtx.RLock()
 	defer g.mtx.RUnlock()
 	return g.permitted[p]
@@ -178,16 +178,16 @@ func (g *WhitelistGater) InterceptPeerDial(p peer.ID) bool {
 			return false
 		}
 	}
-	
+
 	// Then check whitelist
 	g.mtx.RLock()
 	whitelisted := g.permitted[p]
 	g.mtx.RUnlock()
-	
+
 	if !whitelisted {
 		g.logger.Infof("Blocking OUTBOUND dial to peer not on whitelist: %v", p)
 	}
-	
+
 	return whitelisted
 }
 
@@ -213,16 +213,16 @@ func (g *WhitelistGater) InterceptSecured(dir network.Direction, p peer.ID, conn
 			return false
 		}
 	}
-	
+
 	// Then check whitelist
 	g.mtx.RLock()
 	whitelisted := g.permitted[p]
 	g.mtx.RUnlock()
-	
+
 	if !whitelisted {
 		g.logger.Infof("Blocking INBOUND connection from peer not on whitelist: %v", p)
 	}
-	
+
 	return whitelisted
 }
 

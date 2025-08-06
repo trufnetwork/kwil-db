@@ -25,10 +25,10 @@ func TestWhitelistGaterBlacklistIntegration(t *testing.T) {
 	// Create test peer IDs
 	whitePeer, err := peer.Decode("16Uiu2HAkuztyBUEcBxXrRRGJ2uBEdoJNpkYwXNQahS7Q6PH7VQHP")
 	require.NoError(t, err)
-	
+
 	blackPeer, err := peer.Decode("16Uiu2HAkwWNgvbTRuKi9dRhWJN3cZPJ6LKN2Y3zRF1XkEVJgvVoE")
 	require.NoError(t, err)
-	
+
 	normalPeer, err := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
 	require.NoError(t, err)
 
