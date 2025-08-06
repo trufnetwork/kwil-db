@@ -3,6 +3,7 @@ package peers
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -135,4 +136,173 @@ func TestPersistentPeerInfoJSON(t *testing.T) {
 			}
 		})
 	}
+}
+func TestBlacklistEntryJSON(t *testing.T) {
+	pid, _ := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
+
+	tests := []struct {
+		name  string
+		entry BlacklistEntry
+	}{
+		{
+			name: "permanent blacklist entry",
+			entry: BlacklistEntry{
+				PeerID:    pid,
+				Reason:    "manual blacklist",
+				Timestamp: mustParseTime("2023-10-01T12:00:00Z"),
+				Permanent: true,
+			},
+		},
+		{
+			name: "temporary blacklist entry",
+			entry: BlacklistEntry{
+				PeerID:    pid,
+				Reason:    "connection exhaustion",
+				Timestamp: mustParseTime("2023-10-01T12:00:00Z"),
+				Permanent: false,
+				ExpiresAt: mustParseTime("2023-10-01T13:00:00Z"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.entry)
+			require.NoError(t, err)
+
+			t.Log(string(data))
+
+			var decoded BlacklistEntry
+			err = json.Unmarshal(data, &decoded)
+			require.NoError(t, err)
+
+			require.Equal(t, tt.entry.PeerID, decoded.PeerID)
+			require.Equal(t, tt.entry.Reason, decoded.Reason)
+			require.Equal(t, tt.entry.Permanent, decoded.Permanent)
+			require.True(t, tt.entry.Timestamp.Equal(decoded.Timestamp))
+
+			if !tt.entry.Permanent {
+				require.True(t, tt.entry.ExpiresAt.Equal(decoded.ExpiresAt))
+			}
+		})
+	}
+}
+
+func TestBlacklistEntryIsExpired(t *testing.T) {
+	pid, _ := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
+
+	tests := []struct {
+		name     string
+		entry    BlacklistEntry
+		expected bool
+	}{
+		{
+			name: "permanent entry never expires",
+			entry: BlacklistEntry{
+				PeerID:    pid,
+				Permanent: true,
+			},
+			expected: false,
+		},
+		{
+			name: "future expiry not expired",
+			entry: BlacklistEntry{
+				PeerID:    pid,
+				Permanent: false,
+				ExpiresAt: mustParseTime("2099-01-01T00:00:00Z"),
+			},
+			expected: false,
+		},
+		{
+			name: "past expiry is expired",
+			entry: BlacklistEntry{
+				PeerID:    pid,
+				Permanent: false,
+				ExpiresAt: mustParseTime("2020-01-01T00:00:00Z"),
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.entry.IsExpired()
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestPersistentPeerInfoWithBlacklist(t *testing.T) {
+	addr1, _ := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/1234")
+	pid, _ := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
+	pk, err := pubKeyFromPeerID(pid)
+	require.NoError(t, err)
+	nid := NodeIDFromPubKey(pk)
+
+	blacklistEntry := &BlacklistEntry{
+		PeerID:    pid,
+		Reason:    "test blacklist",
+		Timestamp: mustParseTime("2023-10-01T12:00:00Z"),
+		Permanent: true,
+	}
+
+	tests := []struct {
+		name     string
+		peerInfo PersistentPeerInfo
+	}{
+		{
+			name: "peer with blacklist entry",
+			peerInfo: PersistentPeerInfo{
+				NodeID:      nid,
+				Addrs:       []multiaddr.Multiaddr{addr1},
+				Protos:      []protocol.ID{"/proto/1.0.0"},
+				Whitelisted: false,
+				Blacklisted: blacklistEntry,
+			},
+		},
+		{
+			name: "peer without blacklist entry",
+			peerInfo: PersistentPeerInfo{
+				NodeID:      nid,
+				Addrs:       []multiaddr.Multiaddr{addr1},
+				Protos:      []protocol.ID{"/proto/1.0.0"},
+				Whitelisted: true,
+				Blacklisted: nil,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.peerInfo)
+			require.NoError(t, err)
+
+			t.Log(string(data))
+
+			var decoded PersistentPeerInfo
+			err = json.Unmarshal(data, &decoded)
+			require.NoError(t, err)
+
+			require.Equal(t, tt.peerInfo.NodeID, decoded.NodeID)
+			require.Equal(t, tt.peerInfo.Whitelisted, decoded.Whitelisted)
+
+			if tt.peerInfo.Blacklisted != nil {
+				require.NotNil(t, decoded.Blacklisted)
+				require.Equal(t, tt.peerInfo.Blacklisted.PeerID, decoded.Blacklisted.PeerID)
+				require.Equal(t, tt.peerInfo.Blacklisted.Reason, decoded.Blacklisted.Reason)
+				require.Equal(t, tt.peerInfo.Blacklisted.Permanent, decoded.Blacklisted.Permanent)
+			} else {
+				require.Nil(t, decoded.Blacklisted)
+			}
+		})
+	}
+}
+
+// Helper function for parsing time in tests
+func mustParseTime(timeStr string) time.Time {
+	t, err := time.Parse(time.RFC3339, timeStr)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }

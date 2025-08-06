@@ -686,8 +686,9 @@ func (pm *PeerMan) savePeers() error {
 	peerList, _, _ := pm.KnownPeers()
 	pm.log.Debugf("Saving %d peers to address book", len(peerList))
 
-	// set whitelisted flag for persistence
+	// set whitelisted and blacklisted flags for persistence
 	pm.wlMtx.RLock()
+	pm.blacklistMtx.RLock()
 	persistentPeerList := make([]PersistentPeerInfo, len(peerList))
 	for i, peerInfo := range peerList {
 		pk, _ := pubKeyFromPeerID(peerInfo.ID)
@@ -697,13 +698,31 @@ func (pm *PeerMan) savePeers() error {
 			continue
 		}
 		nodeID := NodeIDFromPubKey(pk)
+
+		// Get blacklist entry if it exists (and is not expired)
+		var blacklistEntry *BlacklistEntry
+		if entry, exists := pm.blacklistedPeers[peerInfo.ID]; exists {
+			if entry.Permanent || !entry.IsExpired() {
+				// Create a copy to avoid issues with pointer sharing
+				blacklistEntry = &BlacklistEntry{
+					PeerID:    entry.PeerID,
+					Reason:    entry.Reason,
+					Timestamp: entry.Timestamp,
+					Permanent: entry.Permanent,
+					ExpiresAt: entry.ExpiresAt,
+				}
+			}
+		}
+
 		persistentPeerList[i] = PersistentPeerInfo{
 			NodeID:      nodeID,
 			Addrs:       peerInfo.Addrs,
 			Protos:      peerInfo.Protos,
 			Whitelisted: pm.persistentWhitelist[peerInfo.ID],
+			Blacklisted: blacklistEntry,
 		}
 	}
+	pm.blacklistMtx.RUnlock()
 	pm.wlMtx.RUnlock()
 
 	return persistPeers(persistentPeerList, pm.addrBook)
@@ -775,6 +794,27 @@ func (pm *PeerMan) loadAddrBook() (int, error) {
 				pm.wlMtx.Lock()
 				pm.persistentWhitelist[peerID] = true
 				pm.wlMtx.Unlock()
+			}
+		}
+
+		// Load blacklist data if it exists and is still valid
+		if pInfo.Blacklisted != nil {
+			entry := pInfo.Blacklisted
+			// Only restore if entry hasn't expired
+			if entry.Permanent || !entry.IsExpired() {
+				pm.blacklistMtx.Lock()
+				pm.blacklistedPeers[peerID] = *entry
+				pm.blacklistMtx.Unlock()
+
+				// Also set noReconnect for immediate effect
+				pm.mtx.Lock()
+				pm.noReconnect[peerID] = true
+				pm.mtx.Unlock()
+
+				pm.log.Infof("Restored blacklist entry for peer %s (reason: %s, permanent: %v)",
+					peerIDStringer(peerID), entry.Reason, entry.Permanent)
+			} else {
+				pm.log.Infof("Expired blacklist entry for peer %s not restored", peerIDStringer(peerID))
 			}
 		}
 

@@ -73,6 +73,7 @@ type PersistentPeerInfo struct {
 	Addrs       []multiaddr.Multiaddr `json:"addrs"`
 	Protos      []protocol.ID         `json:"protos"`
 	Whitelisted bool                  `json:"whitelisted"`
+	Blacklisted *BlacklistEntry       `json:"blacklisted,omitempty"` // nil if not blacklisted
 	// We probably need a last connected time and/or ttl
 }
 
@@ -86,24 +87,27 @@ func (p PersistentPeerInfo) MarshalJSON() ([]byte, error) {
 		protoStrs = append(protoStrs, string(proto))
 	}
 	return json.Marshal(struct {
-		ID          string   `json:"id"`
-		Addrs       []string `json:"addrs"`
-		Protos      []string `json:"protos"`
-		Whitelisted bool     `json:"whitelisted"`
+		ID          string          `json:"id"`
+		Addrs       []string        `json:"addrs"`
+		Protos      []string        `json:"protos"`
+		Whitelisted bool            `json:"whitelisted"`
+		Blacklisted *BlacklistEntry `json:"blacklisted,omitempty"`
 	}{
 		ID:          p.NodeID,
 		Addrs:       addrStrs,
 		Protos:      protoStrs,
 		Whitelisted: p.Whitelisted,
+		Blacklisted: p.Blacklisted,
 	})
 }
 
 func (p *PersistentPeerInfo) UnmarshalJSON(data []byte) error {
 	aux := struct {
-		ID          string   `json:"id"`
-		Addrs       []string `json:"addrs"`
-		Protos      []string `json:"protos"`
-		Whitelisted bool     `json:"whitelisted"`
+		ID          string          `json:"id"`
+		Addrs       []string        `json:"addrs"`
+		Protos      []string        `json:"protos"`
+		Whitelisted bool            `json:"whitelisted"`
+		Blacklisted *BlacklistEntry `json:"blacklisted,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -111,6 +115,7 @@ func (p *PersistentPeerInfo) UnmarshalJSON(data []byte) error {
 
 	p.NodeID = aux.ID
 	p.Whitelisted = aux.Whitelisted
+	p.Blacklisted = aux.Blacklisted
 
 	for _, addrStr := range aux.Addrs {
 		addr, err := multiaddr.NewMultiaddr(addrStr)
