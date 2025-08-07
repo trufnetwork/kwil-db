@@ -51,7 +51,8 @@ func TestBlacklistAPIMethods(t *testing.T) {
 		pm.BlacklistPeer(testPeerID, "test reason", 0)
 
 		// Verify peer is blacklisted
-		require.True(t, pm.IsBlacklisted(testPeerID))
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.True(t, blacklisted)
 
 		// Verify blacklist entry
 		entries := pm.ListBlacklisted()
@@ -67,7 +68,8 @@ func TestBlacklistAPIMethods(t *testing.T) {
 		require.True(t, removed)
 
 		// Verify peer is no longer blacklisted
-		require.False(t, pm.IsBlacklisted(testPeerID))
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted)
 
 		// Verify blacklist is empty
 		entries := pm.ListBlacklisted()
@@ -83,7 +85,8 @@ func TestBlacklistAPIMethods(t *testing.T) {
 		pm.BlacklistPeer(testPeerID, "temporary blacklist", 1*time.Second)
 
 		// Verify peer is blacklisted
-		require.True(t, pm.IsBlacklisted(testPeerID))
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.True(t, blacklisted)
 
 		// Verify entry details
 		entries := pm.ListBlacklisted()
@@ -95,7 +98,8 @@ func TestBlacklistAPIMethods(t *testing.T) {
 		time.Sleep(1100 * time.Millisecond)
 
 		// Verify peer is no longer blacklisted
-		require.False(t, pm.IsBlacklisted(testPeerID))
+		isBlacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.False(t, isBlacklisted)
 
 		// List should not include expired entries
 		entries = pm.ListBlacklisted()
@@ -107,7 +111,8 @@ func TestBlacklistAPIMethods(t *testing.T) {
 		pm.BlacklistPeer(host.ID(), "self blacklist", 0)
 
 		// Verify self is not blacklisted
-		require.False(t, pm.IsBlacklisted(host.ID()))
+		blacklisted, _ := pm.IsBlacklisted(host.ID())
+		require.False(t, blacklisted)
 		entries := pm.ListBlacklisted()
 		require.Len(t, entries, 0)
 	})
@@ -120,7 +125,8 @@ func TestBlacklistAPIMethods(t *testing.T) {
 		pm.BlacklistPeer(testPeerID, "disabled test", 0)
 
 		// Verify peer is not blacklisted
-		require.False(t, pm.IsBlacklisted(testPeerID))
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted)
 		entries := pm.ListBlacklisted()
 		require.Len(t, entries, 0)
 
@@ -235,8 +241,10 @@ func TestBlacklistPersistence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify blacklist data was loaded into PeerMan
-	require.True(t, pm.IsBlacklisted(testPeerID1), "permanent blacklist should be loaded")
-	require.True(t, pm.IsBlacklisted(testPeerID2), "temporary blacklist should be loaded")
+	blacklisted1, _ := pm.IsBlacklisted(testPeerID1)
+	require.True(t, blacklisted1, "permanent blacklist should be loaded")
+	blacklisted2, _ := pm.IsBlacklisted(testPeerID2)
+	require.True(t, blacklisted2, "temporary blacklist should be loaded")
 
 	// Verify details in PeerMan
 	entries := pm.ListBlacklisted()
@@ -303,7 +311,8 @@ func TestBlacklistExpiredEntryHandling(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify expired entry was not loaded
-		require.False(t, pm2.IsBlacklisted(testPeerID), "expired blacklist should not be loaded")
+		blacklisted, _ := pm2.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted, "expired blacklist should not be loaded")
 		entries := pm2.ListBlacklisted()
 		require.Len(t, entries, 0)
 	}

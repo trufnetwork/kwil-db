@@ -16,16 +16,24 @@ import (
 )
 
 // WhitelistGater is a libp2p connmgr.ConnectionGater implementation to enforce
-// a peer whitelist.
+// a peer whitelist and blacklist.
 type WhitelistGater struct {
 	logger log.Logger
 
 	mtx       sync.RWMutex // very infrequent whitelist updates
 	permitted map[peer.ID]bool
+
+	// Reference to PeerMan for blacklist checking
+	peerMan interface {
+		IsBlacklisted(peer.ID) (bool, string)
+	}
 }
 
 type gateOpts struct {
-	logger log.Logger
+	logger  log.Logger
+	peerMan interface {
+		IsBlacklisted(peer.ID) (bool, string)
+	}
 }
 
 type GateOpt func(*gateOpts)
@@ -33,6 +41,12 @@ type GateOpt func(*gateOpts)
 func WithLogger(logger log.Logger) GateOpt {
 	return func(opts *gateOpts) {
 		opts.logger = logger
+	}
+}
+
+func WithPeerMan(peerMan interface{ IsBlacklisted(peer.ID) (bool, string) }) GateOpt {
+	return func(opts *gateOpts) {
+		opts.peerMan = peerMan
 	}
 }
 
@@ -88,6 +102,7 @@ func NewWhitelistGater(allowed []peer.ID, opts ...GateOpt) *WhitelistGater {
 	return &WhitelistGater{
 		logger:    options.logger,
 		permitted: permitted,
+		peerMan:   options.peerMan,
 	}
 }
 
@@ -132,12 +147,20 @@ func (g *WhitelistGater) Allowed() []peer.ID {
 	return allowed
 }
 
-// IsAllowed indicates if a peer is in the whitelist. This is mainly for the
-// connmgr.ConnectionGater methods.
+// IsAllowed indicates if a peer is in the whitelist and not blacklisted.
+// This is mainly for the connmgr.ConnectionGater methods.
 func (g *WhitelistGater) IsAllowed(p peer.ID) bool {
 	if g == nil {
 		return true
 	}
+
+	// Check blacklist first - blacklisted peers are never allowed
+	if g.peerMan != nil {
+		if blacklisted, _ := g.peerMan.IsBlacklisted(p); blacklisted {
+			return false
+		}
+	}
+
 	g.mtx.RLock()
 	defer g.mtx.RUnlock()
 	return g.permitted[p]
@@ -148,11 +171,24 @@ var _ connmgr.ConnectionGater = (*WhitelistGater)(nil)
 // OUTBOUND
 
 func (g *WhitelistGater) InterceptPeerDial(p peer.ID) bool {
-	ok := g.IsAllowed(p)
-	if !ok {
+	// Check blacklist first with specific logging
+	if g.peerMan != nil {
+		if blacklisted, reason := g.peerMan.IsBlacklisted(p); blacklisted {
+			g.logger.Infof("Blocking OUTBOUND dial to blacklisted peer %v (reason: %s)", p, reason)
+			return false
+		}
+	}
+
+	// Then check whitelist
+	g.mtx.RLock()
+	whitelisted := g.permitted[p]
+	g.mtx.RUnlock()
+
+	if !whitelisted {
 		g.logger.Infof("Blocking OUTBOUND dial to peer not on whitelist: %v", p)
 	}
-	return ok
+
+	return whitelisted
 }
 
 func (g *WhitelistGater) InterceptAddrDial(p peer.ID, addr multiaddr.Multiaddr) bool {
@@ -170,11 +206,24 @@ func (g *WhitelistGater) InterceptAccept(connAddrs network.ConnMultiaddrs) bool 
 }
 
 func (g *WhitelistGater) InterceptSecured(dir network.Direction, p peer.ID, conn network.ConnMultiaddrs) bool {
-	ok := g.IsAllowed(p)
-	if !ok {
+	// Check blacklist first with specific logging
+	if g.peerMan != nil {
+		if blacklisted, reason := g.peerMan.IsBlacklisted(p); blacklisted {
+			g.logger.Infof("Blocking INBOUND connection from blacklisted peer %v (reason: %s)", p, reason)
+			return false
+		}
+	}
+
+	// Then check whitelist
+	g.mtx.RLock()
+	whitelisted := g.permitted[p]
+	g.mtx.RUnlock()
+
+	if !whitelisted {
 		g.logger.Infof("Blocking INBOUND connection from peer not on whitelist: %v", p)
 	}
-	return ok
+
+	return whitelisted
 }
 
 func (g *WhitelistGater) InterceptUpgraded(conn network.Conn) (bool, control.DisconnectReason) {
