@@ -1,7 +1,6 @@
 package blacklist
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,12 +16,12 @@ import (
 func listCmd() *cobra.Command {
 	var cmd = &cobra.Command{
 		Use:     "list",
-		Short:   "List blacklisted peers.",
-		Long:    "The `list` command shows all blacklisted peers with their reasons, blacklist time, and expiration.",
+		Short:   "List blacklisted nodes.",
+		Long:    "The `list` command shows all blacklisted nodes with their reasons, blacklist time, and expiration.",
 		Example: "kwild blacklist list",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			client, err := rpc.AdminSvcClient(ctx, cmd)
 			if err != nil {
 				return display.PrintErr(cmd, err)
@@ -49,15 +48,15 @@ var _ display.MsgFormatter = (*listBlacklistedPeersMsg)(nil)
 
 func (l *listBlacklistedPeersMsg) MarshalText() ([]byte, error) {
 	if len(l.peers) == 0 {
-		return []byte("No blacklisted peers"), nil
+		return []byte("No blacklisted nodes"), nil
 	}
 
 	var output strings.Builder
-	output.WriteString("Blacklisted Peers:\n\n")
+	output.WriteString("Blacklisted Nodes:\n\n")
 
 	// Header
 	output.WriteString(fmt.Sprintf("%-70s %-20s %-20s %-10s %s\n",
-		"PEER ID", "REASON", "BLACKLISTED", "TYPE", "EXPIRES AT"))
+		"NODE ID", "REASON", "BLACKLISTED", "TYPE", "EXPIRES AT"))
 	output.WriteString(strings.Repeat("-", 140) + "\n")
 
 	for i := range l.peers {

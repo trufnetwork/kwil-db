@@ -10,7 +10,7 @@ import (
 )
 
 func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
-	now := time.Now()
+	now := time.Now().UTC()
 	expiry := now.Add(1 * time.Hour)
 
 	tests := []struct {
@@ -23,7 +23,7 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 			msg: &listBlacklistedPeersMsg{
 				peers: []adminjson.BlacklistEntryJSON{},
 			},
-			expected: []string{"No blacklisted peers"},
+			expected: []string{"No blacklisted nodes"},
 		},
 		{
 			name: "single permanent peer",
@@ -39,8 +39,8 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 				},
 			},
 			expected: []string{
-				"Blacklisted Peers:",
-				"PEER ID",
+				"Blacklisted Nodes:",
+				"NODE ID",
 				"REASON",
 				"TYPE",
 				"manual",
@@ -62,7 +62,7 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 				},
 			},
 			expected: []string{
-				"Blacklisted Peers:",
+				"Blacklisted Nodes:",
 				"test-peer-123",
 				"connection issues",
 				"Temporary",
@@ -89,7 +89,7 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 				},
 			},
 			expected: []string{
-				"Blacklisted Peers:",
+				"Blacklisted Nodes:",
 				"peer1",
 				"peer2",
 				"manual",
@@ -114,7 +114,7 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 }
 
 func TestListBlacklistedPeersMsg_MarshalJSON(t *testing.T) {
-	now := time.Now()
+	now := time.Now().UTC()
 	expiry := now.Add(1 * time.Hour)
 
 	tests := []struct {
@@ -209,7 +209,7 @@ func TestListBlacklistedPeersMsg_PeerIDTruncation(t *testing.T) {
 			{
 				PeerID:    longPeerID,
 				Reason:    "test",
-				Timestamp: time.Now().Format(time.RFC3339),
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
 				Permanent: true,
 			},
 		},

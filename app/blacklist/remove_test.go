@@ -18,14 +18,14 @@ func TestRemoveMsg_MarshalText(t *testing.T) {
 			msg: &removeMsg{
 				peerID: "test-peer-123",
 			},
-			expected: "Removed peer test-peer-123 from blacklist",
+			expected: "Removed node test-peer-123 from blacklist",
 		},
 		{
 			name: "long peer ID",
 			msg: &removeMsg{
 				peerID: "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1",
 			},
-			expected: "Removed peer 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1 from blacklist",
+			expected: "Removed node 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1 from blacklist",
 		},
 	}
 
@@ -50,7 +50,7 @@ func TestRemoveMsg_MarshalJSON(t *testing.T) {
 				peerID: "test-peer-123",
 			},
 			expected: map[string]interface{}{
-				"peer_id": "test-peer-123",
+				"node_id": "test-peer-123",
 				"removed": true,
 			},
 		},
@@ -60,7 +60,7 @@ func TestRemoveMsg_MarshalJSON(t *testing.T) {
 				peerID: "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1",
 			},
 			expected: map[string]interface{}{
-				"peer_id": "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1",
+				"node_id": "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1",
 				"removed": true,
 			},
 		},
@@ -75,7 +75,7 @@ func TestRemoveMsg_MarshalJSON(t *testing.T) {
 			err = json.Unmarshal(jsonBytes, &result)
 			require.NoError(t, err)
 
-			require.Equal(t, tt.expected["peer_id"], result["peer_id"])
+			require.Equal(t, tt.expected["node_id"], result["node_id"])
 			require.Equal(t, tt.expected["removed"], result["removed"])
 		})
 	}

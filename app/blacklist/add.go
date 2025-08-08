@@ -1,7 +1,6 @@
 package blacklist
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -13,15 +12,15 @@ import (
 
 func addCmd() *cobra.Command {
 	var cmd = &cobra.Command{
-		Use:   "add <peerID>",
-		Short: "Add a peer to the node's blacklist.",
-		Long:  "The `add` command adds a peer to the node's blacklist with an optional reason and duration.",
+		Use:   "add <nodeID>",
+		Short: "Add a node to the node's blacklist.",
+		Long:  "The `add` command adds a node to the node's blacklist with an optional reason and duration. The nodeID must be in the format HEX#secp256k1 or HEX#ed25519.",
 		Example: `kwild blacklist add 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1
 kwild blacklist add 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1 --reason="malicious behavior"
 kwild blacklist add 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1 --reason="connection issues" --duration="1h"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			client, err := rpc.AdminSvcClient(ctx, cmd)
 			if err != nil {
 				return display.PrintErr(cmd, err)
@@ -74,17 +73,17 @@ func (a *addMsg) MarshalText() ([]byte, error) {
 		durationType = fmt.Sprintf("duration: %s", a.duration)
 	}
 
-	return []byte(fmt.Sprintf("Blacklisted peer %s (reason: %s, %s)", a.peerID, a.reason, durationType)), nil
+	return []byte(fmt.Sprintf("Blacklisted node %s (reason: %s, %s)", a.peerID, a.reason, durationType)), nil
 }
 
 func (a *addMsg) MarshalJSON() ([]byte, error) {
 	result := struct {
-		PeerID    string `json:"peer_id"`
+		NodeID    string `json:"node_id"`
 		Reason    string `json:"reason"`
 		Duration  string `json:"duration,omitempty"`
 		Permanent bool   `json:"permanent"`
 	}{
-		PeerID:    a.peerID,
+		NodeID:    a.peerID,
 		Reason:    a.reason,
 		Duration:  a.duration,
 		Permanent: a.duration == "",

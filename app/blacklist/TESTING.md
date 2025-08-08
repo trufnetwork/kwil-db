@@ -80,11 +80,15 @@ docker run -d -p 5441:5432 --name kwil-postgres-node1 \
 
 **Objective**: Validate all blacklist CLI commands work correctly.
 
-#### Get Peer IDs
+#### Get Node IDs
 ```bash
-# List connected peers to get peer IDs
-./kwild admin peers -s 127.0.0.1:8585
-./kwild admin peers -s 127.0.0.1:8586
+# Get node ID from status command
+./kwild admin status -s 127.0.0.1:8585 | jq -r '.node.node_id'
+./kwild admin status -s 127.0.0.1:8586 | jq -r '.node.node_id'
+
+# Alternative: extract from full status output
+./kwild admin status -s 127.0.0.1:8585
+./kwild admin status -s 127.0.0.1:8586
 ```
 
 #### Test blacklist list
@@ -215,9 +219,9 @@ Peer ID                                      | Reason          | Blacklisted At 
 - Verify admin server address: `-s 127.0.0.1:8585`
 - Check if node is running and admin RPC accessible
 
-**"Peer ID not found" errors**:
-- Use `./kwild admin peers -s <ADMIN_ADDRESS>` to get valid peer IDs
-- Ensure peer ID format is `16Uiu2HAm...` (not node ID format)
+**"Node ID not found" errors**:
+- Use `./kwild admin status -s <ADMIN_ADDRESS> | jq -r '.node.node_id'` to get valid node IDs
+- Ensure node ID format is `HEX#secp256k1` or `HEX#ed25519` (not libp2p peer ID format)
 
 **Connection blocking not visible**:
 - Check logs for `"Blocking OUTBOUND dial to blacklisted peer"`

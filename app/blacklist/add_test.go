@@ -20,7 +20,7 @@ func TestAddMsg_MarshalText(t *testing.T) {
 				reason:   "manual",
 				duration: "",
 			},
-			expected: "Blacklisted peer test-peer-123 (reason: manual, permanent)",
+			expected: "Blacklisted node test-peer-123 (reason: manual, permanent)",
 		},
 		{
 			name: "temporary blacklist",
@@ -29,7 +29,7 @@ func TestAddMsg_MarshalText(t *testing.T) {
 				reason:   "connection issues",
 				duration: "1h",
 			},
-			expected: "Blacklisted peer test-peer-456 (reason: connection issues, duration: 1h)",
+			expected: "Blacklisted node test-peer-456 (reason: connection issues, duration: 1h)",
 		},
 		{
 			name: "custom reason permanent",
@@ -38,7 +38,7 @@ func TestAddMsg_MarshalText(t *testing.T) {
 				reason:   "malicious behavior",
 				duration: "",
 			},
-			expected: "Blacklisted peer malicious-peer (reason: malicious behavior, permanent)",
+			expected: "Blacklisted node malicious-peer (reason: malicious behavior, permanent)",
 		},
 	}
 
@@ -65,7 +65,7 @@ func TestAddMsg_MarshalJSON(t *testing.T) {
 				duration: "",
 			},
 			expected: map[string]interface{}{
-				"peer_id":   "test-peer-123",
+				"node_id":   "test-peer-123",
 				"reason":    "manual",
 				"permanent": true,
 			},
@@ -78,7 +78,7 @@ func TestAddMsg_MarshalJSON(t *testing.T) {
 				duration: "1h",
 			},
 			expected: map[string]interface{}{
-				"peer_id":   "test-peer-456",
+				"node_id":   "test-peer-456",
 				"reason":    "connection issues",
 				"duration":  "1h",
 				"permanent": false,
@@ -95,7 +95,7 @@ func TestAddMsg_MarshalJSON(t *testing.T) {
 			err = json.Unmarshal(jsonBytes, &result)
 			require.NoError(t, err)
 
-			require.Equal(t, tt.expected["peer_id"], result["peer_id"])
+			require.Equal(t, tt.expected["node_id"], result["node_id"])
 			require.Equal(t, tt.expected["reason"], result["reason"])
 			require.Equal(t, tt.expected["permanent"], result["permanent"])
 
