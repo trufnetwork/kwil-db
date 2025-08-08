@@ -247,6 +247,37 @@ func (cl *Client) ListPeers(ctx context.Context) ([]string, error) {
 	return res.Peers, err
 }
 
+// BlacklistPeer adds a peer to the node's blacklist.
+func (cl *Client) BlacklistPeer(ctx context.Context, peerID string, reason string, duration string) error {
+	cmd := &adminjson.BlacklistPeerRequest{
+		PeerID:   peerID,
+		Reason:   reason,
+		Duration: duration,
+	}
+	res := &adminjson.BlacklistPeerResponse{}
+	return cl.CallMethod(ctx, string(adminjson.MethodBlacklistPeer), cmd, res)
+}
+
+// RemoveBlacklistedPeer removes a peer from the node's blacklist.
+func (cl *Client) RemoveBlacklistedPeer(ctx context.Context, peerID string) error {
+	cmd := &adminjson.RemoveBlacklistedPeerRequest{
+		PeerID: peerID,
+	}
+	res := &adminjson.RemoveBlacklistedPeerResponse{}
+	return cl.CallMethod(ctx, string(adminjson.MethodRemoveBlacklistedPeer), cmd, res)
+}
+
+// ListBlacklistedPeers lists all peers in the node's blacklist.
+func (cl *Client) ListBlacklistedPeers(ctx context.Context) ([]adminjson.BlacklistEntryJSON, error) {
+	cmd := &adminjson.ListBlacklistedPeersRequest{}
+	res := &adminjson.ListBlacklistedPeersResponse{}
+	err := cl.CallMethod(ctx, string(adminjson.MethodListBlacklistedPeers), cmd, res)
+	if err != nil {
+		return nil, err
+	}
+	return res.BlacklistedPeers, nil
+}
+
 // Create Resolution broadcasts a resolution to the network.
 func (cl *Client) CreateResolution(ctx context.Context, resolution []byte, resolutionType string) (types.Hash, error) {
 	cmd := &adminjson.CreateResolutionRequest{

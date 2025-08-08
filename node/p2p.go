@@ -59,8 +59,17 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 			peerWhitelist = append(peerWhitelist, peerID)
 			logger.Infof("Adding peer to whitelist: %v", nodeID)
 		}
-		wcg = peers.NewWhitelistGater(peerWhitelist, peers.WithLogger(logger.New("PEERFILT")))
+		wcg = peers.NewWhitelistGater(peerWhitelist,
+			peers.WithLogger(logger.New("PEERFILT")),
+			peers.WithWhitelistEnforcement(true)) // Private mode: enforce both whitelist and blacklist
 		// PeerMan adds more from address book.
+	} else if cfg.KwilCfg.P2P.Blacklist.Enable {
+		// Create a WhitelistGater even when not in private mode if blacklist is enabled
+		// This allows blacklist functionality to work without requiring private mode
+		logger.Infof("Blacklist enabled - creating connection gater")
+		wcg = peers.NewWhitelistGater(nil,
+			peers.WithLogger(logger.New("PEERFILT")),
+			peers.WithWhitelistEnforcement(false)) // Blacklist-only mode: don't enforce whitelist
 	}
 	cg := peers.ChainConnectionGaters(wcg)
 
@@ -110,6 +119,11 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 	pm, err := peers.NewPeerMan(pmCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create peer manager: %w", err)
+	}
+
+	// Set the PeerMan reference in the WhitelistGater for blacklist integration
+	if wcg != nil {
+		wcg.SetPeerMan(pm)
 	}
 
 	// Set dummy stream handlers for the protocols implemented by the node.
