@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
@@ -16,6 +18,7 @@ import (
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	types "github.com/trufnetwork/kwil-db/core/types/admin"
 	"github.com/trufnetwork/kwil-db/extensions/resolutions"
+	"github.com/trufnetwork/kwil-db/node/peers"
 	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
 	ntypes "github.com/trufnetwork/kwil-db/node/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
@@ -45,6 +48,18 @@ type Whitelister interface { // maybe merge with Node since it's same job
 	List() []string
 }
 
+type Blacklister interface {
+	// BlacklistPeer adds a peer to the blacklist with reason and duration
+	// If duration is 0, the peer is permanently blacklisted
+	BlacklistPeer(nodeID string, reason string, duration time.Duration) error
+
+	// RemoveFromBlacklist removes a peer from the blacklist
+	RemoveFromBlacklist(nodeID string) error
+
+	// ListBlacklisted returns all active blacklist entries
+	ListBlacklisted() ([]peers.BlacklistEntry, error)
+}
+
 type App interface {
 	// AccountInfo returns the unconfirmed account info for the given identifier.
 	// If unconfirmed is true, the account found in the mempool is returned.
@@ -60,6 +75,40 @@ type Validators interface {
 	GetValidators() []*ktypes.Validator
 }
 
+// BlacklisterAdapter adapts PeerMan for the Blacklister interface
+type BlacklisterAdapter struct {
+	pm *peers.PeerMan
+}
+
+func NewBlacklisterAdapter(pm *peers.PeerMan) *BlacklisterAdapter {
+	return &BlacklisterAdapter{pm: pm}
+}
+
+func (ba *BlacklisterAdapter) BlacklistPeer(nodeID string, reason string, duration time.Duration) error {
+	peerID, err := peer.Decode(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid peer ID: %w", err)
+	}
+	ba.pm.BlacklistPeer(peerID, reason, duration)
+	return nil
+}
+
+func (ba *BlacklisterAdapter) RemoveFromBlacklist(nodeID string) error {
+	peerID, err := peer.Decode(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid peer ID: %w", err)
+	}
+	removed := ba.pm.RemoveFromBlacklist(peerID)
+	if !removed {
+		return fmt.Errorf("peer not found in blacklist")
+	}
+	return nil
+}
+
+func (ba *BlacklisterAdapter) ListBlacklisted() ([]peers.BlacklistEntry, error) {
+	return ba.pm.ListBlacklisted(), nil
+}
+
 type Service struct {
 	log log.Logger
 
@@ -68,6 +117,7 @@ type Service struct {
 	voting     Validators
 	db         sql.DelayedReadTxMaker
 	whitelist  Whitelister
+	blacklist  Blacklister
 
 	cfg     *config.Config
 	chainID string
@@ -196,6 +246,15 @@ func (svc *Service) Methods() map[jsonrpc.Method]rpcserver.MethodDef {
 		adminjson.MethodListPeers: rpcserver.MakeMethodDef(svc.ListPeers,
 			"list the peers from the node's whitelist",
 			"the list of peers from which the node can accept connections from."),
+		adminjson.MethodBlacklistPeer: rpcserver.MakeMethodDef(svc.BlacklistPeer,
+			"add a peer to the blacklist with optional reason and duration",
+			"success confirmation"),
+		adminjson.MethodRemoveBlacklistedPeer: rpcserver.MakeMethodDef(svc.RemoveBlacklistedPeer,
+			"remove a peer from the blacklist",
+			"removal confirmation"),
+		adminjson.MethodListBlacklistedPeers: rpcserver.MakeMethodDef(svc.ListBlacklistedPeers,
+			"list all currently blacklisted peers",
+			"list of blacklisted peers with metadata"),
 		adminjson.MethodCreateResolution: rpcserver.MakeMethodDef(svc.CreateResolution,
 			"create a resolution",
 			"the hash of the broadcasted create resolution transaction",
@@ -236,11 +295,12 @@ func (svc *Service) Handlers() map[jsonrpc.Method]rpcserver.MethodHandler {
 
 // NewService constructs a new Service.
 func NewService(db sql.DelayedReadTxMaker, blockchain Node, app App,
-	vs Validators, wl Whitelister, txSigner auth.Signer, cfg *config.Config,
+	vs Validators, wl Whitelister, bl Blacklister, txSigner auth.Signer, cfg *config.Config,
 	chainID string, logger log.Logger) *Service {
 	return &Service{
 		blockchain: blockchain,
 		whitelist:  wl,
+		blacklist:  bl,
 		app:        app,
 		voting:     vs,
 		signer:     txSigner,
@@ -667,4 +727,76 @@ func (svc *Service) AbortBlockExecution(ctx context.Context, req *adminjson.Abor
 	}
 
 	return &adminjson.AbortBlockExecResponse{}, nil
+}
+
+func (svc *Service) BlacklistPeer(ctx context.Context, req *adminjson.BlacklistPeerRequest) (*adminjson.BlacklistPeerResponse, *jsonrpc.Error) {
+	// Parse duration if provided
+	var duration time.Duration
+	if req.Duration != "" {
+		var err error
+		duration, err = time.ParseDuration(req.Duration)
+		if err != nil {
+			return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "invalid duration format: "+err.Error(), nil)
+		}
+		if duration < 0 {
+			return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "invalid duration format: negative durations not allowed", nil)
+		}
+	} // duration = 0 means permanent
+
+	// Use default reason if not provided
+	reason := req.Reason
+	if reason == "" {
+		reason = "manual"
+	}
+
+	err := svc.blacklist.BlacklistPeer(req.PeerID, reason, duration)
+	if err != nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to blacklist peer: "+err.Error(), nil)
+	}
+
+	return &adminjson.BlacklistPeerResponse{}, nil
+}
+
+func (svc *Service) RemoveBlacklistedPeer(ctx context.Context, req *adminjson.RemoveBlacklistedPeerRequest) (*adminjson.RemoveBlacklistedPeerResponse, *jsonrpc.Error) {
+	err := svc.blacklist.RemoveFromBlacklist(req.PeerID)
+	if err != nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to remove blacklisted peer: "+err.Error(), nil)
+	}
+
+	return &adminjson.RemoveBlacklistedPeerResponse{Removed: true}, nil
+}
+
+func (svc *Service) ListBlacklistedPeers(ctx context.Context, req *adminjson.ListBlacklistedPeersRequest) (*adminjson.ListBlacklistedPeersResponse, *jsonrpc.Error) {
+	entries, err := svc.blacklist.ListBlacklisted()
+	if err != nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to list blacklisted peers: "+err.Error(), nil)
+	}
+
+	// Convert to JSON format
+	jsonEntries := make([]adminjson.BlacklistEntryJSON, len(entries))
+	for i, entry := range entries {
+		// Convert PeerID back to Kwil node ID format for consistency
+		nodeID, err := peers.NodeIDFromPeerID(entry.PeerID.String())
+		if err != nil {
+			// Fallback to PeerID string if conversion fails
+			nodeID = entry.PeerID.String()
+		}
+
+		jsonEntries[i] = adminjson.BlacklistEntryJSON{
+			PeerID:    nodeID,
+			Reason:    entry.Reason,
+			Timestamp: entry.Timestamp.Format(time.RFC3339),
+			Permanent: entry.Permanent,
+			ExpiresAt: func() string {
+				if entry.Permanent || entry.ExpiresAt.IsZero() {
+					return ""
+				}
+				return entry.ExpiresAt.Format(time.RFC3339)
+			}(),
+		}
+	}
+
+	return &adminjson.ListBlacklistedPeersResponse{
+		BlacklistedPeers: jsonEntries,
+	}, nil
 }

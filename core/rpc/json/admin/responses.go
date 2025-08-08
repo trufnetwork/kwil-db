@@ -100,6 +100,24 @@ type ListPeersResponse struct {
 	Peers []string `json:"peers,omitempty"`
 }
 
+type BlacklistPeerResponse struct{}
+
+type RemoveBlacklistedPeerResponse struct {
+	Removed bool `json:"removed"`
+}
+
+type ListBlacklistedPeersResponse struct {
+	BlacklistedPeers []BlacklistEntryJSON `json:"blacklisted_peers,omitempty"`
+}
+
+type BlacklistEntryJSON struct {
+	PeerID    string `json:"peer_id"`
+	Reason    string `json:"reason"`
+	Timestamp string `json:"timestamp"` // RFC3339 format
+	Permanent bool   `json:"permanent"`
+	ExpiresAt string `json:"expires_at,omitempty"` // RFC3339 format, only for temporary
+}
+
 type ResolutionStatusResponse struct {
 	Status *types.PendingResolution `json:"status,omitempty"`
 }

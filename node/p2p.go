@@ -105,6 +105,7 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 		TargetConnections: cfg.KwilCfg.P2P.TargetConnections,
 		ConnGater:         wcg,
 		RequiredProtocols: RequiredStreamProtocols,
+		BlacklistConfig:   cfg.KwilCfg.P2P.Blacklist,
 	}
 	pm, err := peers.NewPeerMan(pmCfg)
 	if err != nil {
