@@ -44,8 +44,22 @@ docker run -d -p 5441:5432 --name kwil-postgres-node1 \
 
 **Objective**: Verify node starts without crashes when blacklist enabled without private mode.
 
+**Setup Configuration**:
+First, enable blacklist and disable private mode in the config file:
 ```bash
-# Start node (blacklist enabled by default, private mode disabled)
+# Edit the config file
+vim ./testnet-blacklist/node0/config.toml
+
+# Add these configuration sections:
+[p2p]
+private = false
+
+[p2p.blacklist]
+enable = true
+```
+
+```bash
+# Start node with blacklist enabled, private mode disabled
 ./kwild start --root ./testnet-blacklist/node0 \
   --db.port 5440 --admin.listen 127.0.0.1:8585
 ```
@@ -102,22 +116,22 @@ docker run -d -p 5441:5432 --name kwil-postgres-node1 \
 
 #### Test blacklist add
 ```bash
-# Add peer with reason and duration
-./kwild blacklist add <PEER_ID> \
+# Add node with reason and duration (use Node ID format: HEX#secp256k1)
+./kwild blacklist add <Node ID> \
   --reason "Testing CLI functionality" \
   --duration "5m" \
   -s 127.0.0.1:8585
 
 # Add permanent blacklist (no duration)
-./kwild blacklist add <PEER_ID> \
+./kwild blacklist add <Node ID> \
   --reason "Permanent test blacklist" \
   -s 127.0.0.1:8585
 ```
 
 #### Test blacklist remove
 ```bash
-# Remove peer from blacklist
-./kwild blacklist remove <PEER_ID> -s 127.0.0.1:8585
+# Remove node from blacklist (use Node ID format: HEX#secp256k1)
+./kwild blacklist remove <Node ID> -s 127.0.0.1:8585
 ```
 
 ### 4. Connection Blocking Validation
@@ -128,20 +142,20 @@ docker run -d -p 5441:5432 --name kwil-postgres-node1 \
 # 1. Verify initial connection between nodes
 ./kwild admin peers -s 127.0.0.1:8585  # Should show node1
 
-# 2. Blacklist node1 from node0
-./kwild blacklist add <NODE1_PEER_ID> \
+# 2. Blacklist node1 from node0 (use Node ID from status command)
+./kwild blacklist add <Node ID> \
   --reason "Testing connection blocking" \
   --duration "2m" \
   -s 127.0.0.1:8585
 
 # 3. Monitor logs for blocking messages
-# Expected: "Blocking OUTBOUND dial to blacklisted peer <PEER_ID>"
+# Expected: "Blocking OUTBOUND dial to blacklisted peer <libp2p_peer_id>" (logs show libp2p peer IDs)
 
 # 4. Verify peer is no longer connected
 ./kwild admin peers -s 127.0.0.1:8585  # Should not show node1
 
 # 5. Remove from blacklist
-./kwild blacklist remove <NODE1_PEER_ID> -s 127.0.0.1:8585
+./kwild blacklist remove <Node ID> -s 127.0.0.1:8585
 
 # 6. Verify connection restored
 ./kwild admin peers -s 127.0.0.1:8585  # Should show node1 again
@@ -159,21 +173,24 @@ docker run -d -p 5441:5432 --name kwil-postgres-node1 \
 ```
 
 **Expected Output**:
-```
-Peer ID                                      | Reason          | Blacklisted At       | Expires At
-16Uiu2HAm7Xqr...                            | test reason     | 2025-01-15 10:30:00  | 2025-01-15 10:35:00
+```text
+Blacklisted Nodes:
+
+NODE ID                                                              REASON               BLACKLISTED          TYPE       EXPIRES AT
+------------------------------------------------------------------------------------------------------------------------------------------------------
+0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#...   test reason          2025-01-08T14:30:00Z Temporary  2025-01-08T14:35:00Z
 ```
 
 ### blacklist add
 ```bash
 # Temporary blacklist
-./kwild blacklist add <PEER_ID> \
+./kwild blacklist add <Node ID> \
   --reason "<reason>" \
   --duration "<duration>" \
   -s <ADMIN_ADDRESS>
 
 # Permanent blacklist (no duration)
-./kwild blacklist add <PEER_ID> \
+./kwild blacklist add <Node ID> \
   --reason "<reason>" \
   -s <ADMIN_ADDRESS>
 ```
@@ -182,7 +199,7 @@ Peer ID                                      | Reason          | Blacklisted At 
 
 ### blacklist remove
 ```bash
-./kwild blacklist remove <PEER_ID> -s <ADMIN_ADDRESS>
+./kwild blacklist remove <Node ID> -s <ADMIN_ADDRESS>
 ```
 
 ## Validation Checklist
