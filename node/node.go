@@ -78,11 +78,30 @@ type WhitelistMgr struct {
 	logger log.Logger
 }
 
+type BlacklistMgr struct {
+	pm     *peers.PeerMan // Need direct access to PeerMan for blacklist methods
+	logger log.Logger
+}
+
 // Whitelister is a shim between the a Kwil consumer like RPC service and the
 // p2p layer (PeerMan) which manages the persistent and effective white list in
 // terms of libp2p types.
 func (n *Node) Whitelister() *WhitelistMgr {
 	return &WhitelistMgr{pm: n.pm, logger: n.log.New("WHITELIST")}
+}
+
+// Blacklister is a shim between the a Kwil consumer like RPC service and the
+// p2p layer (PeerMan) which manages the persistent and effective blacklist in
+// terms of libp2p types.
+func (n *Node) Blacklister() *BlacklistMgr {
+	// Cast the peerManager interface to *peers.PeerMan
+	pm, ok := n.pm.(*peers.PeerMan)
+	if !ok {
+		// This should never happen in normal operation
+		n.log.Error("peerManager is not a *peers.PeerMan, blacklist functionality unavailable")
+		return &BlacklistMgr{pm: nil, logger: n.log.New("BLACKLIST")}
+	}
+	return &BlacklistMgr{pm: pm, logger: n.log.New("BLACKLIST")}
 }
 
 func (wl *WhitelistMgr) AddPeer(nodeID string) error {
@@ -116,6 +135,42 @@ func (wl *WhitelistMgr) List() []string {
 		list = append(list, nodeID)
 	}
 	return list
+}
+
+func (bl *BlacklistMgr) BlacklistPeer(nodeID string, reason string, duration time.Duration) error {
+	if bl.pm == nil {
+		return fmt.Errorf("blacklist functionality unavailable")
+	}
+	bl.logger.Infof("blacklisting peer %s (reason: %s, duration: %s)", nodeID, reason, duration)
+	peerID, err := nodeIDToPeerID(nodeID)
+	if err != nil {
+		return err
+	}
+	bl.pm.BlacklistPeer(peerID, reason, duration)
+	return nil
+}
+
+func (bl *BlacklistMgr) RemoveFromBlacklist(nodeID string) error {
+	if bl.pm == nil {
+		return fmt.Errorf("blacklist functionality unavailable")
+	}
+	peerID, err := nodeIDToPeerID(nodeID)
+	if err != nil {
+		return err
+	}
+	removed := bl.pm.RemoveFromBlacklist(peerID)
+	if !removed {
+		return fmt.Errorf("peer not found in blacklist")
+	}
+	bl.logger.Infof("removed peer %s from blacklist", nodeID)
+	return nil
+}
+
+func (bl *BlacklistMgr) ListBlacklisted() ([]peers.BlacklistEntry, error) {
+	if bl.pm == nil {
+		return nil, fmt.Errorf("blacklist functionality unavailable")
+	}
+	return bl.pm.ListBlacklisted(), nil
 }
 
 type Node struct {
