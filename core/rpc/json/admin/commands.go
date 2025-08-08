@@ -33,6 +33,18 @@ type PeerRequest struct {
 
 type ListPeersRequest struct{}
 
+type BlacklistPeerRequest struct {
+	PeerID   string `json:"peerid"`
+	Reason   string `json:"reason,omitempty"`   // optional, defaults to "manual"
+	Duration string `json:"duration,omitempty"` // optional, format: "1h30m", empty = permanent
+}
+
+type RemoveBlacklistedPeerRequest struct {
+	PeerID string `json:"peerid"`
+}
+
+type ListBlacklistedPeersRequest struct{}
+
 type CreateResolutionRequest struct {
 	Resolution     []byte `json:"resolution"`
 	ResolutionType string `json:"resolution_type"`

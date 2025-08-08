@@ -145,7 +145,7 @@ func buildServer(ctx context.Context, d *coreDependencies) *server {
 		// key because it is used to sign transactions and provide an Identity for
 		// account information (nonce and balance).
 		txSigner := auth.GetNodeSigner(d.privKey)
-		jsonAdminSvc := adminsvc.NewService(db, node, bp, vs, node.Whitelister(),
+		jsonAdminSvc := adminsvc.NewService(db, node, bp, vs, node.Whitelister(), node.Blacklister(),
 			txSigner, d.cfg, d.genesisCfg.ChainID, adminServerLogger)
 		jsonRPCAdminServer = buildJRPCAdminServer(d)
 		jsonRPCAdminServer.RegisterSvc(jsonAdminSvc)
