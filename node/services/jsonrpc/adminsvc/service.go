@@ -3,8 +3,10 @@ package adminsvc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -75,6 +77,37 @@ type Validators interface {
 	GetValidators() []*ktypes.Validator
 }
 
+// parsePeerID accepts both Kwil node IDs (e.g., "<hex>#secp256k1") and libp2p PeerIDs.
+// It returns the libp2p peer.ID for blacklist operations.
+func parsePeerID(peerIDStr string) (peer.ID, error) {
+	// Check if it's a Kwil node ID format (contains "#")
+	if strings.Contains(peerIDStr, "#") {
+		// Use peers package to convert Kwil node ID to libp2p peer ID
+		pubkey, err := peers.NodeIDToPubKey(peerIDStr)
+		if err != nil {
+			return "", fmt.Errorf("invalid Kwil node ID: %w", err)
+		}
+		peerID, err := peers.PeerIDFromPubKey(pubkey)
+		if err != nil {
+			return "", fmt.Errorf("failed to convert node ID to peer ID: %w", err)
+		}
+		return peerID, nil
+	}
+
+	// Otherwise assume it's a libp2p peer ID
+	peerID, err := peer.Decode(peerIDStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid libp2p peer ID: %w", err)
+	}
+	return peerID, nil
+}
+
+// Blacklist-specific errors for better client feedback
+var (
+	ErrInvalidPeerID  = errors.New("invalid peer ID")
+	ErrNotBlacklisted = errors.New("peer not found in blacklist")
+)
+
 // BlacklisterAdapter adapts PeerMan for the Blacklister interface
 type BlacklisterAdapter struct {
 	pm *peers.PeerMan
@@ -85,22 +118,22 @@ func NewBlacklisterAdapter(pm *peers.PeerMan) *BlacklisterAdapter {
 }
 
 func (ba *BlacklisterAdapter) BlacklistPeer(nodeID string, reason string, duration time.Duration) error {
-	peerID, err := peer.Decode(nodeID)
+	peerID, err := parsePeerID(nodeID)
 	if err != nil {
-		return fmt.Errorf("invalid peer ID: %w", err)
+		return fmt.Errorf("%w: %s", ErrInvalidPeerID, err.Error())
 	}
 	ba.pm.BlacklistPeer(peerID, reason, duration)
 	return nil
 }
 
 func (ba *BlacklisterAdapter) RemoveFromBlacklist(nodeID string) error {
-	peerID, err := peer.Decode(nodeID)
+	peerID, err := parsePeerID(nodeID)
 	if err != nil {
-		return fmt.Errorf("invalid peer ID: %w", err)
+		return fmt.Errorf("%w: %s", ErrInvalidPeerID, err.Error())
 	}
 	removed := ba.pm.RemoveFromBlacklist(peerID)
 	if !removed {
-		return fmt.Errorf("peer not found in blacklist")
+		return ErrNotBlacklisted
 	}
 	return nil
 }
@@ -743,14 +776,19 @@ func (svc *Service) BlacklistPeer(ctx context.Context, req *adminjson.BlacklistP
 		}
 	} // duration = 0 means permanent
 
-	// Use default reason if not provided
-	reason := req.Reason
+	// Trim whitespace and use default reason if not provided or empty after trimming
+	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
 		reason = "manual"
 	}
 
 	err := svc.blacklist.BlacklistPeer(req.PeerID, reason, duration)
 	if err != nil {
+		// Check for user-actionable errors
+		if errors.Is(err, ErrInvalidPeerID) {
+			return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, err.Error(), nil)
+		}
+		// For unexpected errors, return internal error
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to blacklist peer: "+err.Error(), nil)
 	}
 
@@ -760,6 +798,11 @@ func (svc *Service) BlacklistPeer(ctx context.Context, req *adminjson.BlacklistP
 func (svc *Service) RemoveBlacklistedPeer(ctx context.Context, req *adminjson.RemoveBlacklistedPeerRequest) (*adminjson.RemoveBlacklistedPeerResponse, *jsonrpc.Error) {
 	err := svc.blacklist.RemoveFromBlacklist(req.PeerID)
 	if err != nil {
+		// Check for user-actionable errors
+		if errors.Is(err, ErrInvalidPeerID) || errors.Is(err, ErrNotBlacklisted) {
+			return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, err.Error(), nil)
+		}
+		// For unexpected errors, return internal error
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to remove blacklisted peer: "+err.Error(), nil)
 	}
 

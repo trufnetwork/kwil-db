@@ -45,6 +45,10 @@ kwild blacklist add 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1a
 				if err != nil {
 					return display.PrintErr(cmd, fmt.Errorf("invalid duration format: %w", err))
 				}
+				// Validate that duration is positive
+				if duration <= 0 {
+					return display.PrintErr(cmd, fmt.Errorf("duration must be positive, got: %s", duration))
+				}
 			}
 
 			err = client.BlacklistPeer(ctx, args[0], reason, duration)

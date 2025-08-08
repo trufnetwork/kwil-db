@@ -291,16 +291,20 @@ func (cl *Client) ListBlacklistedPeers(ctx context.Context) ([]*adminTypes.Black
 			Permanent: jsonEntry.Permanent,
 		}
 
-		// Parse timestamp
+		// Parse timestamp with fallback to handle both RFC3339 and RFC3339Nano
 		if jsonEntry.Timestamp != "" {
 			if timestamp, err := time.Parse(time.RFC3339, jsonEntry.Timestamp); err == nil {
+				entry.Timestamp = timestamp
+			} else if timestamp, err := time.Parse(time.RFC3339Nano, jsonEntry.Timestamp); err == nil {
 				entry.Timestamp = timestamp
 			}
 		}
 
-		// Parse expiry time for temporary entries
+		// Parse expiry time for temporary entries with fallback precision
 		if !jsonEntry.Permanent && jsonEntry.ExpiresAt != "" {
 			if expiresAt, err := time.Parse(time.RFC3339, jsonEntry.ExpiresAt); err == nil {
+				entry.ExpiresAt = &expiresAt
+			} else if expiresAt, err := time.Parse(time.RFC3339Nano, jsonEntry.ExpiresAt); err == nil {
 				entry.ExpiresAt = &expiresAt
 			}
 		}

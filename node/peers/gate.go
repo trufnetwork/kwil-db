@@ -24,7 +24,8 @@ type WhitelistGater struct {
 	permitted map[peer.ID]bool
 
 	// Reference to PeerMan for blacklist checking
-	peerMan interface {
+	peerManMtx sync.RWMutex // protects peerMan field
+	peerMan    interface {
 		IsBlacklisted(peer.ID) (bool, string)
 	}
 
@@ -126,7 +127,9 @@ func (g *WhitelistGater) SetPeerMan(peerMan interface{ IsBlacklisted(peer.ID) (b
 	if g == nil {
 		return
 	}
+	g.peerManMtx.Lock()
 	g.peerMan = peerMan
+	g.peerManMtx.Unlock()
 }
 
 // Allow and Disallow work with a nil *WhitelistGater, but not the
@@ -178,8 +181,11 @@ func (g *WhitelistGater) IsAllowed(p peer.ID) bool {
 	}
 
 	// Check blacklist first - blacklisted peers are never allowed
-	if g.peerMan != nil {
-		if blacklisted, _ := g.peerMan.IsBlacklisted(p); blacklisted {
+	g.peerManMtx.RLock()
+	peerMan := g.peerMan
+	g.peerManMtx.RUnlock()
+	if peerMan != nil {
+		if blacklisted, _ := peerMan.IsBlacklisted(p); blacklisted {
 			return false
 		}
 	}
@@ -201,8 +207,11 @@ var _ connmgr.ConnectionGater = (*WhitelistGater)(nil)
 
 func (g *WhitelistGater) InterceptPeerDial(p peer.ID) bool {
 	// PHASE 1: Always check blacklist first (highest priority)
-	if g.peerMan != nil {
-		if blacklisted, reason := g.peerMan.IsBlacklisted(p); blacklisted {
+	g.peerManMtx.RLock()
+	peerMan := g.peerMan
+	g.peerManMtx.RUnlock()
+	if peerMan != nil {
+		if blacklisted, reason := peerMan.IsBlacklisted(p); blacklisted {
 			g.logger.Infof("Blocking OUTBOUND dial to blacklisted peer %v (reason: %s)", p, reason)
 			return false
 		}
@@ -240,8 +249,11 @@ func (g *WhitelistGater) InterceptAccept(connAddrs network.ConnMultiaddrs) bool 
 
 func (g *WhitelistGater) InterceptSecured(dir network.Direction, p peer.ID, conn network.ConnMultiaddrs) bool {
 	// PHASE 1: Always check blacklist first (highest priority)
-	if g.peerMan != nil {
-		if blacklisted, reason := g.peerMan.IsBlacklisted(p); blacklisted {
+	g.peerManMtx.RLock()
+	peerMan := g.peerMan
+	g.peerManMtx.RUnlock()
+	if peerMan != nil {
+		if blacklisted, reason := peerMan.IsBlacklisted(p); blacklisted {
 			g.logger.Infof("Blocking INBOUND connection from blacklisted peer %v (reason: %s)", p, reason)
 			return false
 		}

@@ -145,7 +145,7 @@ func TestListBlacklistedPeersMsg_MarshalJSON(t *testing.T) {
 			},
 			expected: []map[string]interface{}{
 				{
-					"peer_id":   "test-peer",
+					"node_id":   "test-peer",
 					"reason":    "manual",
 					"timestamp": now.Format(time.RFC3339),
 					"permanent": true,
@@ -174,13 +174,13 @@ func TestListBlacklistedPeersMsg_MarshalJSON(t *testing.T) {
 			},
 			expected: []map[string]interface{}{
 				{
-					"peer_id":   "peer1",
+					"node_id":   "peer1",
 					"reason":    "manual",
 					"timestamp": now.Format(time.RFC3339),
 					"permanent": true,
 				},
 				{
-					"peer_id":    "peer2",
+					"node_id":    "peer2",
 					"reason":     "timeout",
 					"timestamp":  now.Format(time.RFC3339),
 					"permanent":  false,

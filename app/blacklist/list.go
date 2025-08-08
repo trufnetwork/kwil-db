@@ -92,7 +92,7 @@ func (l *listBlacklistedPeersMsg) MarshalJSON() ([]byte, error) {
 	jsonPeers := make([]map[string]interface{}, len(l.peers))
 	for i, peer := range l.peers {
 		jsonPeer := map[string]interface{}{
-			"peer_id":   peer.PeerID,
+			"node_id":   peer.PeerID,
 			"reason":    peer.Reason,
 			"permanent": peer.Permanent,
 		}
