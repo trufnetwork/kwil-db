@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	adminjson "github.com/trufnetwork/kwil-db/core/rpc/json/admin"
+	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
@@ -21,20 +21,20 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 		{
 			name: "empty blacklist",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{},
+				peers: []*adminTypes.BlacklistEntry{},
 			},
 			expected: []string{"No blacklisted nodes"},
 		},
 		{
 			name: "single permanent peer",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{
+				peers: []*adminTypes.BlacklistEntry{
 					{
 						PeerID:    "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1",
 						Reason:    "manual",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: true,
-						ExpiresAt: "",
+						ExpiresAt: nil,
 					},
 				},
 			},
@@ -51,13 +51,13 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 		{
 			name: "single temporary peer",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{
+				peers: []*adminTypes.BlacklistEntry{
 					{
 						PeerID:    "test-peer-123",
 						Reason:    "connection issues",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: false,
-						ExpiresAt: expiry.Format(time.RFC3339),
+						ExpiresAt: &expiry,
 					},
 				},
 			},
@@ -72,19 +72,20 @@ func TestListBlacklistedPeersMsg_MarshalText(t *testing.T) {
 		{
 			name: "multiple peers",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{
+				peers: []*adminTypes.BlacklistEntry{
 					{
 						PeerID:    "peer1",
 						Reason:    "manual",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: true,
+						ExpiresAt: nil,
 					},
 					{
 						PeerID:    "peer2",
 						Reason:    "timeout",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: false,
-						ExpiresAt: expiry.Format(time.RFC3339),
+						ExpiresAt: &expiry,
 					},
 				},
 			},
@@ -120,68 +121,70 @@ func TestListBlacklistedPeersMsg_MarshalJSON(t *testing.T) {
 	tests := []struct {
 		name     string
 		msg      *listBlacklistedPeersMsg
-		expected []adminjson.BlacklistEntryJSON
+		expected []map[string]interface{}
 	}{
 		{
 			name: "empty blacklist",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{},
+				peers: []*adminTypes.BlacklistEntry{},
 			},
-			expected: []adminjson.BlacklistEntryJSON{},
+			expected: []map[string]interface{}{},
 		},
 		{
 			name: "single peer",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{
+				peers: []*adminTypes.BlacklistEntry{
 					{
 						PeerID:    "test-peer",
 						Reason:    "manual",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: true,
+						ExpiresAt: nil,
 					},
 				},
 			},
-			expected: []adminjson.BlacklistEntryJSON{
+			expected: []map[string]interface{}{
 				{
-					PeerID:    "test-peer",
-					Reason:    "manual",
-					Timestamp: now.Format(time.RFC3339),
-					Permanent: true,
+					"peer_id":   "test-peer",
+					"reason":    "manual",
+					"timestamp": now.Format(time.RFC3339),
+					"permanent": true,
 				},
 			},
 		},
 		{
 			name: "multiple peers",
 			msg: &listBlacklistedPeersMsg{
-				peers: []adminjson.BlacklistEntryJSON{
+				peers: []*adminTypes.BlacklistEntry{
 					{
 						PeerID:    "peer1",
 						Reason:    "manual",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: true,
+						ExpiresAt: nil,
 					},
 					{
 						PeerID:    "peer2",
 						Reason:    "timeout",
-						Timestamp: now.Format(time.RFC3339),
+						Timestamp: now,
 						Permanent: false,
-						ExpiresAt: expiry.Format(time.RFC3339),
+						ExpiresAt: &expiry,
 					},
 				},
 			},
-			expected: []adminjson.BlacklistEntryJSON{
+			expected: []map[string]interface{}{
 				{
-					PeerID:    "peer1",
-					Reason:    "manual",
-					Timestamp: now.Format(time.RFC3339),
-					Permanent: true,
+					"peer_id":   "peer1",
+					"reason":    "manual",
+					"timestamp": now.Format(time.RFC3339),
+					"permanent": true,
 				},
 				{
-					PeerID:    "peer2",
-					Reason:    "timeout",
-					Timestamp: now.Format(time.RFC3339),
-					Permanent: false,
-					ExpiresAt: expiry.Format(time.RFC3339),
+					"peer_id":    "peer2",
+					"reason":     "timeout",
+					"timestamp":  now.Format(time.RFC3339),
+					"permanent":  false,
+					"expires_at": expiry.Format(time.RFC3339),
 				},
 			},
 		},
@@ -192,7 +195,7 @@ func TestListBlacklistedPeersMsg_MarshalJSON(t *testing.T) {
 			jsonBytes, err := tt.msg.MarshalJSON()
 			require.NoError(t, err)
 
-			var result []adminjson.BlacklistEntryJSON
+			var result []map[string]interface{}
 			err = json.Unmarshal(jsonBytes, &result)
 			require.NoError(t, err)
 
@@ -205,12 +208,13 @@ func TestListBlacklistedPeersMsg_PeerIDTruncation(t *testing.T) {
 	// Test that very long peer IDs are properly truncated in text output
 	longPeerID := "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1-extra-long-suffix-that-should-be-truncated"
 	msg := &listBlacklistedPeersMsg{
-		peers: []adminjson.BlacklistEntryJSON{
+		peers: []*adminTypes.BlacklistEntry{
 			{
 				PeerID:    longPeerID,
 				Reason:    "test",
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Timestamp: time.Now().UTC(),
 				Permanent: true,
+				ExpiresAt: nil,
 			},
 		},
 	}
@@ -228,14 +232,15 @@ func TestListBlacklistedPeersMsg_PeerIDTruncation(t *testing.T) {
 func TestListBlacklistedPeersMsg_TimeFormatting(t *testing.T) {
 	// Test proper time formatting in text output
 	testTime := time.Date(2025, 1, 8, 14, 30, 0, 0, time.UTC)
+	expiryTime := testTime.Add(1 * time.Hour)
 	msg := &listBlacklistedPeersMsg{
-		peers: []adminjson.BlacklistEntryJSON{
+		peers: []*adminTypes.BlacklistEntry{
 			{
 				PeerID:    "test-peer",
 				Reason:    "test",
-				Timestamp: testTime.Format(time.RFC3339),
+				Timestamp: testTime,
 				Permanent: false,
-				ExpiresAt: testTime.Add(1 * time.Hour).Format(time.RFC3339),
+				ExpiresAt: &expiryTime,
 			},
 		},
 	}

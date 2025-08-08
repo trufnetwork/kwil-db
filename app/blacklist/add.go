@@ -3,6 +3,7 @@ package blacklist
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,9 +33,18 @@ kwild blacklist add 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1a
 				return display.PrintErr(cmd, err)
 			}
 
-			duration, err := cmd.Flags().GetString("duration")
+			durationStr, err := cmd.Flags().GetString("duration")
 			if err != nil {
 				return display.PrintErr(cmd, err)
+			}
+
+			// Parse duration string to time.Duration
+			var duration time.Duration
+			if durationStr != "" {
+				duration, err = time.ParseDuration(durationStr)
+				if err != nil {
+					return display.PrintErr(cmd, fmt.Errorf("invalid duration format: %w", err))
+				}
 			}
 
 			err = client.BlacklistPeer(ctx, args[0], reason, duration)
@@ -45,7 +55,7 @@ kwild blacklist add 0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1a
 			return display.PrintCmd(cmd, &addMsg{
 				peerID:   args[0],
 				reason:   reason,
-				duration: duration,
+				duration: durationStr,
 			})
 		},
 	}

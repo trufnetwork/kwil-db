@@ -66,3 +66,12 @@ type TxInfo struct {
 	ID     types.Hash `json:"id"`
 	Status bool       `json:"status"`
 }
+
+// BlacklistEntry represents a blacklisted peer in the domain model
+type BlacklistEntry struct {
+	PeerID    string
+	Reason    string
+	Timestamp time.Time
+	Permanent bool
+	ExpiresAt *time.Time // nil for permanent blacklists
+}

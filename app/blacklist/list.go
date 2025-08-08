@@ -10,7 +10,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/app/rpc"
 	"github.com/trufnetwork/kwil-db/app/shared/display"
-	adminjson "github.com/trufnetwork/kwil-db/core/rpc/json/admin"
+	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
 
 func listCmd() *cobra.Command {
@@ -41,7 +41,7 @@ func listCmd() *cobra.Command {
 }
 
 type listBlacklistedPeersMsg struct {
-	peers []adminjson.BlacklistEntryJSON
+	peers []*adminTypes.BlacklistEntry
 }
 
 var _ display.MsgFormatter = (*listBlacklistedPeersMsg)(nil)
@@ -59,8 +59,7 @@ func (l *listBlacklistedPeersMsg) MarshalText() ([]byte, error) {
 		"NODE ID", "REASON", "BLACKLISTED", "TYPE", "EXPIRES AT"))
 	output.WriteString(strings.Repeat("-", 140) + "\n")
 
-	for i := range l.peers {
-		peer := &l.peers[i]
+	for _, peer := range l.peers {
 		// Truncate peer ID if too long
 		peerID := peer.PeerID
 		if len(peerID) > 67 {
@@ -69,20 +68,16 @@ func (l *listBlacklistedPeersMsg) MarshalText() ([]byte, error) {
 
 		// Format blacklist time
 		blacklistedTime := "Unknown"
-		if peer.Timestamp != "" {
-			if t, err := time.Parse(time.RFC3339, peer.Timestamp); err == nil {
-				blacklistedTime = t.Format("2006-01-02T15:04:05Z")
-			}
+		if !peer.Timestamp.IsZero() {
+			blacklistedTime = peer.Timestamp.Format("2006-01-02T15:04:05Z")
 		}
 
 		// Type and expiration
 		peerType := "Permanent"
 		expiresAt := "-"
-		if !peer.Permanent && peer.ExpiresAt != "" {
+		if !peer.Permanent && peer.ExpiresAt != nil {
 			peerType = "Temporary"
-			if t, err := time.Parse(time.RFC3339, peer.ExpiresAt); err == nil {
-				expiresAt = t.Format("2006-01-02T15:04:05Z")
-			}
+			expiresAt = peer.ExpiresAt.Format("2006-01-02T15:04:05Z")
 		}
 
 		output.WriteString(fmt.Sprintf("%-70s %-20s %-20s %-10s %s\n",
@@ -93,5 +88,24 @@ func (l *listBlacklistedPeersMsg) MarshalText() ([]byte, error) {
 }
 
 func (l *listBlacklistedPeersMsg) MarshalJSON() ([]byte, error) {
-	return json.Marshal(l.peers)
+	// Convert domain types to JSON representation for output
+	jsonPeers := make([]map[string]interface{}, len(l.peers))
+	for i, peer := range l.peers {
+		jsonPeer := map[string]interface{}{
+			"peer_id":   peer.PeerID,
+			"reason":    peer.Reason,
+			"permanent": peer.Permanent,
+		}
+
+		if !peer.Timestamp.IsZero() {
+			jsonPeer["timestamp"] = peer.Timestamp.Format(time.RFC3339)
+		}
+
+		if !peer.Permanent && peer.ExpiresAt != nil {
+			jsonPeer["expires_at"] = peer.ExpiresAt.Format(time.RFC3339)
+		}
+
+		jsonPeers[i] = jsonPeer
+	}
+	return json.Marshal(jsonPeers)
 }

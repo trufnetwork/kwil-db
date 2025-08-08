@@ -94,7 +94,6 @@ func createTestService() *Service {
 }
 
 func TestService_BlacklistPeer(t *testing.T) {
-	svc := createTestService()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -153,11 +152,12 @@ func TestService_BlacklistPeer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create fresh service instance for each test case
+			svc := createTestService()
+
 			// Setup mock error if needed
 			if tt.setupError {
 				svc.blacklist.(*mockBlacklister).setError(true, tt.setupErrorMsg)
-			} else {
-				svc.blacklist.(*mockBlacklister).setError(false, "")
 			}
 
 			resp, jsonErr := svc.BlacklistPeer(ctx, tt.req)
@@ -180,7 +180,6 @@ func TestService_BlacklistPeer(t *testing.T) {
 }
 
 func TestService_RemoveBlacklistedPeer(t *testing.T) {
-	svc := createTestService()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -224,6 +223,9 @@ func TestService_RemoveBlacklistedPeer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create fresh service instance for each test case
+			svc := createTestService()
+
 			// Setup: add peer to blacklist if needed
 			mockBL := svc.blacklist.(*mockBlacklister)
 			if tt.setupPeer {
@@ -237,8 +239,6 @@ func TestService_RemoveBlacklistedPeer(t *testing.T) {
 			// Setup mock error if needed
 			if tt.setupError {
 				mockBL.setError(true, tt.setupErrorMsg)
-			} else {
-				mockBL.setError(false, "")
 			}
 
 			resp, jsonErr := svc.RemoveBlacklistedPeer(ctx, tt.req)

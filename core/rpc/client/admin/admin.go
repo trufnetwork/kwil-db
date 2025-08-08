@@ -3,9 +3,9 @@ package admin
 
 import (
 	"context"
+	"time"
 
 	"github.com/trufnetwork/kwil-db/core/crypto"
-	adminjson "github.com/trufnetwork/kwil-db/core/rpc/json/admin"
 	"github.com/trufnetwork/kwil-db/core/types"
 	adminTypes "github.com/trufnetwork/kwil-db/core/types/admin"
 )
@@ -32,9 +32,9 @@ type AdminClient interface {
 	ListPeers(ctx context.Context) ([]string, error)
 
 	// Blacklist management
-	BlacklistPeer(ctx context.Context, peerID string, reason string, duration string) error
+	BlacklistPeer(ctx context.Context, peerID string, reason string, duration time.Duration) error
 	RemoveBlacklistedPeer(ctx context.Context, peerID string) error
-	ListBlacklistedPeers(ctx context.Context) ([]adminjson.BlacklistEntryJSON, error)
+	ListBlacklistedPeers(ctx context.Context) ([]*adminTypes.BlacklistEntry, error)
 
 	// Resolutions
 	CreateResolution(ctx context.Context, resolution []byte, resolutionType string) (types.Hash, error)
