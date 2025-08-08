@@ -69,7 +69,7 @@ func (l *listBlacklistedPeersMsg) MarshalText() ([]byte, error) {
 		// Format blacklist time
 		blacklistedTime := "Unknown"
 		if !peer.Timestamp.IsZero() {
-			blacklistedTime = peer.Timestamp.Format("2006-01-02T15:04:05Z")
+			blacklistedTime = peer.Timestamp.UTC().Format("2006-01-02T15:04:05Z")
 		}
 
 		// Type and expiration
@@ -77,7 +77,7 @@ func (l *listBlacklistedPeersMsg) MarshalText() ([]byte, error) {
 		expiresAt := "-"
 		if !peer.Permanent && peer.ExpiresAt != nil {
 			peerType = "Temporary"
-			expiresAt = peer.ExpiresAt.Format("2006-01-02T15:04:05Z")
+			expiresAt = peer.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
 
 		output.WriteString(fmt.Sprintf("%-70s %-20s %-20s %-10s %s\n",
@@ -98,11 +98,11 @@ func (l *listBlacklistedPeersMsg) MarshalJSON() ([]byte, error) {
 		}
 
 		if !peer.Timestamp.IsZero() {
-			jsonPeer["timestamp"] = peer.Timestamp.Format(time.RFC3339)
+			jsonPeer["timestamp"] = peer.Timestamp.UTC().Format(time.RFC3339)
 		}
 
 		if !peer.Permanent && peer.ExpiresAt != nil {
-			jsonPeer["expires_at"] = peer.ExpiresAt.Format(time.RFC3339)
+			jsonPeer["expires_at"] = peer.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 
 		jsonPeers[i] = jsonPeer
