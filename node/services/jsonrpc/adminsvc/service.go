@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,6 +81,9 @@ type Validators interface {
 // parsePeerID accepts both Kwil node IDs (e.g., "<hex>#secp256k1") and libp2p PeerIDs.
 // It returns the libp2p peer.ID for blacklist operations.
 func parsePeerID(peerIDStr string) (peer.ID, error) {
+	// Trim whitespace to tolerate accidental spaces around the ID
+	peerIDStr = strings.TrimSpace(peerIDStr)
+
 	// Check if it's a Kwil node ID format (contains "#")
 	if strings.Contains(peerIDStr, "#") {
 		// Use peers package to convert Kwil node ID to libp2p peer ID
@@ -330,6 +334,11 @@ func (svc *Service) Handlers() map[jsonrpc.Method]rpcserver.MethodHandler {
 func NewService(db sql.DelayedReadTxMaker, blockchain Node, app App,
 	vs Validators, wl Whitelister, bl Blacklister, txSigner auth.Signer, cfg *config.Config,
 	chainID string, logger log.Logger) *Service {
+	// Defensive nil-check for Blacklister to fail fast during service initialization
+	if bl == nil {
+		panic("NewService: Blacklister cannot be nil")
+	}
+
 	return &Service{
 		blockchain: blockchain,
 		whitelist:  wl,
@@ -814,6 +823,11 @@ func (svc *Service) ListBlacklistedPeers(ctx context.Context, req *adminjson.Lis
 	if err != nil {
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to list blacklisted peers: "+err.Error(), nil)
 	}
+
+	// Sort entries by timestamp in descending order (newest first) for deterministic output
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp.After(entries[j].Timestamp)
+	})
 
 	// Convert to JSON format
 	jsonEntries := make([]adminjson.BlacklistEntryJSON, len(entries))
