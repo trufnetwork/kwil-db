@@ -78,8 +78,15 @@ type WhitelistMgr struct {
 	logger log.Logger
 }
 
+// blacklistManager defines the minimal interface needed for blacklist operations
+type blacklistManager interface {
+	BlacklistPeer(peerID peer.ID, reason string, duration time.Duration)
+	RemoveFromBlacklist(peerID peer.ID) bool
+	ListBlacklisted() []peers.BlacklistEntry
+}
+
 type BlacklistMgr struct {
-	pm     *peers.PeerMan // Need direct access to PeerMan for blacklist methods
+	pm     blacklistManager
 	logger log.Logger
 }
 
@@ -94,11 +101,11 @@ func (n *Node) Whitelister() *WhitelistMgr {
 // p2p layer (PeerMan) which manages the persistent and effective blacklist in
 // terms of libp2p types.
 func (n *Node) Blacklister() *BlacklistMgr {
-	// Cast the peerManager interface to *peers.PeerMan
-	pm, ok := n.pm.(*peers.PeerMan)
+	// Assert to the minimal blacklistManager interface instead of concrete type
+	pm, ok := n.pm.(blacklistManager)
 	if !ok {
-		// This should never happen in normal operation
-		n.log.Error("peerManager is not a *peers.PeerMan, blacklist functionality unavailable")
+		// This should never happen in normal operation as PeerMan implements blacklistManager
+		n.log.Error("peerManager does not support blacklist operations, blacklist functionality unavailable")
 		return &BlacklistMgr{pm: nil, logger: n.log.New("BLACKLIST")}
 	}
 	return &BlacklistMgr{pm: pm, logger: n.log.New("BLACKLIST")}

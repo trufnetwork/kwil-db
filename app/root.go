@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/trufnetwork/kwil-db/app/blacklist"
 	"github.com/trufnetwork/kwil-db/app/block"
 	"github.com/trufnetwork/kwil-db/app/custom"
 	"github.com/trufnetwork/kwil-db/app/key"
@@ -85,6 +86,7 @@ func RootCmd() *cobra.Command {
 	cmd.AddCommand(validator.NewValidatorsCmd())
 	cmd.AddCommand(params.NewConsensusCmd())
 	cmd.AddCommand(whitelist.WhitelistCmd())
+	cmd.AddCommand(blacklist.BlacklistCmd())
 	cmd.AddCommand(block.NewBlockExecCmd())
 	cmd.AddCommand(migration.NewMigrationCmd())
 

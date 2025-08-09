@@ -46,12 +46,6 @@ func createTestPeerMan(t *testing.T) *peers.PeerMan {
 }
 
 func TestBlacklistMgr_BlacklistPeer(t *testing.T) {
-	pm := createTestPeerMan(t)
-	blacklistMgr := &BlacklistMgr{
-		pm:     pm,
-		logger: log.DiscardLogger,
-	}
-
 	tests := []struct {
 		name        string
 		nodeID      string
@@ -91,6 +85,13 @@ func TestBlacklistMgr_BlacklistPeer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create fresh instances for each test case
+			pm := createTestPeerMan(t)
+			blacklistMgr := &BlacklistMgr{
+				pm:     pm,
+				logger: log.DiscardLogger,
+			}
+
 			err := blacklistMgr.BlacklistPeer(tt.nodeID, tt.reason, tt.duration)
 
 			if tt.expectError {
@@ -118,12 +119,6 @@ func TestBlacklistMgr_BlacklistPeer(t *testing.T) {
 }
 
 func TestBlacklistMgr_RemoveFromBlacklist(t *testing.T) {
-	pm := createTestPeerMan(t)
-	blacklistMgr := &BlacklistMgr{
-		pm:     pm,
-		logger: log.DiscardLogger,
-	}
-
 	nodeID := "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1"
 
 	tests := []struct {
@@ -158,6 +153,13 @@ func TestBlacklistMgr_RemoveFromBlacklist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create fresh instances for each test case
+			pm := createTestPeerMan(t)
+			blacklistMgr := &BlacklistMgr{
+				pm:     pm,
+				logger: log.DiscardLogger,
+			}
+
 			// Setup: blacklist the peer if needed
 			if tt.setupBlacklist && tt.nodeID != "invalid-node-id" {
 				err := blacklistMgr.BlacklistPeer(tt.nodeID, "test setup", 0)
@@ -186,22 +188,27 @@ func TestBlacklistMgr_RemoveFromBlacklist(t *testing.T) {
 }
 
 func TestBlacklistMgr_ListBlacklisted(t *testing.T) {
-	pm := createTestPeerMan(t)
-	blacklistMgr := &BlacklistMgr{
-		pm:     pm,
-		logger: log.DiscardLogger,
-	}
-
 	nodeID1 := "0226b3ff29216dac187cea393f8af685ad419ac9644e55dce83d145c8b1af213bd#secp256k1"
 	nodeID2 := "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa#secp256k1"
 
 	t.Run("empty blacklist", func(t *testing.T) {
+		pm := createTestPeerMan(t)
+		blacklistMgr := &BlacklistMgr{
+			pm:     pm,
+			logger: log.DiscardLogger,
+		}
+
 		entries, err := blacklistMgr.ListBlacklisted()
 		require.NoError(t, err)
 		require.Empty(t, entries)
 	})
 
 	t.Run("single entry", func(t *testing.T) {
+		pm := createTestPeerMan(t)
+		blacklistMgr := &BlacklistMgr{
+			pm:     pm,
+			logger: log.DiscardLogger,
+		}
 		// Add one entry
 		err := blacklistMgr.BlacklistPeer(nodeID1, "test reason 1", 0)
 		require.NoError(t, err)
@@ -214,8 +221,18 @@ func TestBlacklistMgr_ListBlacklisted(t *testing.T) {
 	})
 
 	t.Run("multiple entries", func(t *testing.T) {
-		// Add another entry
-		err := blacklistMgr.BlacklistPeer(nodeID2, "test reason 2", 1*time.Hour)
+		pm := createTestPeerMan(t)
+		blacklistMgr := &BlacklistMgr{
+			pm:     pm,
+			logger: log.DiscardLogger,
+		}
+
+		// Add first entry
+		err := blacklistMgr.BlacklistPeer(nodeID1, "test reason 1", 0)
+		require.NoError(t, err)
+
+		// Add second entry
+		err = blacklistMgr.BlacklistPeer(nodeID2, "test reason 2", 1*time.Hour)
 		require.NoError(t, err)
 
 		entries, err := blacklistMgr.ListBlacklisted()
