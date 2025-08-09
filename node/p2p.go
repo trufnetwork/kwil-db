@@ -74,7 +74,6 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 		logger.Debugf("P2P gating disabled: no private mode or blacklist; all connections allowed")
 	}
 	cg := peers.ChainConnectionGaters(wcg)
-	cg := peers.ChainConnectionGaters(wcg)
 
 	if host == nil {
 		ip, portStr, err := net.SplitHostPort(cfg.KwilCfg.P2P.ListenAddress)
