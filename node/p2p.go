@@ -70,7 +70,10 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 		wcg = peers.NewWhitelistGater(nil,
 			peers.WithLogger(logger.New("PEERFILT")),
 			peers.WithWhitelistEnforcement(false)) // Blacklist-only mode: don't enforce whitelist
+	} else {
+		logger.Debugf("P2P gating disabled: no private mode or blacklist; all connections allowed")
 	}
+	cg := peers.ChainConnectionGaters(wcg)
 	cg := peers.ChainConnectionGaters(wcg)
 
 	if host == nil {
