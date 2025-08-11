@@ -3,6 +3,7 @@ package admin
 
 import (
 	"context"
+	"time"
 
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/types"
@@ -29,6 +30,11 @@ type AdminClient interface {
 	AddPeer(ctx context.Context, peerID string) error
 	RemovePeer(ctx context.Context, peerID string) error
 	ListPeers(ctx context.Context) ([]string, error)
+
+	// Blacklist management
+	BlacklistPeer(ctx context.Context, peerID string, reason string, duration time.Duration) error
+	RemoveBlacklistedPeer(ctx context.Context, peerID string) error
+	ListBlacklistedPeers(ctx context.Context) ([]*adminTypes.BlacklistEntry, error)
 
 	// Resolutions
 	CreateResolution(ctx context.Context, resolution []byte, resolutionType string) (types.Hash, error)
