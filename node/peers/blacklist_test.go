@@ -317,3 +317,142 @@ func TestBlacklistExpiredEntryHandling(t *testing.T) {
 		require.Len(t, entries, 0)
 	}
 }
+
+func TestAutoBlacklistOnMaxRetries(t *testing.T) {
+	// Create two test hosts
+	host1, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer host1.Close()
+
+	host2, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer host2.Close()
+
+	// Create temporary address book file
+	tempDir := t.TempDir()
+	addrBookPath := filepath.Join(tempDir, "test_addrbook.json")
+
+	t.Run("AutoBlacklistEnabled", func(t *testing.T) {
+		// Create a basic WhitelistGater first
+		initialGater := NewWhitelistGater([]peer.ID{}, WithLogger(log.DiscardLogger))
+
+		// Create PeerMan with auto-blacklist enabled
+		cfg := &Config{
+			Host:      host1,
+			AddrBook:  addrBookPath,
+			Logger:    log.DiscardLogger,
+			ConnGater: initialGater, // Provide a connection gater
+			BlacklistConfig: config.BlacklistConfig{
+				Enable:                    true,
+				AutoBlacklistOnMaxRetries: true,
+			},
+		}
+
+		pm, err := NewPeerMan(cfg)
+		require.NoError(t, err)
+
+		// Add host2 as a known peer (this simulates PEX discovery)
+		testPeerID := host2.ID()
+		testAddr := host2.Addrs()[0]
+		pm.ps.AddAddr(testPeerID, testAddr, time.Hour)
+
+		// Verify peer is not initially blacklisted
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted, "peer should not be initially blacklisted")
+
+		// Create a backoff tracker that has reached max attempts
+		// This simulates the condition in maintainMinPeers where bk.maxedOut() returns true
+		bk := newBackoffer(1, baseReconnectDelay, maxReconnectDelay, true) // Set maxAttempts to 1 for quick testing
+
+		// Exhaust the backoff attempts
+		success := bk.try()
+		require.True(t, success, "first attempt should succeed")
+
+		// Second attempt should fail and max out
+		success = bk.try()
+		require.False(t, success, "second attempt should fail")
+		require.True(t, bk.maxedOut(), "backoff should be maxed out")
+
+		// Simulate the auto-blacklist logic from maintainMinPeers
+		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0) // permanent blacklist
+		}
+
+		// Verify peer is now blacklisted
+		blacklisted, reason := pm.IsBlacklisted(testPeerID)
+		require.True(t, blacklisted, "peer should be auto-blacklisted after max retries")
+		require.Equal(t, "connection_exhaustion", reason, "blacklist reason should be connection_exhaustion")
+
+		// Verify the blacklist entry is permanent
+		entries := pm.ListBlacklisted()
+		require.Len(t, entries, 1, "should have one blacklisted peer")
+		require.True(t, entries[0].Permanent, "auto-blacklisted peer should be permanent")
+		require.Equal(t, "connection_exhaustion", entries[0].Reason, "reason should match")
+
+		// Verify that IsAllowed now rejects this peer (preventing PEX re-addition)
+		require.False(t, pm.IsAllowed(testPeerID), "blacklisted peer should not be allowed to connect")
+	})
+
+	t.Run("AutoBlacklistDisabled", func(t *testing.T) {
+		// Create PeerMan with auto-blacklist disabled
+		cfg := &Config{
+			Host:     host1,
+			AddrBook: addrBookPath,
+			Logger:   log.DiscardLogger,
+			BlacklistConfig: config.BlacklistConfig{
+				Enable:                    true,
+				AutoBlacklistOnMaxRetries: false, // Disabled
+			},
+		}
+
+		pm, err := NewPeerMan(cfg)
+		require.NoError(t, err)
+
+		testPeerID := host2.ID()
+
+		// Verify peer is not initially blacklisted
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted, "peer should not be initially blacklisted")
+
+		// Simulate the same max retry condition, but auto-blacklist is disabled
+		// The logic should NOT blacklist the peer
+		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0)
+		}
+
+		// Verify peer is still NOT blacklisted
+		blacklisted, _ = pm.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted, "peer should not be auto-blacklisted when feature is disabled")
+
+		// Verify no blacklist entries exist
+		entries := pm.ListBlacklisted()
+		require.Len(t, entries, 0, "should have no blacklisted peers when auto-blacklist is disabled")
+	})
+
+	t.Run("BlacklistingDisabled", func(t *testing.T) {
+		// Create PeerMan with blacklisting entirely disabled
+		cfg := &Config{
+			Host:     host1,
+			AddrBook: addrBookPath,
+			Logger:   log.DiscardLogger,
+			BlacklistConfig: config.BlacklistConfig{
+				Enable:                    false, // Disabled
+				AutoBlacklistOnMaxRetries: true,
+			},
+		}
+
+		pm, err := NewPeerMan(cfg)
+		require.NoError(t, err)
+
+		testPeerID := host2.ID()
+
+		// Simulate the auto-blacklist logic - should be ignored when Enable=false
+		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0)
+		}
+
+		// Verify peer is not blacklisted (because blacklisting is disabled)
+		blacklisted, _ := pm.IsBlacklisted(testPeerID)
+		require.False(t, blacklisted, "peer should not be blacklisted when blacklisting is disabled")
+	})
+}
