@@ -472,11 +472,13 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 		blacklisted, _ := pm.IsBlacklisted(testPeerID)
 		require.False(t, blacklisted, "peer should not be initially blacklisted")
 
-		// Simulate the same max retry condition, but auto-blacklist is disabled
-		// The logic should NOT blacklist the peer
+		// Simulate the auto-blacklist logic from maintainMinPeers when auto-blacklist is disabled
+		// This should NOT blacklist the peer because AutoBlacklistOnMaxRetries=false
 		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
-			pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0)
+			duration := pm.blacklistConfig.AutoBlacklistDuration
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", duration)
 		}
+		// If auto-blacklist is disabled, the above condition is false and no blacklisting occurs
 
 		// Verify peer is still NOT blacklisted
 		blacklisted, _ = pm.IsBlacklisted(testPeerID)
@@ -505,10 +507,9 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 
 		testPeerID := host2.ID()
 
-		// Simulate the auto-blacklist logic - should be ignored when Enable=false
-		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
-			pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0)
-		}
+		// Directly call BlacklistPeer even when blacklisting is disabled
+		// This should have no effect because Enable=false
+		pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0)
 
 		// Verify peer is not blacklisted (because blacklisting is disabled)
 		blacklisted, _ := pm.IsBlacklisted(testPeerID)
