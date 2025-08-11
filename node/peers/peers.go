@@ -332,10 +332,10 @@ func (pm *PeerMan) maintainMinPeers(ctx context.Context) {
 						// Auto-blacklist peer that exhausted connection retries if enabled
 						if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
 							pm.log.Warnf("Auto-blacklisting peer %s due to connection exhaustion after %d attempts", peerIDStringer(pid), bk.attempts)
-							pm.BlacklistPeer(pid, "connection_exhaustion", 0) // permanent blacklist
+							pm.BlacklistPeer(pid, "connection_exhaustion", 0) // permanent blacklist (also removes peer)
+						} else {
+							pm.removePeer(pid)
 						}
-
-						pm.removePeer(pid)
 					}
 					continue
 				}

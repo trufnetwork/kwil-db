@@ -333,15 +333,19 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 	addrBookPath := filepath.Join(tempDir, "test_addrbook.json")
 
 	t.Run("AutoBlacklistEnabled", func(t *testing.T) {
-		// Create a basic WhitelistGater first
-		initialGater := NewWhitelistGater([]peer.ID{}, WithLogger(log.DiscardLogger))
+		// Add host2 as a known peer (this simulates PEX discovery)
+		testPeerID := host2.ID()
+		testAddr := host2.Addrs()[0]
+
+		// Create WhitelistGater with test peer explicitly whitelisted
+		initialGater := NewWhitelistGater([]peer.ID{testPeerID}, WithLogger(log.DiscardLogger))
 
 		// Create PeerMan with auto-blacklist enabled
 		cfg := &Config{
 			Host:      host1,
 			AddrBook:  addrBookPath,
 			Logger:    log.DiscardLogger,
-			ConnGater: initialGater, // Provide a connection gater
+			ConnGater: initialGater, // Provide a connection gater with test peer whitelisted
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    true,
 				AutoBlacklistOnMaxRetries: true,
@@ -351,14 +355,12 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 		pm, err := NewPeerMan(cfg)
 		require.NoError(t, err)
 
-		// Add host2 as a known peer (this simulates PEX discovery)
-		testPeerID := host2.ID()
-		testAddr := host2.Addrs()[0]
 		pm.ps.AddAddr(testPeerID, testAddr, time.Hour)
 
-		// Verify peer is not initially blacklisted
+		// Verify peer is not initially blacklisted but is allowed (whitelisted)
 		blacklisted, _ := pm.IsBlacklisted(testPeerID)
 		require.False(t, blacklisted, "peer should not be initially blacklisted")
+		require.True(t, pm.IsAllowed(testPeerID), "peer should be initially allowed (whitelisted)")
 
 		// Create a backoff tracker that has reached max attempts
 		// This simulates the condition in maintainMinPeers where bk.maxedOut() returns true
@@ -372,6 +374,9 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 		success = bk.try()
 		require.False(t, success, "second attempt should fail")
 		require.True(t, bk.maxedOut(), "backoff should be maxed out")
+
+		// Verify peer is still allowed before blacklisting (proves test validity)
+		require.True(t, pm.IsAllowed(testPeerID), "peer should still be allowed before blacklisting")
 
 		// Simulate the auto-blacklist logic from maintainMinPeers
 		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
