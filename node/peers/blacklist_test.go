@@ -349,6 +349,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    true,
 				AutoBlacklistOnMaxRetries: true,
+				AutoBlacklistDuration:     2 * time.Hour, // Test with 2 hour duration
 			},
 		}
 
@@ -380,7 +381,8 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 
 		// Simulate the auto-blacklist logic from maintainMinPeers
 		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
-			pm.BlacklistPeer(testPeerID, "connection_exhaustion", 0) // permanent blacklist
+			duration := pm.blacklistConfig.AutoBlacklistDuration
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", duration) // configurable duration blacklist
 		}
 
 		// Verify peer is now blacklisted
@@ -388,13 +390,63 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 		require.True(t, blacklisted, "peer should be auto-blacklisted after max retries")
 		require.Equal(t, "connection_exhaustion", reason, "blacklist reason should be connection_exhaustion")
 
+		// Verify the blacklist entry is temporary (2 hours duration)
+		entries := pm.ListBlacklisted()
+		require.Len(t, entries, 1, "should have one blacklisted peer")
+		require.False(t, entries[0].Permanent, "auto-blacklisted peer should be temporary")
+		require.Equal(t, "connection_exhaustion", entries[0].Reason, "reason should match")
+		require.True(t, entries[0].ExpiresAt.After(time.Now()), "blacklist should expire in the future")
+		require.True(t, entries[0].ExpiresAt.Before(time.Now().Add(3*time.Hour)), "blacklist should expire within 3 hours")
+
+		// Verify that IsAllowed now rejects this peer (preventing PEX re-addition)
+		require.False(t, pm.IsAllowed(testPeerID), "blacklisted peer should not be allowed to connect")
+	})
+
+	t.Run("AutoBlacklistPermanent", func(t *testing.T) {
+		// Test permanent blacklisting when duration is 0
+		testPeerID := host2.ID()
+		testAddr := host2.Addrs()[0]
+
+		// Create WhitelistGater with test peer explicitly whitelisted
+		initialGater := NewWhitelistGater([]peer.ID{testPeerID}, WithLogger(log.DiscardLogger))
+
+		// Create PeerMan with auto-blacklist enabled and duration = 0 (permanent)
+		cfg := &Config{
+			Host:      host1,
+			AddrBook:  addrBookPath,
+			Logger:    log.DiscardLogger,
+			ConnGater: initialGater,
+			BlacklistConfig: config.BlacklistConfig{
+				Enable:                    true,
+				AutoBlacklistOnMaxRetries: true,
+				AutoBlacklistDuration:     0, // Permanent blacklist
+			},
+		}
+
+		pm, err := NewPeerMan(cfg)
+		require.NoError(t, err)
+
+		pm.ps.AddAddr(testPeerID, testAddr, time.Hour)
+
+		// Verify peer is initially allowed
+		require.True(t, pm.IsAllowed(testPeerID), "peer should be initially allowed")
+
+		// Simulate the auto-blacklist logic with permanent duration
+		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", pm.blacklistConfig.AutoBlacklistDuration)
+		}
+
+		// Verify peer is now permanently blacklisted
+		blacklisted, reason := pm.IsBlacklisted(testPeerID)
+		require.True(t, blacklisted, "peer should be auto-blacklisted")
+		require.Equal(t, "connection_exhaustion", reason, "blacklist reason should be connection_exhaustion")
+
 		// Verify the blacklist entry is permanent
 		entries := pm.ListBlacklisted()
 		require.Len(t, entries, 1, "should have one blacklisted peer")
-		require.True(t, entries[0].Permanent, "auto-blacklisted peer should be permanent")
-		require.Equal(t, "connection_exhaustion", entries[0].Reason, "reason should match")
+		require.True(t, entries[0].Permanent, "auto-blacklisted peer should be permanent when duration=0")
 
-		// Verify that IsAllowed now rejects this peer (preventing PEX re-addition)
+		// Verify that IsAllowed now rejects this peer
 		require.False(t, pm.IsAllowed(testPeerID), "blacklisted peer should not be allowed to connect")
 	})
 
@@ -406,7 +458,8 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			Logger:   log.DiscardLogger,
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    true,
-				AutoBlacklistOnMaxRetries: false, // Disabled
+				AutoBlacklistOnMaxRetries: false,     // Disabled
+				AutoBlacklistDuration:     time.Hour, // This won't be used since auto-blacklist is disabled
 			},
 		}
 
@@ -443,6 +496,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    false, // Disabled
 				AutoBlacklistOnMaxRetries: true,
+				AutoBlacklistDuration:     time.Hour, // This won't be used since blacklisting is disabled
 			},
 		}
 

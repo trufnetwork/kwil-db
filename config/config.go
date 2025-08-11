@@ -304,6 +304,7 @@ func DefaultConfig() *Config {
 			Blacklist: BlacklistConfig{
 				Enable:                    true,
 				AutoBlacklistOnMaxRetries: true,
+				AutoBlacklistDuration:     time.Hour, // 1 hour default for retry exhaustion
 			},
 		},
 		Consensus: ConsensusConfig{
@@ -453,8 +454,9 @@ type PeerConfig struct {
 // BlacklistConfig contains configuration options for peer blacklisting functionality.
 // Note: Blacklist data is always persisted to address book for restart survival
 type BlacklistConfig struct {
-	Enable                    bool `toml:"enable" comment:"enable peer blacklisting functionality"`
-	AutoBlacklistOnMaxRetries bool `toml:"auto_blacklist_on_max_retries" comment:"automatically blacklist peers that exhaust connection retries"`
+	Enable                    bool          `toml:"enable" comment:"enable peer blacklisting functionality"`
+	AutoBlacklistOnMaxRetries bool          `toml:"auto_blacklist_on_max_retries" comment:"automatically blacklist peers that exhaust connection retries"`
+	AutoBlacklistDuration     time.Duration `toml:"auto_blacklist_duration" comment:"duration to blacklist peers that exhaust connection retries (0 = permanent)"`
 }
 
 // Validate validates the BlacklistConfig and returns an error if the configuration is invalid.
