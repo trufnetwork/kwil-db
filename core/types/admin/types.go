@@ -66,3 +66,13 @@ type TxInfo struct {
 	ID     types.Hash `json:"id"`
 	Status bool       `json:"status"`
 }
+
+// BlacklistEntry represents a blacklisted peer in the domain model.
+// If Permanent is true, ExpiresAt should be nil; otherwise ExpiresAt should be non-nil.
+type BlacklistEntry struct {
+	PeerID    string     `json:"peer_id"`
+	Reason    string     `json:"reason"`
+	Timestamp time.Time  `json:"timestamp"`
+	Permanent bool       `json:"permanent"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil for permanent blacklists
+}

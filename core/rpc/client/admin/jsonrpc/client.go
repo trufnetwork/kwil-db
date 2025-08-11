@@ -247,6 +247,74 @@ func (cl *Client) ListPeers(ctx context.Context) ([]string, error) {
 	return res.Peers, err
 }
 
+// BlacklistPeer adds a peer to the node's blacklist.
+func (cl *Client) BlacklistPeer(ctx context.Context, peerID string, reason string, duration time.Duration) error {
+	// Convert time.Duration to string format for JSON transport
+	var durationStr string
+	if duration > 0 {
+		durationStr = duration.String()
+	}
+
+	cmd := &adminjson.BlacklistPeerRequest{
+		PeerID:   peerID,
+		Reason:   reason,
+		Duration: durationStr,
+	}
+	res := &adminjson.BlacklistPeerResponse{}
+	return cl.CallMethod(ctx, string(adminjson.MethodBlacklistPeer), cmd, res)
+}
+
+// RemoveBlacklistedPeer removes a peer from the node's blacklist.
+func (cl *Client) RemoveBlacklistedPeer(ctx context.Context, peerID string) error {
+	cmd := &adminjson.RemoveBlacklistedPeerRequest{
+		PeerID: peerID,
+	}
+	res := &adminjson.RemoveBlacklistedPeerResponse{}
+	return cl.CallMethod(ctx, string(adminjson.MethodRemoveBlacklistedPeer), cmd, res)
+}
+
+// ListBlacklistedPeers lists all peers in the node's blacklist.
+func (cl *Client) ListBlacklistedPeers(ctx context.Context) ([]*adminTypes.BlacklistEntry, error) {
+	cmd := &adminjson.ListBlacklistedPeersRequest{}
+	res := &adminjson.ListBlacklistedPeersResponse{}
+	err := cl.CallMethod(ctx, string(adminjson.MethodListBlacklistedPeers), cmd, res)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert from JSON types to domain types
+	entries := make([]*adminTypes.BlacklistEntry, len(res.BlacklistedPeers))
+	for i, jsonEntry := range res.BlacklistedPeers {
+		entry := &adminTypes.BlacklistEntry{
+			PeerID:    jsonEntry.PeerID,
+			Reason:    jsonEntry.Reason,
+			Permanent: jsonEntry.Permanent,
+		}
+
+		// Parse timestamp with fallback to handle both RFC3339 and RFC3339Nano
+		if jsonEntry.Timestamp != "" {
+			if timestamp, err := time.Parse(time.RFC3339, jsonEntry.Timestamp); err == nil {
+				entry.Timestamp = timestamp
+			} else if timestamp, err := time.Parse(time.RFC3339Nano, jsonEntry.Timestamp); err == nil {
+				entry.Timestamp = timestamp
+			}
+		}
+
+		// Parse expiry time for temporary entries with fallback precision
+		if !jsonEntry.Permanent && jsonEntry.ExpiresAt != "" {
+			if expiresAt, err := time.Parse(time.RFC3339, jsonEntry.ExpiresAt); err == nil {
+				entry.ExpiresAt = &expiresAt
+			} else if expiresAt, err := time.Parse(time.RFC3339Nano, jsonEntry.ExpiresAt); err == nil {
+				entry.ExpiresAt = &expiresAt
+			}
+		}
+
+		entries[i] = entry
+	}
+
+	return entries, nil
+}
+
 // Create Resolution broadcasts a resolution to the network.
 func (cl *Client) CreateResolution(ctx context.Context, resolution []byte, resolutionType string) (types.Hash, error) {
 	cmd := &adminjson.CreateResolutionRequest{
