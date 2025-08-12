@@ -1254,14 +1254,14 @@ func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Durat
 	}
 
 	pm.blacklistedPeers[pid] = entry
+	// Capture values needed for logging/metrics while holding the lock
 	blacklistCount := len(pm.blacklistedPeers)
-	pm.blacklistMtx.Unlock()
-
-	// Enhanced structured logging
 	expiresAt := "never"
 	if !entry.Permanent {
 		expiresAt = entry.ExpiresAt.Format(time.RFC3339)
 	}
+
+	// Enhanced structured logging and metrics while holding lock
 	pm.log.Info("Peer blacklisted",
 		"peer_id", peerIDStringer(pid),
 		"reason", reason,
@@ -1273,6 +1273,7 @@ func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Durat
 	// Add metrics
 	metrics.Node.BlacklistOperation(context.Background(), "add", reason, entry.Permanent)
 	metrics.Node.BlacklistedPeerCount(context.Background(), blacklistCount)
+	pm.blacklistMtx.Unlock()
 
 	// Remove the peer immediately if it's connected (called after releasing lock)
 	pm.removePeer(pid)
@@ -1288,10 +1289,10 @@ func (pm *PeerMan) RemoveFromBlacklist(pid peer.ID) bool {
 	}
 
 	delete(pm.blacklistedPeers, pid)
+	// Capture blacklistCount while holding the lock
 	blacklistCount := len(pm.blacklistedPeers)
-	pm.blacklistMtx.Unlock()
 
-	// Enhanced structured logging
+	// Enhanced structured logging and metrics while holding lock
 	pm.log.Info("Peer removed from blacklist",
 		"peer_id", peerIDStringer(pid),
 		"operation", "blacklist_remove",
@@ -1301,7 +1302,6 @@ func (pm *PeerMan) RemoveFromBlacklist(pid peer.ID) bool {
 	metrics.Node.BlacklistOperation(context.Background(), "remove", "manual", false)
 	metrics.Node.BlacklistedPeerCount(context.Background(), blacklistCount)
 
-	pm.blacklistMtx.Lock() // Re-acquire lock before returning (defer will unlock)
 	return true
 }
 
