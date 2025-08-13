@@ -281,6 +281,24 @@ func (pm *PeerMan) Start(ctx context.Context) error {
 	return pm.savePeers()
 }
 
+// Close stops any background goroutines and releases resources.
+// This should be called when the PeerMan is no longer needed to prevent goroutine leaks.
+func (pm *PeerMan) Close() error {
+	// Close the WhitelistGater if it exists to stop its background logger
+	if pm.cg != nil {
+		pm.cg.Close()
+	}
+
+	// Signal all goroutines to stop
+	pm.close()
+
+	// Wait for all goroutines to finish
+	pm.wg.Wait()
+
+	// Save peers before shutting down
+	return pm.savePeers()
+}
+
 const (
 	urgentConnInterval = time.Second
 	normalConnInterval = 20 * urgentConnInterval

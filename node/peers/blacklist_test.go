@@ -41,6 +41,7 @@ func TestBlacklistAPIMethods(t *testing.T) {
 
 	pm, err := NewPeerMan(cfg)
 	require.NoError(t, err)
+	defer func() { require.NoError(t, pm.Close()) }()
 
 	// Create test peer ID
 	testPeerID, err := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
@@ -239,6 +240,7 @@ func TestBlacklistPersistence(t *testing.T) {
 
 	pm, err := NewPeerMan(cfg)
 	require.NoError(t, err)
+	defer func() { require.NoError(t, pm.Close()) }()
 
 	// Verify blacklist data was loaded into PeerMan
 	blacklisted1, _ := pm.IsBlacklisted(testPeerID1)
@@ -277,6 +279,7 @@ func TestBlacklistExpiredEntryHandling(t *testing.T) {
 
 		pm1, err := NewPeerMan(cfg1)
 		require.NoError(t, err)
+		defer func() { require.NoError(t, pm1.Close()) }()
 
 		// Note: We don't need to add keys to peerstore for blacklist testing
 
@@ -309,6 +312,7 @@ func TestBlacklistExpiredEntryHandling(t *testing.T) {
 
 		pm2, err := NewPeerMan(cfg2)
 		require.NoError(t, err)
+		defer func() { require.NoError(t, pm2.Close()) }()
 
 		// Verify expired entry was not loaded
 		blacklisted, _ := pm2.IsBlacklisted(testPeerID)

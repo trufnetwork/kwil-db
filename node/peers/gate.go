@@ -263,19 +263,26 @@ func (g *WhitelistGater) startAggregateLogger() {
 // stopAggregateLogger stops the background logging goroutine
 func (g *WhitelistGater) stopAggregateLogger() {
 	g.statsMtx.Lock()
-	defer g.statsMtx.Unlock()
-
 	if !g.loggerStarted {
+		g.statsMtx.Unlock()
 		return
 	}
-
+	// Stop logger
 	close(g.stopLogger)
 	g.loggerStarted = false
+	g.statsMtx.Unlock()
+
+	// Best-effort: flush any accumulated stats once at shutdown
+	g.logAggregateStats()
 }
 
 // recordBlockedConnection tracks a blocked connection attempt for aggregate logging
 func (g *WhitelistGater) recordBlockedConnection(peerID peer.ID, reason, direction string) {
 	g.statsMtx.Lock()
+	if !g.loggerStarted {
+		g.statsMtx.Unlock()
+		return
+	}
 	defer g.statsMtx.Unlock()
 
 	key := peerID.String() + ":" + reason + ":" + direction

@@ -214,6 +214,14 @@ func (p *P2PService) Close() error {
 	p.log.Info("Stopping P2P services...")
 	var err error
 
+	// Close PeerMan first to stop background goroutines
+	if pm, ok := p.pm.(*peers.PeerMan); ok {
+		if err1 := pm.Close(); err1 != nil {
+			p.log.Warn("Failed to cleanly stop PeerMan: %v", err1)
+			err = errors.Join(err, fmt.Errorf("failed to stop PeerMan: %w", err1))
+		}
+	}
+
 	if err1 := p.dht.Close(); err1 != nil {
 		p.log.Warn("Failed to cleanly stop the DHT service: %v", err1)
 		err = errors.Join(err, fmt.Errorf("failed to stop DHT: %w", err1))

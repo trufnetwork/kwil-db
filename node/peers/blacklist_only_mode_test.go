@@ -51,6 +51,7 @@ func TestBlacklistOnlyModeIntegration(t *testing.T) {
 		// Create PeerMan (this initializes the blacklist functionality)
 		peerMan, err := NewPeerMan(peerManCfg)
 		require.NoError(t, err, "PeerMan creation should succeed")
+		defer func() { require.NoError(t, peerMan.Close()) }()
 		require.NotNil(t, peerMan)
 
 		// Test blacklist operations
