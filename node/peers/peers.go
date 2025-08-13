@@ -295,8 +295,12 @@ func (pm *PeerMan) Close() error {
 	// Wait for all goroutines to finish
 	pm.wg.Wait()
 
-	// Save peers before shutting down
-	return pm.savePeers()
+	// Save peers before shutting down (ignore errors during shutdown)
+	if err := pm.savePeers(); err != nil {
+		// Log the error but don't fail the close operation
+		pm.log.Warnf("Failed to save peers during shutdown: %v", err)
+	}
+	return nil
 }
 
 const (
