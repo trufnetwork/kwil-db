@@ -51,6 +51,7 @@ func TestBlacklistOnlyModeIntegration(t *testing.T) {
 		// Create PeerMan (this initializes the blacklist functionality)
 		peerMan, err := NewPeerMan(peerManCfg)
 		require.NoError(t, err, "PeerMan creation should succeed")
+		defer func() { require.NoError(t, peerMan.Close()) }()
 		require.NotNil(t, peerMan)
 
 		// Test blacklist operations
@@ -76,6 +77,7 @@ func TestBlacklistOnlyModeIntegration(t *testing.T) {
 				WithWhitelistEnforcement(false), // Don't enforce whitelist (blacklist-only mode)
 				WithPeerMan(peerMan),
 			)
+			defer gater.Close() // Clean up background goroutine
 
 			require.NotNil(t, gater, "WhitelistGater should be created successfully")
 
@@ -102,6 +104,7 @@ func TestBlacklistOnlyModeIntegration(t *testing.T) {
 				WithWhitelistEnforcement(false),
 				WithPeerMan(peerMan),
 			)
+			defer gater.Close() // Clean up background goroutine
 
 			// Initially, testPeer1 should be allowed
 			require.True(t, gater.IsAllowed(testPeer1), "Peer should initially be allowed")

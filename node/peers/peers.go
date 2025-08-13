@@ -109,6 +109,9 @@ type PeerMan struct {
 	done  chan struct{}
 	close func()
 	wg    sync.WaitGroup
+	// startCancel cancels the context passed to Start() to ensure goroutines are properly stopped
+	startCancelMtx sync.Mutex
+	startCancel    context.CancelFunc
 
 	// TODO: revise address book file format as needed if these should persist
 	mtx         sync.Mutex
@@ -216,11 +219,31 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 }
 
 func (pm *PeerMan) Start(ctx context.Context) error {
+	// Create a cancellable context so Close() can properly stop all goroutines
+	ctx, cancel := context.WithCancel(ctx)
+
+	// Set startCancel under lock to prevent race conditions
+	pm.startCancelMtx.Lock()
+	pm.startCancel = cancel
+	pm.startCancelMtx.Unlock()
+
+	// Ensure cancel is always called when Start exits
+	defer func() {
+		pm.startCancelMtx.Lock()
+		localCancel := pm.startCancel
+		pm.startCancel = nil
+		pm.startCancelMtx.Unlock()
+		if localCancel != nil {
+			localCancel()
+		}
+	}()
+
 	// listen for messages when peer identification (protocol listing) is completed
 	evtSub, err := pm.h.EventBus().Subscribe(&event.EvtPeerIdentificationCompleted{})
 	if err != nil {
 		return fmt.Errorf("event subscribe failed: %w", err)
 	}
+	defer evtSub.Close() // Ensure event subscription is cleaned up
 	pm.wg.Add(1)
 	go func() {
 		defer pm.wg.Done()
@@ -279,6 +302,37 @@ func (pm *PeerMan) Start(ctx context.Context) error {
 	pm.wg.Wait()
 
 	return pm.savePeers()
+}
+
+// Close stops any background goroutines and releases resources.
+// This should be called when the PeerMan is no longer needed to prevent goroutine leaks.
+func (pm *PeerMan) Close() error {
+	// Close the WhitelistGater if it exists to stop its background logger
+	if pm.cg != nil {
+		pm.cg.Close()
+	}
+
+	// Cancel the Start context to stop all ctx-backed goroutines
+	pm.startCancelMtx.Lock()
+	localCancel := pm.startCancel
+	pm.startCancel = nil
+	pm.startCancelMtx.Unlock()
+	if localCancel != nil {
+		localCancel()
+	}
+
+	// Signal all goroutines to stop
+	pm.close()
+
+	// Wait for all goroutines to finish
+	pm.wg.Wait()
+
+	// Save peers before shutting down (ignore errors during shutdown)
+	if err := pm.savePeers(); err != nil {
+		// Log the error but don't fail the close operation
+		pm.log.Warnf("Failed to save peers during shutdown: %v", err)
+	}
+	return nil
 }
 
 const (
@@ -1260,20 +1314,21 @@ func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Durat
 	if !entry.Permanent {
 		expiresAt = entry.ExpiresAt.Format(time.RFC3339)
 	}
+	isPermanent := entry.Permanent
+	pm.blacklistMtx.Unlock()
 
-	// Enhanced structured logging and metrics while holding lock
+	// Enhanced structured logging and metrics after releasing lock
 	pm.log.Info("Peer blacklisted",
 		"peer_id", peerIDStringer(pid),
 		"reason", reason,
-		"permanent", entry.Permanent,
+		"permanent", isPermanent,
 		"expires_at", expiresAt,
 		"operation", "blacklist_add",
 	)
 
 	// Add metrics
-	metrics.Node.BlacklistOperation(context.Background(), "add", reason, entry.Permanent)
+	metrics.Node.BlacklistOperation(context.Background(), "add", reason, isPermanent)
 	metrics.Node.BlacklistedPeerCount(context.Background(), blacklistCount)
-	pm.blacklistMtx.Unlock()
 
 	// Remove the peer immediately if it's connected (called after releasing lock)
 	pm.removePeer(pid)
@@ -1282,17 +1337,18 @@ func (pm *PeerMan) BlacklistPeer(pid peer.ID, reason string, duration time.Durat
 // RemoveFromBlacklist removes a peer from the blacklist.
 func (pm *PeerMan) RemoveFromBlacklist(pid peer.ID) bool {
 	pm.blacklistMtx.Lock()
-	defer pm.blacklistMtx.Unlock()
 
 	if _, exists := pm.blacklistedPeers[pid]; !exists {
+		pm.blacklistMtx.Unlock()
 		return false
 	}
 
 	delete(pm.blacklistedPeers, pid)
 	// Capture blacklistCount while holding the lock
 	blacklistCount := len(pm.blacklistedPeers)
+	pm.blacklistMtx.Unlock()
 
-	// Enhanced structured logging and metrics while holding lock
+	// Enhanced structured logging and metrics after releasing lock
 	pm.log.Info("Peer removed from blacklist",
 		"peer_id", peerIDStringer(pid),
 		"operation", "blacklist_remove",

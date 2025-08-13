@@ -42,6 +42,7 @@ func createTestPeerMan(t *testing.T) *peers.PeerMan {
 
 	pm, err := peers.NewPeerMan(cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, pm.Close()) })
 	return pm
 }
 

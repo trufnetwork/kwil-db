@@ -105,14 +105,16 @@ func TestPeerDiscoverStream(t *testing.T) {
 		Host:     h1,
 	})
 	require.NoError(t, err)
+	defer func() { require.NoError(t, pm1.Close()) }()
 
 	dir2 := t.TempDir()
-	_, err = NewPeerMan(&Config{
+	pm2, err := NewPeerMan(&Config{
 		PEX:      true,
 		AddrBook: filepath.Join(dir2, "addrbook.json"),
 		Host:     h2,
 	})
 	require.NoError(t, err)
+	defer func() { require.NoError(t, pm2.Close()) }()
 
 	// connect h1 and h2 (not h3)
 	linkPeers(t, mn, pid1, pid2)

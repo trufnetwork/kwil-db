@@ -117,6 +117,7 @@ func TestBlacklistMetricsIntegration(t *testing.T) {
 
 	pm, err := NewPeerMan(cfg)
 	require.NoError(t, err)
+	defer func() { require.NoError(t, pm.Close()) }()
 
 	// Create test peer ID
 	testPeerID, err := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
@@ -235,6 +236,7 @@ func TestBlacklistStructuredLogging(t *testing.T) {
 
 	pm, err := NewPeerMan(cfg)
 	require.NoError(t, err)
+	defer func() { require.NoError(t, pm.Close()) }()
 
 	// Create test peer ID
 	testPeerID, err := peer.Decode("16Uiu2HAkx2kfP117VnYnaQGprgXBoMpjfxGXCpizju3cX7ZUzRhv")
@@ -360,6 +362,7 @@ func TestWhitelistGaterMetrics(t *testing.T) {
 		WithPeerMan(mockPeerMan),
 		WithWhitelistEnforcement(false), // blacklist-only mode
 	)
+	defer gater.Close() // Clean up background goroutine
 
 	t.Run("OutboundConnectionBlocking", func(t *testing.T) {
 		mockMetrics.blockedConns = nil
