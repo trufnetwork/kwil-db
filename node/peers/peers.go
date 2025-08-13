@@ -110,7 +110,8 @@ type PeerMan struct {
 	close func()
 	wg    sync.WaitGroup
 	// startCancel cancels the context passed to Start() to ensure goroutines are properly stopped
-	startCancel context.CancelFunc
+	startCancelMtx sync.Mutex
+	startCancel    context.CancelFunc
 
 	// TODO: revise address book file format as needed if these should persist
 	mtx         sync.Mutex
@@ -220,7 +221,22 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 func (pm *PeerMan) Start(ctx context.Context) error {
 	// Create a cancellable context so Close() can properly stop all goroutines
 	ctx, cancel := context.WithCancel(ctx)
+
+	// Set startCancel under lock to prevent race conditions
+	pm.startCancelMtx.Lock()
 	pm.startCancel = cancel
+	pm.startCancelMtx.Unlock()
+
+	// Ensure cancel is always called when Start exits
+	defer func() {
+		pm.startCancelMtx.Lock()
+		localCancel := pm.startCancel
+		pm.startCancel = nil
+		pm.startCancelMtx.Unlock()
+		if localCancel != nil {
+			localCancel()
+		}
+	}()
 
 	// listen for messages when peer identification (protocol listing) is completed
 	evtSub, err := pm.h.EventBus().Subscribe(&event.EvtPeerIdentificationCompleted{})
@@ -285,9 +301,6 @@ func (pm *PeerMan) Start(ctx context.Context) error {
 
 	pm.wg.Wait()
 
-	// Clear the cancel function since Start is exiting
-	pm.startCancel = nil
-
 	return pm.savePeers()
 }
 
@@ -300,8 +313,12 @@ func (pm *PeerMan) Close() error {
 	}
 
 	// Cancel the Start context to stop all ctx-backed goroutines
-	if pm.startCancel != nil {
-		pm.startCancel()
+	pm.startCancelMtx.Lock()
+	localCancel := pm.startCancel
+	pm.startCancel = nil
+	pm.startCancelMtx.Unlock()
+	if localCancel != nil {
+		localCancel()
 	}
 
 	// Signal all goroutines to stop
