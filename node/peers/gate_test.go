@@ -164,3 +164,75 @@ func TestWhitelistGaterBlacklistUpdates(t *testing.T) {
 	// Peer should be allowed again
 	require.True(t, gater.IsAllowed(testPeer))
 }
+
+func TestWhitelistGaterAggregateLogging(t *testing.T) {
+	// Create test peer IDs
+	blackPeer, err := peer.Decode("16Uiu2HAkwWNgvbTRuKi9dRhWJN3cZPJ6LKN2Y3zRF1XkEVJgvVoE")
+	require.NoError(t, err)
+
+	t.Run("AggregateLoggingBasicFunctionality", func(t *testing.T) {
+		// Create mock PeerMan with blacklisted peer
+		mockPM := &mockPeerMan{
+			blacklistedPeers: map[peer.ID]string{
+				blackPeer: "testing aggregate logging",
+			},
+		}
+
+		// Create gater with aggregate logging
+		gater := NewWhitelistGater([]peer.ID{},
+			WithLogger(log.DiscardLogger),
+			WithPeerMan(mockPM),
+			WithWhitelistEnforcement(false), // Blacklist-only mode
+		)
+		defer gater.Close()
+
+		// Simulate multiple blocked connection attempts
+		for i := 0; i < 5; i++ {
+			// These should be blocked and recorded for aggregate logging
+			require.False(t, gater.InterceptSecured(network.DirInbound, blackPeer, nil))
+			require.False(t, gater.InterceptPeerDial(blackPeer))
+		}
+
+		// Verify stats were recorded internally
+		gater.statsMtx.Lock()
+		statsCount := len(gater.blockedStats)
+		gater.statsMtx.Unlock()
+
+		require.Greater(t, statsCount, 0, "Expected blocked connection stats to be recorded")
+
+		// Trigger aggregate logging (this would normally happen every 30 seconds)
+		gater.logAggregateStats()
+
+		// Verify stats were cleared after logging
+		gater.statsMtx.Lock()
+		statsCountAfter := len(gater.blockedStats)
+		gater.statsMtx.Unlock()
+
+		require.Equal(t, 0, statsCountAfter, "Expected stats to be cleared after aggregate logging")
+	})
+
+	t.Run("AggregateLoggerLifecycle", func(t *testing.T) {
+		mockPM := &mockPeerMan{}
+
+		// Create gater
+		gater := NewWhitelistGater([]peer.ID{},
+			WithLogger(log.DiscardLogger),
+			WithPeerMan(mockPM),
+		)
+
+		// Verify logger started
+		gater.statsMtx.Lock()
+		started := gater.loggerStarted
+		gater.statsMtx.Unlock()
+		require.True(t, started, "Expected aggregate logger to start automatically")
+
+		// Close gater
+		gater.Close()
+
+		// Verify logger stopped
+		gater.statsMtx.Lock()
+		stopped := !gater.loggerStarted
+		gater.statsMtx.Unlock()
+		require.True(t, stopped, "Expected aggregate logger to stop after Close()")
+	})
+}

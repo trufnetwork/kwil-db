@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/control"
@@ -15,6 +16,13 @@ import (
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/node/metrics"
 )
+
+// blockedConnectionStats tracks blocked connection attempts for aggregate logging
+type blockedConnectionStats struct {
+	peerID string
+	reason string
+	count  int
+}
 
 // WhitelistGater is a libp2p connmgr.ConnectionGater implementation to enforce
 // a peer whitelist and blacklist.
@@ -34,6 +42,12 @@ type WhitelistGater struct {
 	// When false, only blacklist checking is performed (blacklist-only mode)
 	// When true, both whitelist and blacklist are enforced (private mode)
 	enforceWhitelist bool
+
+	// Aggregate logging for blocked connections
+	statsMtx      sync.Mutex
+	blockedStats  map[string]*blockedConnectionStats // key: "peerID:reason"
+	stopLogger    chan struct{}
+	loggerStarted bool
 }
 
 type gateOpts struct {
@@ -114,12 +128,19 @@ func NewWhitelistGater(allowed []peer.ID, opts ...GateOpt) *WhitelistGater {
 		permitted[pid] = true
 	}
 
-	return &WhitelistGater{
+	g := &WhitelistGater{
 		logger:           options.logger,
 		permitted:        permitted,
 		peerMan:          options.peerMan,
 		enforceWhitelist: options.enforceWhitelist,
+		blockedStats:     make(map[string]*blockedConnectionStats),
+		stopLogger:       make(chan struct{}),
 	}
+
+	// Start aggregate logging goroutine
+	g.startAggregateLogger()
+
+	return g
 }
 
 // SetPeerMan sets the peer manager reference for blacklist checking.
@@ -131,6 +152,14 @@ func (g *WhitelistGater) SetPeerMan(peerMan interface{ IsBlacklisted(peer.ID) (b
 	g.peerManMtx.Lock()
 	g.peerMan = peerMan
 	g.peerManMtx.Unlock()
+}
+
+// Close stops the aggregate logger and cleans up resources
+func (g *WhitelistGater) Close() {
+	if g == nil {
+		return
+	}
+	g.stopAggregateLogger()
 }
 
 // Allow and Disallow work with a nil *WhitelistGater, but not the
@@ -202,6 +231,112 @@ func (g *WhitelistGater) IsAllowed(p peer.ID) bool {
 	return true
 }
 
+// startAggregateLogger starts the background goroutine for aggregate logging
+func (g *WhitelistGater) startAggregateLogger() {
+	g.statsMtx.Lock()
+	defer g.statsMtx.Unlock()
+
+	if g.loggerStarted {
+		return
+	}
+	g.loggerStarted = true
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-g.stopLogger:
+				return
+			case <-ticker.C:
+				g.logAggregateStats()
+			}
+		}
+	}()
+}
+
+// stopAggregateLogger stops the background logging goroutine
+func (g *WhitelistGater) stopAggregateLogger() {
+	g.statsMtx.Lock()
+	defer g.statsMtx.Unlock()
+
+	if !g.loggerStarted {
+		return
+	}
+
+	close(g.stopLogger)
+	g.loggerStarted = false
+}
+
+// recordBlockedConnection tracks a blocked connection attempt for aggregate logging
+func (g *WhitelistGater) recordBlockedConnection(peerID peer.ID, reason, direction string) {
+	g.statsMtx.Lock()
+	defer g.statsMtx.Unlock()
+
+	key := peerID.String() + ":" + reason + ":" + direction
+	if stats, exists := g.blockedStats[key]; exists {
+		stats.count++
+	} else {
+		g.blockedStats[key] = &blockedConnectionStats{
+			peerID: peerID.String(),
+			reason: reason,
+			count:  1,
+		}
+	}
+}
+
+// logAggregateStats logs a summary of blocked connections since last report
+func (g *WhitelistGater) logAggregateStats() {
+	g.statsMtx.Lock()
+	defer g.statsMtx.Unlock()
+
+	if len(g.blockedStats) == 0 {
+		return // No blocked connections to report
+	}
+
+	// Calculate totals
+	totalBlocked := 0
+	inboundBlocked := 0
+	outboundBlocked := 0
+	peerCounts := make(map[string]int)
+	reasonCounts := make(map[string]int)
+
+	for key, stats := range g.blockedStats {
+		totalBlocked += stats.count
+		peerCounts[stats.peerID] += stats.count
+		reasonCounts[stats.reason] += stats.count
+
+		// Determine direction from key
+		if key[len(key)-7:] == "inbound" {
+			inboundBlocked += stats.count
+		} else if key[len(key)-8:] == "outbound" {
+			outboundBlocked += stats.count
+		}
+	}
+
+	// Log structured summary
+	g.logger.Info("Blacklist connection blocking summary",
+		"total_blocked", totalBlocked,
+		"inbound_blocked", inboundBlocked,
+		"outbound_blocked", outboundBlocked,
+		"unique_peers", len(peerCounts),
+		"operation", "blacklist_summary",
+	)
+
+	// Log detailed breakdown if there are many blocked attempts
+	if totalBlocked > 10 {
+		g.logger.Info("Top blocked peers and reasons",
+			"peer_counts", peerCounts,
+			"reason_counts", reasonCounts,
+			"operation", "blacklist_detail",
+		)
+	}
+
+	// Clear stats for next period
+	g.blockedStats = make(map[string]*blockedConnectionStats)
+}
+
 var _ connmgr.ConnectionGater = (*WhitelistGater)(nil)
 
 // OUTBOUND
@@ -216,8 +351,8 @@ func (g *WhitelistGater) InterceptPeerDial(p peer.ID) bool {
 			// Add metrics
 			metrics.Node.BlockedConnection(context.Background(), "outbound", reason)
 
-			// Existing logging (rate limiting handled elsewhere)
-			g.logger.Infof("Blocking OUTBOUND dial to blacklisted peer %v (reason: %s)", p, reason)
+			// Record for aggregate logging instead of immediate log
+			g.recordBlockedConnection(p, reason, "outbound")
 			return false
 		}
 	}
@@ -260,10 +395,14 @@ func (g *WhitelistGater) InterceptSecured(dir network.Direction, p peer.ID, conn
 	if peerMan != nil {
 		if blacklisted, reason := peerMan.IsBlacklisted(p); blacklisted {
 			// Add metrics
-			metrics.Node.BlockedConnection(context.Background(), "inbound", reason)
+			directionStr := "inbound"
+			if dir == network.DirOutbound {
+				directionStr = "outbound"
+			}
+			metrics.Node.BlockedConnection(context.Background(), directionStr, reason)
 
-			// Existing logging (rate limiting handled elsewhere)
-			g.logger.Infof("Blocking INBOUND connection from blacklisted peer %v (reason: %s)", p, reason)
+			// Record for aggregate logging instead of immediate log
+			g.recordBlockedConnection(p, reason, directionStr)
 			return false
 		}
 	}
