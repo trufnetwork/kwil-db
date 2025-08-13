@@ -3,6 +3,7 @@ package peers
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,6 +115,9 @@ func (g *OutboundWhitelistGater) InterceptUpgraded(conn network.Conn) (bool, con
 	return true, 0
 }
 
+// NewWhitelistGater creates a new WhitelistGater that enforces peer whitelist and blacklist rules.
+// The returned gater starts a background goroutine for aggregate logging that must be stopped
+// by calling Close() when the gater is no longer needed to prevent goroutine leaks.
 func NewWhitelistGater(allowed []peer.ID, opts ...GateOpt) *WhitelistGater {
 	options := &gateOpts{
 		logger:           log.DiscardLogger,
@@ -307,10 +311,10 @@ func (g *WhitelistGater) logAggregateStats() {
 		peerCounts[stats.peerID] += stats.count
 		reasonCounts[stats.reason] += stats.count
 
-		// Determine direction from key
-		if key[len(key)-7:] == "inbound" {
+		// Determine direction from key safely
+		if strings.HasSuffix(key, "inbound") {
 			inboundBlocked += stats.count
-		} else if key[len(key)-8:] == "outbound" {
+		} else if strings.HasSuffix(key, "outbound") {
 			outboundBlocked += stats.count
 		}
 	}

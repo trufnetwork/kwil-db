@@ -360,6 +360,7 @@ func TestWhitelistGaterMetrics(t *testing.T) {
 		WithPeerMan(mockPeerMan),
 		WithWhitelistEnforcement(false), // blacklist-only mode
 	)
+	defer gater.Close() // Clean up background goroutine
 
 	t.Run("OutboundConnectionBlocking", func(t *testing.T) {
 		mockMetrics.blockedConns = nil

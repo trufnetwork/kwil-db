@@ -187,7 +187,7 @@ func TestWhitelistGaterAggregateLogging(t *testing.T) {
 		defer gater.Close()
 
 		// Simulate multiple blocked connection attempts
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// These should be blocked and recorded for aggregate logging
 			require.False(t, gater.InterceptSecured(network.DirInbound, blackPeer, nil))
 			require.False(t, gater.InterceptPeerDial(blackPeer))
