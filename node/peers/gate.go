@@ -13,6 +13,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	msmux "github.com/multiformats/go-multistream"
 	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/node/metrics"
 )
 
 // WhitelistGater is a libp2p connmgr.ConnectionGater implementation to enforce
@@ -212,6 +213,10 @@ func (g *WhitelistGater) InterceptPeerDial(p peer.ID) bool {
 	g.peerManMtx.RUnlock()
 	if peerMan != nil {
 		if blacklisted, reason := peerMan.IsBlacklisted(p); blacklisted {
+			// Add metrics
+			metrics.Node.BlockedConnection(context.Background(), "outbound", reason)
+
+			// Existing logging (rate limiting handled elsewhere)
 			g.logger.Infof("Blocking OUTBOUND dial to blacklisted peer %v (reason: %s)", p, reason)
 			return false
 		}
@@ -254,6 +259,10 @@ func (g *WhitelistGater) InterceptSecured(dir network.Direction, p peer.ID, conn
 	g.peerManMtx.RUnlock()
 	if peerMan != nil {
 		if blacklisted, reason := peerMan.IsBlacklisted(p); blacklisted {
+			// Add metrics
+			metrics.Node.BlockedConnection(context.Background(), "inbound", reason)
+
+			// Existing logging (rate limiting handled elsewhere)
 			g.logger.Infof("Blocking INBOUND connection from blacklisted peer %v (reason: %s)", p, reason)
 			return false
 		}

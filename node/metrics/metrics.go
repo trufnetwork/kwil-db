@@ -73,6 +73,12 @@ var (
 	txReannounceCounter      metric.Int64Counter
 	txReannounceBytesCounter metric.Int64Counter
 
+	// Blacklist metrics
+	blacklistOperationsCounter  metric.Int64Counter // blacklist add/remove operations
+	blacklistedPeersGauge       metric.Int64Gauge   // current number of blacklisted peers
+	autoBlacklistCounter        metric.Int64Counter // auto-blacklist events
+	blacklistConnectionsBlocked metric.Int64Counter // blocked connections due to blacklist
+
 	// Block store metrics
 	bsBlocksStoredCounter          metric.Int64Counter
 	bsBlockBytesStoredCounter      metric.Int64Counter
@@ -132,6 +138,12 @@ func init() {
 	advertiseAcceptCounter, _ = nodeMeter.Int64Counter("node.advertisements_sent.accept.count")
 	txReannounceCounter, _ = nodeMeter.Int64Counter("node.tx_reannounce.count")
 	txReannounceBytesCounter, _ = nodeMeter.Int64Counter("node.tx_reannounce.bytes")
+
+	// Blacklist metrics
+	blacklistOperationsCounter, _ = nodeMeter.Int64Counter("node.blacklist.operations.count")
+	blacklistedPeersGauge, _ = nodeMeter.Int64Gauge("node.blacklist.peers.total")
+	autoBlacklistCounter, _ = nodeMeter.Int64Counter("node.blacklist.auto.count")
+	blacklistConnectionsBlocked, _ = nodeMeter.Int64Counter("node.blacklist.connections_blocked.count")
 	// rebroadcasts etc...
 
 	// Consensus metrics
@@ -188,6 +200,12 @@ type NodeMetrics interface {
 	AdvertiseRejected(ctx context.Context, protocol string)
 	AdvertiseServed(ctx context.Context, protocol string, contentLen int64)
 	TxnsReannounced(ctx context.Context, num, totalSize int64)
+
+	// Blacklist metrics methods
+	BlacklistOperation(ctx context.Context, operation, reason string, permanent bool)
+	BlacklistedPeerCount(ctx context.Context, count int)
+	AutoBlacklistEvent(ctx context.Context, reason string, attempts int64)
+	BlockedConnection(ctx context.Context, direction, reason string)
 }
 
 type nodeMetrics struct{}
@@ -236,6 +254,42 @@ func (nodeMetrics) TxnsReannounced(ctx context.Context, num, totalSize int64) {
 		metric.WithAttributes(attribute.Int64("size", totalSize)),
 	)
 	txReannounceBytesCounter.Add(ctx, totalSize)
+}
+
+// BlacklistOperation records a blacklist add or remove operation
+func (nodeMetrics) BlacklistOperation(ctx context.Context, operation, reason string, permanent bool) {
+	blacklistOperationsCounter.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("operation", operation), // "add" or "remove"
+			attribute.String("reason", reason),
+			attribute.Bool("permanent", permanent),
+		),
+	)
+}
+
+// BlacklistedPeerCount records the current number of blacklisted peers
+func (nodeMetrics) BlacklistedPeerCount(ctx context.Context, count int) {
+	blacklistedPeersGauge.Record(ctx, int64(count))
+}
+
+// AutoBlacklistEvent records an automatic blacklist event
+func (nodeMetrics) AutoBlacklistEvent(ctx context.Context, reason string, attempts int64) {
+	autoBlacklistCounter.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("reason", reason),
+			attribute.Int64("attempts", attempts),
+		),
+	)
+}
+
+// BlockedConnection records a connection blocked due to blacklist
+func (nodeMetrics) BlockedConnection(ctx context.Context, direction, reason string) {
+	blacklistConnectionsBlocked.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("direction", direction), // "inbound" or "outbound"
+			attribute.String("reason", reason),
+		),
+	)
 }
 
 type DBMetrics interface {
