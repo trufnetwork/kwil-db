@@ -203,3 +203,61 @@ func TestBlacklistOnlyModeWithFullP2PSetup(t *testing.T) {
 	require.True(t, pm.IsAllowed(unknownPeer),
 		"PeerMan's gater must allow unknown peers in blacklist-only mode")
 }
+
+// TestDynamicWhitelistUpdatesPropagate verifies that dynamic whitelist updates
+// from PeerMan propagate to the shared Host gater
+func TestDynamicWhitelistUpdatesPropagate(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Decode a test peer
+	newPeer, err := peer.Decode("16Uiu2HAkwWNgvbTRuKi9dRhWJN3cZPJ6LKN2Y3zRF1XkEVJgvVoE")
+	require.NoError(t, err)
+
+	// Create a WhitelistGater with whitelist enforcement enabled (private mode)
+	wcg := NewWhitelistGater(nil, // Start with empty whitelist
+		WithLogger(log.DiscardLogger),
+		WithWhitelistEnforcement(true)) // Enable whitelist enforcement
+	defer wcg.Close()
+
+	// Start a libp2p Host using that gater
+	host, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.ConnectionGater(wcg))
+	require.NoError(t, err)
+	defer host.Close()
+
+	// Construct a PeerMan using the same gater
+	cfg := &Config{
+		PEX:               false,
+		AddrBook:          filepath.Join(tempDir, "addrbook.json"),
+		Logger:            log.DiscardLogger,
+		ChainID:           "test-chain-dynamic",
+		Host:              host,
+		ConnGater:         wcg, // Same gater instance
+		TargetConnections: 5,
+	}
+
+	pm, err := NewPeerMan(cfg)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, pm.Close()) }()
+
+	// Verify both gaters are the same instance
+	require.Same(t, wcg, pm.cg,
+		"Host and PeerMan must share the same gater instance")
+
+	// Assert both wcg.IsAllowed(newPeer) and pm.IsAllowed(newPeer) are false initially
+	require.False(t, wcg.IsAllowed(newPeer),
+		"New peer should not be allowed initially in private mode")
+	require.False(t, pm.IsAllowed(newPeer),
+		"New peer should not be allowed initially via PeerMan")
+
+	// Call pm.AllowPersistent(newPeer) to add peer to persistent whitelist
+	pm.AllowPersistent(newPeer)
+
+	// Assert both pm.IsAllowed(newPeer) and wcg.IsAllowed(newPeer) are true
+	// This verifies that dynamic whitelist updates propagate through the shared gater
+	require.True(t, pm.IsAllowed(newPeer),
+		"New peer should be allowed after AllowPersistent via PeerMan")
+	require.True(t, wcg.IsAllowed(newPeer),
+		"New peer should be allowed after AllowPersistent via shared Host gater")
+}
