@@ -9,6 +9,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/metrics"
 
 	"github.com/libp2p/go-libp2p"
@@ -104,7 +105,7 @@ func TestBlacklistMetricsIntegration(t *testing.T) {
 	blacklistConfig := config.BlacklistConfig{
 		Enable:                    true,
 		AutoBlacklistOnMaxRetries: true,
-		AutoBlacklistDuration:     time.Hour,
+		AutoBlacklistDuration:     types.Duration(time.Hour),
 	}
 
 	// Create PeerMan config
@@ -182,7 +183,7 @@ func TestBlacklistMetricsIntegration(t *testing.T) {
 		// Simulate the auto-blacklist scenario directly (like in maintainMinPeers)
 		// Instead of using a real backoffer, simulate the condition where max attempts are reached
 		maxAttempts := 500
-		duration := pm.blacklistConfig.AutoBlacklistDuration
+		duration := time.Duration(pm.blacklistConfig.AutoBlacklistDuration)
 
 		// This simulates the exact metrics calls from maintainMinPeers
 		metrics.Node.AutoBlacklistEvent(context.Background(), "connection_exhaustion", int64(maxAttempts))
@@ -223,7 +224,7 @@ func TestBlacklistStructuredLogging(t *testing.T) {
 	blacklistConfig := config.BlacklistConfig{
 		Enable:                    true,
 		AutoBlacklistOnMaxRetries: true,
-		AutoBlacklistDuration:     time.Hour,
+		AutoBlacklistDuration:     types.Duration(time.Hour),
 	}
 
 	// Create PeerMan config with test logger
@@ -309,7 +310,7 @@ func TestBlacklistStructuredLogging(t *testing.T) {
 		logBuffer.Reset()
 
 		// Simulate auto-blacklist logging (this would normally be called from maintainMinPeers)
-		duration := pm.blacklistConfig.AutoBlacklistDuration
+		duration := time.Duration(pm.blacklistConfig.AutoBlacklistDuration)
 		attempts := 500
 
 		// This replicates the logging from maintainMinPeers
