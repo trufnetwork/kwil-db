@@ -211,8 +211,10 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 
 	// If we have a WhitelistGater, set the PeerMan reference for blacklist checking
 	if cfg.ConnGater != nil {
-		// Update the WhitelistGater with PeerMan reference
-		pm.cg = NewWhitelistGater(cfg.ConnGater.Allowed(), WithLogger(cfg.ConnGater.logger), WithPeerMan(pm))
+		// Use the existing gater instead of recreating it to preserve its configuration
+		// (e.g., enforceWhitelist setting for blacklist-only mode)
+		pm.cg = cfg.ConnGater
+		cfg.ConnGater.SetPeerMan(pm)
 	}
 
 	return pm, nil
