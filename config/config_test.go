@@ -496,3 +496,74 @@ func TestStateSyncStreamTimeout(t *testing.T) {
 		t.Errorf("Expected custom StreamTimeout to be %v, got %v", expectedCustom, actualCustom)
 	}
 }
+
+func TestBlacklistAutoBlacklistDuration(t *testing.T) {
+	tests := []struct {
+		name     string
+		toml     string
+		expected time.Duration
+	}{
+		{
+			name: "human readable duration - hours",
+			toml: `
+[p2p.blacklist]
+enable = true
+auto_blacklist_on_max_retries = true
+auto_blacklist_duration = "2h"
+`,
+			expected: 2 * time.Hour,
+		},
+		{
+			name: "human readable duration - minutes",
+			toml: `
+[p2p.blacklist]
+enable = true
+auto_blacklist_on_max_retries = true
+auto_blacklist_duration = "30m"
+`,
+			expected: 30 * time.Minute,
+		},
+		{
+			name: "human readable duration - complex",
+			toml: `
+[p2p.blacklist]
+enable = true
+auto_blacklist_on_max_retries = true
+auto_blacklist_duration = "1h30m45s"
+`,
+			expected: time.Hour + 30*time.Minute + 45*time.Second,
+		},
+		{
+			name: "zero duration for permanent",
+			toml: `
+[p2p.blacklist]
+enable = true
+auto_blacklist_on_max_retries = true
+auto_blacklist_duration = "0s"
+`,
+			expected: 0,
+		},
+		{
+			name: "hour as string",
+			toml: `
+[p2p.blacklist]
+enable = true
+auto_blacklist_on_max_retries = true
+auto_blacklist_duration = "1h"
+`,
+			expected: time.Hour,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg Config
+			err := cfg.FromTOML([]byte(tt.toml))
+			require.NoError(t, err)
+
+			actual := time.Duration(cfg.P2P.Blacklist.AutoBlacklistDuration)
+			require.Equal(t, tt.expected, actual,
+				"expected %v, got %v", tt.expected, actual)
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/core/types"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -353,7 +354,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    true,
 				AutoBlacklistOnMaxRetries: true,
-				AutoBlacklistDuration:     2 * time.Hour, // Test with 2 hour duration
+				AutoBlacklistDuration:     types.Duration(2 * time.Hour), // Test with 2 hour duration
 			},
 		}
 
@@ -385,7 +386,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 
 		// Simulate the auto-blacklist logic from maintainMinPeers
 		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
-			duration := pm.blacklistConfig.AutoBlacklistDuration
+			duration := time.Duration(pm.blacklistConfig.AutoBlacklistDuration)
 			pm.BlacklistPeer(testPeerID, "connection_exhaustion", duration) // configurable duration blacklist
 		}
 
@@ -423,7 +424,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    true,
 				AutoBlacklistOnMaxRetries: true,
-				AutoBlacklistDuration:     0, // Permanent blacklist
+				AutoBlacklistDuration:     types.Duration(0), // Permanent blacklist
 			},
 		}
 
@@ -437,7 +438,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 
 		// Simulate the auto-blacklist logic with permanent duration
 		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
-			pm.BlacklistPeer(testPeerID, "connection_exhaustion", pm.blacklistConfig.AutoBlacklistDuration)
+			pm.BlacklistPeer(testPeerID, "connection_exhaustion", time.Duration(pm.blacklistConfig.AutoBlacklistDuration))
 		}
 
 		// Verify peer is now permanently blacklisted
@@ -462,8 +463,8 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			Logger:   log.DiscardLogger,
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    true,
-				AutoBlacklistOnMaxRetries: false,     // Disabled
-				AutoBlacklistDuration:     time.Hour, // This won't be used since auto-blacklist is disabled
+				AutoBlacklistOnMaxRetries: false,                     // Disabled
+				AutoBlacklistDuration:     types.Duration(time.Hour), // This won't be used since auto-blacklist is disabled
 			},
 		}
 
@@ -479,7 +480,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 		// Simulate the auto-blacklist logic from maintainMinPeers when auto-blacklist is disabled
 		// This should NOT blacklist the peer because AutoBlacklistOnMaxRetries=false
 		if pm.blacklistConfig.Enable && pm.blacklistConfig.AutoBlacklistOnMaxRetries {
-			duration := pm.blacklistConfig.AutoBlacklistDuration
+			duration := time.Duration(pm.blacklistConfig.AutoBlacklistDuration)
 			pm.BlacklistPeer(testPeerID, "connection_exhaustion", duration)
 		}
 		// If auto-blacklist is disabled, the above condition is false and no blacklisting occurs
@@ -502,7 +503,7 @@ func TestAutoBlacklistOnMaxRetries(t *testing.T) {
 			BlacklistConfig: config.BlacklistConfig{
 				Enable:                    false, // Disabled
 				AutoBlacklistOnMaxRetries: true,
-				AutoBlacklistDuration:     time.Hour, // This won't be used since blacklisting is disabled
+				AutoBlacklistDuration:     types.Duration(time.Hour), // This won't be used since blacklisting is disabled
 			},
 		}
 
