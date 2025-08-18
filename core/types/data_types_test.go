@@ -149,6 +149,13 @@ func Test_ParseDataTypes(t *testing.T) {
 			},
 		},
 		{
+			in: "smallint[]",
+			out: DataType{
+				Name:    int4Str,
+				IsArray: true,
+			},
+		},
+		{
 			in: "text[]",
 			out: DataType{
 				Name:    textStr,

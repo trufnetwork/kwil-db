@@ -49,8 +49,10 @@ func registerDatatype(scalar *datatype, array *datatype) {
 		}
 
 		dataTypesByMatch[match] = scalar
-		datatypes[scalar] = struct{}{}
 	}
+
+	// Always add scalar to datatypes set, regardless of whether it has Matches
+	datatypes[scalar] = struct{}{}
 
 	for _, match := range array.Matches {
 		_, ok := dataTypesByMatch[match]
@@ -59,8 +61,10 @@ func registerDatatype(scalar *datatype, array *datatype) {
 		}
 
 		dataTypesByMatch[match] = array
-		datatypes[array] = struct{}{}
 	}
+
+	// Always add array to datatypes set, regardless of whether it has Matches
+	datatypes[array] = struct{}{}
 
 	_, ok := kwilTypeToDataType[*scalar.KwilType]
 	if ok {
@@ -261,7 +265,7 @@ var (
 			reflect.TypeOf(int32(0)), reflect.TypeOf(int64(0)), reflect.TypeOf(uint(0)), reflect.TypeOf(uint16(0)),
 			reflect.TypeOf(uint32(0)), reflect.TypeOf(uint64(0))},
 		OID:            func(*pgtype.Map) uint32 { return pgtype.Int8OID },
-		ExtraOIDs:      []uint32{pgtype.Int2OID, pgtype.Int4OID},
+		ExtraOIDs:      []uint32{pgtype.Int2OID},
 		EncodeInferred: defaultEncodeDecode,
 		Decode: func(a any) (any, error) {
 			v, ok := sql.Int64(a)
@@ -302,7 +306,7 @@ var (
 			reflect.TypeOf([]*int16{}), reflect.TypeOf([]*int32{}), reflect.TypeOf([]*int64{}), reflect.TypeOf([]*uint{}),
 			reflect.TypeOf([]*uint16{}), reflect.TypeOf([]*uint32{}), reflect.TypeOf([]*uint64{})},
 		OID:                  func(*pgtype.Map) uint32 { return pgtype.Int8ArrayOID },
-		ExtraOIDs:            []uint32{pgtype.Int2ArrayOID, pgtype.Int4ArrayOID},
+		ExtraOIDs:            []uint32{pgtype.Int2ArrayOID},
 		EncodeInferred:       defaultEncodeDecode,
 		Decode:               decodePtrArray[int64](intType.Decode),
 		SerializeChangeset:   arrayFromChildFunc(1, intType.SerializeChangeset),
@@ -1011,6 +1015,10 @@ func deserializePtrArray[T any](buf []byte, lengthSize uint8, deserialize func([
 		}
 
 		length, rest := determineLength(buf)
+
+		if len(rest) < length {
+			return nil, errors.New("invalid array: element length exceeds buffer")
+		}
 
 		v, err := deserialize(rest[:length])
 		if err != nil {

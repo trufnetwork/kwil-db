@@ -320,3 +320,75 @@ func Test_Int4TypeRegistration(t *testing.T) {
 		require.Equal(t, int4ArrayType, arrayType)
 	})
 }
+
+// Test for OID duplication
+func Test_OidTypesMap_Int4Ownership(t *testing.T) {
+	t.Run("check for OID duplication panic", func(t *testing.T) {
+		// This test will panic if there are duplicate OIDs registered
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("OID duplication panic detected: %v", r)
+			}
+		}()
+
+		// Try to build the OID map - this should not panic
+		oidMap := OidTypesMap(nil)
+
+		// Verify INT4 OID is owned by int4Type
+		dt, exists := oidMap[int4Type.OID(nil)]
+		require.True(t, exists, "INT4 OID should be registered")
+		require.Equal(t, int4Type, dt, "INT4 OID should be owned by int4Type")
+
+		// Verify INT4 Array OID is owned by int4ArrayType
+		dt, exists = oidMap[int4ArrayType.OID(nil)]
+		require.True(t, exists, "INT4 Array OID should be registered")
+		require.Equal(t, int4ArrayType, dt, "INT4 Array OID should be owned by int4ArrayType")
+	})
+}
+
+// Test buffer overflow protection in deserializePtrArray
+func Test_DeserializePtrArray_BufferOverflow(t *testing.T) {
+	t.Run("buffer overflow protection", func(t *testing.T) {
+		// Create a malformed buffer that claims to have an element of length 10
+		// but only has 3 bytes remaining after the length field
+
+		// Format: [null flag (1 byte)] [length (1 byte)] [data (insufficient bytes)]
+		malformedBuffer := []byte{
+			1,       // Not null
+			10,      // Claims 10 bytes follow
+			1, 2, 3, // Only 3 bytes provided
+		}
+
+		_, err := deserializePtrArray[int32](malformedBuffer, 1, func(b []byte) (any, error) {
+			// Simple deserializer that would panic on buffer overflow without the fix
+			if len(b) < 4 {
+				return nil, fmt.Errorf("need at least 4 bytes, got %d", len(b))
+			}
+			return int32(binary.LittleEndian.Uint32(b[:4])), nil
+		})
+
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "element length exceeds buffer")
+	})
+
+	t.Run("valid buffer works", func(t *testing.T) {
+		// Create a valid buffer with proper length
+		validBuffer := []byte{
+			1,          // Not null
+			4,          // 4 bytes follow
+			1, 0, 0, 0, // 4 bytes of data (little-endian int32: 1)
+		}
+
+		result, err := deserializePtrArray[int32](validBuffer, 1, func(b []byte) (any, error) {
+			if len(b) < 4 {
+				return nil, fmt.Errorf("need at least 4 bytes, got %d", len(b))
+			}
+			return int32(binary.LittleEndian.Uint32(b[:4])), nil
+		})
+
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.NotNil(t, result[0])
+		require.Equal(t, int32(1), *result[0])
+	})
+}
