@@ -1459,10 +1459,11 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 
-	insert0Vals := toPtrSlice([]int32{1, 2, 3}) // int[] arrays now correctly decode to []*int32
-	insert1Vals := []int32{11, 22, 33}          // int[] arrays now correctly decode to []*int32
+	insert0Raw := []int32{1, 2, 3}
+	insert0Vals := toPtrSlice(insert0Raw) // expected decoded shape: []*int32
+	insert1Vals := []int32{11, 22, 33}    // int[] arrays now correctly decode to []*int32
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "hello", insert0Vals)
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "hello", insert0Raw)
 	require.NoError(t, err)
 
 	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 2, "mellow", insert1Vals)

@@ -235,8 +235,13 @@ func Test_Int4TypeEncodeDecode(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, decoded)
 
-		// Test invalid length
+		// Test invalid length (too short)
 		_, err = int4Type.DeserializeChangeset([]byte{1, 2, 3}) // Wrong length
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid int32")
+
+		// Test invalid length (too long)
+		_, err = int4Type.DeserializeChangeset([]byte{1, 2, 3, 4, 5}) // Oversized payload
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid int32")
 	})

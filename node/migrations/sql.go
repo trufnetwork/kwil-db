@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/trufnetwork/kwil-db/node/pg"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
@@ -281,6 +282,7 @@ func insertChangesetChunk(ctx context.Context, db sql.Executor, height int64, in
 }
 
 // getEarliestChangesetMetadata gets the changeset metadata from the database for the earliest changeset received.
+// Returns (-1, -1, -1, -1, nil) when no changeset metadata exists in the database.
 func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height int64, prevHeight int64, totalChunks int64, chunksReceived int64, err error) {
 	res, err := db.Execute(ctx, getEarliestChangesetMetadataSQL)
 	if err != nil {
@@ -310,26 +312,39 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 	}
 
 	// total_chunks is INT column, now correctly decodes to int32
-	if totalChunksInt32, ok := row[1].(int32); ok {
-		if totalChunksInt32 < 0 {
-			return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks cannot be negative: %d", totalChunksInt32)
+	switch v := row[1].(type) {
+	case int32:
+		if v < 0 {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks cannot be negative: %d", v)
 		}
-		totalChunks = int64(totalChunksInt32)
-	} else {
-		return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks is not an int32")
+		totalChunks = int64(v)
+	case int64:
+		if v < 0 || v > int64(pg.MaxInt4) {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks out of range: %d", v)
+		}
+		totalChunks = v
+	default:
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks is not an int32 or int64, got %T", row[1])
 	}
 
 	// received is INT column, now correctly decodes to int32
-	if receivedInt32, ok := row[2].(int32); ok {
-		if receivedInt32 < 0 {
-			return -1, -1, 0, 0, fmt.Errorf("internal bug: received cannot be negative: %d", receivedInt32)
+	switch v := row[2].(type) {
+	case int32:
+		if v < 0 {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: received cannot be negative: %d", v)
 		}
-		chunksReceived = int64(receivedInt32)
-		if chunksReceived > totalChunks {
-			return -1, -1, 0, 0, fmt.Errorf("internal bug: received exceeds total_chunks (%d > %d)", receivedInt32, int32(totalChunks))
+		chunksReceived = int64(v)
+	case int64:
+		if v < 0 || v > int64(pg.MaxInt4) {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: received out of range: %d", v)
 		}
-	} else {
-		return -1, -1, 0, 0, fmt.Errorf("internal bug: received is not an int32")
+		chunksReceived = v
+	default:
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: received is not an int32 or int64, got %T", row[2])
+	}
+
+	if chunksReceived > totalChunks {
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: received exceeds total_chunks (%d > %d)", chunksReceived, totalChunks)
 	}
 
 	prevHeight, ok = row[3].(int64)
