@@ -201,6 +201,10 @@ func Test_ParseDataTypes(t *testing.T) {
 			in:        "decimal(10, a)",
 			wantError: true,
 		},
+		{
+			in:        "int4(10)",
+			wantError: true,
+		},
 	}
 
 	for _, tt := range tests {

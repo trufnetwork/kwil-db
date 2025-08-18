@@ -269,7 +269,7 @@ func Test_Int4ArrayType(t *testing.T) {
 
 	t.Run("int4 array with NULLs", func(t *testing.T) {
 		stringValues := []string{"42", "NULL", "-100", "NULL"}
-		expected := []int32{42, 0, -100, 0} // NULLs become zero values in this test
+		expected := []int32{42, 0, -100, 0} // Note: we assert nil pointers for NULL entries below
 
 		// Serialize
 		data, err := serializeArray(stringValues, 1, int4Type.SerializeChangeset)

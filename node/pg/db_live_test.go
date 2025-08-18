@@ -812,6 +812,23 @@ func TestTypeRoundtrip(t *testing.T) {
 			want: []*int64{ptrFor(int64(1)), nil, ptrFor(int64(3))},
 		},
 		{
+			typ:  "int4",
+			val:  int32(123),
+			want: int32(123),
+		},
+		{
+			typ:          "int4[]",
+			val:          []int32{1, 2, 3},
+			want:         toPtrSlice([]int32{int32(1), int32(2), int32(3)}),
+			skipInferred: true, // int32 types are inferred as INT8, not INT4
+		},
+		{
+			typ:          "int4[]", // with nulls
+			val:          []*int32{ptrFor(int32(1)), nil, ptrFor(int32(3))},
+			want:         []*int32{ptrFor(int32(1)), nil, ptrFor(int32(3))},
+			skipInferred: true, // int32 types are inferred as INT8, not INT4
+		},
+		{
 			typ:  "bool[]",
 			val:  []bool{true, false, true},
 			want: toPtrSlice([]bool{true, false, true}),
@@ -1493,7 +1510,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	// insert a different value with same id and commit
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "world", []int{4, 5, 6})
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "world", []int32{4, 5, 6})
 	require.NoError(t, err)
 
 	_, err = tx.Precommit(ctx, nil)

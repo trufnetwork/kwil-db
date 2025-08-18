@@ -346,7 +346,8 @@ var (
 			}
 
 			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(intVal))
+			// Narrow to int32 explicitly before converting to uint32 for two's complement representation.
+			binary.LittleEndian.PutUint32(buf, uint32(int32(intVal)))
 			return buf, nil
 		},
 		DeserializeChangeset: func(b []byte) (any, error) {
