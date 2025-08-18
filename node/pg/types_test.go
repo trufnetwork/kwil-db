@@ -2,6 +2,8 @@ package pg
 
 import (
 	"encoding/binary"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -151,4 +153,170 @@ func TestSplitString(t *testing.T) {
 			require.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func Test_Int4TypeEncodeDecode(t *testing.T) {
+	t.Run("int4 encoding and decoding", func(t *testing.T) {
+		// Test encoding
+		encoded, err := int4Type.EncodeInferred(int32(42))
+		require.NoError(t, err)
+		require.Equal(t, int32(42), encoded)
+
+		// Test decoding
+		decoded, err := int4Type.Decode(int64(42))
+		require.NoError(t, err)
+		require.Equal(t, int32(42), decoded)
+	})
+
+	t.Run("int4 range validation on decode", func(t *testing.T) {
+		// Test max value
+		decoded, err := int4Type.Decode(int64(MaxInt4))
+		require.NoError(t, err)
+		require.Equal(t, int32(MaxInt4), decoded)
+
+		// Test min value
+		decoded, err = int4Type.Decode(int64(MinInt4))
+		require.NoError(t, err)
+		require.Equal(t, int32(MinInt4), decoded)
+
+		// Test overflow
+		_, err = int4Type.Decode(int64(MaxInt4 + 1))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "out of range for INT4")
+
+		// Test underflow
+		_, err = int4Type.Decode(int64(MinInt4 - 1))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "out of range for INT4")
+	})
+
+	t.Run("int4 changeset serialization", func(t *testing.T) {
+		// Test valid value
+		data, err := int4Type.SerializeChangeset("42")
+		require.NoError(t, err)
+		require.Equal(t, 4, len(data))
+
+		// Verify the bytes
+		expected := make([]byte, 4)
+		binary.LittleEndian.PutUint32(expected, uint32(42))
+		require.Equal(t, expected, data)
+
+		// Test NULL
+		data, err = int4Type.SerializeChangeset("NULL")
+		require.NoError(t, err)
+		require.Nil(t, data)
+
+		// Test range validation
+		_, err = int4Type.SerializeChangeset("2147483648") // MaxInt4 + 1
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "out of range for INT4")
+
+		_, err = int4Type.SerializeChangeset("-2147483649") // MinInt4 - 1
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "out of range for INT4")
+
+		// Test invalid number
+		_, err = int4Type.SerializeChangeset("not_a_number")
+		require.Error(t, err)
+	})
+
+	t.Run("int4 changeset deserialization", func(t *testing.T) {
+		// Test valid value
+		data := make([]byte, 4)
+		binary.LittleEndian.PutUint32(data, uint32(42))
+
+		decoded, err := int4Type.DeserializeChangeset(data)
+		require.NoError(t, err)
+		require.Equal(t, int32(42), decoded)
+
+		// Test NULL (empty slice)
+		decoded, err = int4Type.DeserializeChangeset([]byte{})
+		require.NoError(t, err)
+		require.Nil(t, decoded)
+
+		// Test invalid length
+		_, err = int4Type.DeserializeChangeset([]byte{1, 2, 3}) // Wrong length
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid int32")
+	})
+}
+
+func Test_Int4ArrayType(t *testing.T) {
+	t.Run("int4 array serialization round-trip", func(t *testing.T) {
+		values := []int32{-2147483648, -1, 0, 1, 2147483647}
+
+		// Convert to string array for serialization test
+		stringValues := make([]string, len(values))
+		for i, v := range values {
+			stringValues[i] = fmt.Sprintf("%d", v)
+		}
+
+		// Serialize
+		data, err := serializeArray(stringValues, 1, int4Type.SerializeChangeset)
+		require.NoError(t, err)
+
+		// Deserialize
+		decoded, err := deserializePtrArray[int32](data, 1, int4Type.DeserializeChangeset)
+		require.NoError(t, err)
+
+		// Verify
+		require.Equal(t, len(values), len(decoded))
+		for i, v := range values {
+			require.NotNil(t, decoded[i])
+			require.Equal(t, v, *decoded[i])
+		}
+	})
+
+	t.Run("int4 array with NULLs", func(t *testing.T) {
+		stringValues := []string{"42", "NULL", "-100", "NULL"}
+		expected := []int32{42, 0, -100, 0} // NULLs become zero values in this test
+
+		// Serialize
+		data, err := serializeArray(stringValues, 1, int4Type.SerializeChangeset)
+		require.NoError(t, err)
+
+		// Deserialize
+		decoded, err := deserializePtrArray[int32](data, 1, int4Type.DeserializeChangeset)
+		require.NoError(t, err)
+
+		// Verify
+		require.Equal(t, len(stringValues), len(decoded))
+		require.NotNil(t, decoded[0])
+		require.Equal(t, expected[0], *decoded[0])
+		require.Nil(t, decoded[1]) // NULL
+		require.NotNil(t, decoded[2])
+		require.Equal(t, expected[2], *decoded[2])
+		require.Nil(t, decoded[3]) // NULL
+	})
+}
+
+func Test_Int4TypeRegistration(t *testing.T) {
+	t.Run("int4 type is registered but not for Go types yet", func(t *testing.T) {
+		// INT4 type should be registered but not handle Go int32/uint32 types yet
+		// for backward compatibility
+		_, ok := dataTypesByMatch[reflect.TypeOf(int32(0))]
+		require.True(t, ok) // Should still be handled by intType
+
+		// int32 should still be handled by intType (backward compatibility)
+		dt, ok := dataTypesByMatch[reflect.TypeOf(int32(0))]
+		require.True(t, ok)
+		require.Equal(t, intType, dt) // Not int4Type yet!
+	})
+
+	t.Run("int4 array type is registered but not for Go types yet", func(t *testing.T) {
+		// int32 arrays should still be handled by intArrayType (backward compatibility)
+		dt, ok := dataTypesByMatch[reflect.TypeOf([]int32{})]
+		require.True(t, ok)
+		require.Equal(t, intArrayType, dt) // Not int4ArrayType yet!
+
+		dt, ok = dataTypesByMatch[reflect.TypeOf([]*int32{})]
+		require.True(t, ok)
+		require.Equal(t, intArrayType, dt) // Not int4ArrayType yet!
+	})
+
+	t.Run("scalar to array mapping", func(t *testing.T) {
+		arrayType, ok := scalarToArray[int4Type]
+		require.True(t, ok)
+		require.Equal(t, int4ArrayType, arrayType)
+	})
 }

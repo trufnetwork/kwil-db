@@ -18,6 +18,7 @@ import (
 func init() {
 	registerDatatype(textType, textArrayType)
 	registerDatatype(intType, intArrayType)
+	registerDatatype(int4Type, int4ArrayType)
 	registerDatatype(boolType, boolArrayType)
 	registerDatatype(blobType, blobArrayType)
 	registerDatatype(uuidType, uuidArrayType)
@@ -32,6 +33,12 @@ var (
 )
 
 var ErrUnsupportedOID = errors.New("unsupported OID")
+
+const (
+	// INT4 range constants
+	MinInt4 = -2147483648
+	MaxInt4 = 2147483647
+)
 
 // registerOIDs registers all of the data types that we support in Postgres.
 func registerDatatype(scalar *datatype, array *datatype) {
@@ -246,6 +253,8 @@ var (
 	}
 
 	// we intentionally ignore uint8, since we don't want to cause issues with []byte.
+	// BACKWARD COMPATIBILITY: int32 and uint32 still handled by intType for now
+	// TODO: Migrate to int4Type in a future version with proper migration strategy
 	intType = &datatype{
 		KwilType: types.IntType,
 		Matches: []reflect.Type{reflect.TypeOf(int(0)), reflect.TypeOf(int8(0)), reflect.TypeOf(int16(0)),
@@ -298,6 +307,63 @@ var (
 		Decode:               decodePtrArray[int64](intType.Decode),
 		SerializeChangeset:   arrayFromChildFunc(1, intType.SerializeChangeset),
 		DeserializeChangeset: deserializeArrayFn[int64](1, intType.DeserializeChangeset),
+	}
+
+	// INT4 type - currently only for explicit int4 schema definitions
+	// BACKWARD COMPATIBILITY: Does not handle int32/uint32 Go types yet
+	// Those continue to be handled by intType for now
+	int4Type = &datatype{
+		KwilType:       types.Int4Type,
+		Matches:        []reflect.Type{}, // No Go type matches for now - only for schema definitions
+		OID:            func(*pgtype.Map) uint32 { return pgtype.Int4OID },
+		EncodeInferred: defaultEncodeDecode,
+		Decode: func(a any) (any, error) {
+			v, ok := sql.Int64(a)
+			if !ok {
+				return nil, fmt.Errorf("unexpected type %T", a)
+			}
+			// Validate INT4 range
+			if v < MinInt4 || v > MaxInt4 {
+				return nil, fmt.Errorf("value %d out of range for INT4 (%d to %d)", v, MinInt4, MaxInt4)
+			}
+			return int32(v), nil
+		},
+		SerializeChangeset: func(value string) ([]byte, error) {
+			if value == `NULL` {
+				return nil, nil
+			}
+			intVal, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			// Validate INT4 range
+			if intVal < MinInt4 || intVal > MaxInt4 {
+				return nil, fmt.Errorf("value %d out of range for INT4 (%d to %d)", intVal, MinInt4, MaxInt4)
+			}
+
+			buf := make([]byte, 4)
+			binary.LittleEndian.PutUint32(buf, uint32(intVal))
+			return buf, nil
+		},
+		DeserializeChangeset: func(b []byte) (any, error) {
+			if len(b) == 0 {
+				return nil, nil
+			}
+			if len(b) != 4 {
+				return nil, fmt.Errorf("invalid int32: %s", b)
+			}
+			return int32(binary.LittleEndian.Uint32(b)), nil
+		},
+	}
+
+	int4ArrayType = &datatype{
+		KwilType:             types.Int4ArrayType,
+		Matches:              []reflect.Type{}, // No Go type matches for now - only for schema definitions
+		OID:                  func(*pgtype.Map) uint32 { return pgtype.Int4ArrayOID },
+		EncodeInferred:       defaultEncodeDecode,
+		Decode:               decodePtrArray[int32](int4Type.Decode),
+		SerializeChangeset:   arrayFromChildFunc(1, int4Type.SerializeChangeset),
+		DeserializeChangeset: deserializeArrayFn[int32](1, int4Type.DeserializeChangeset),
 	}
 
 	boolType = &datatype{

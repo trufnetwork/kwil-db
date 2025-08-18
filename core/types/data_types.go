@@ -136,6 +136,8 @@ func (c *DataType) PGScalar() (string, error) {
 	switch strings.ToLower(c.Name) {
 	case intStr:
 		scalar = "INT8"
+	case int4Str:
+		scalar = "INT4"
 	case textStr:
 		scalar = "TEXT"
 	case boolStr:
@@ -168,7 +170,7 @@ func (c *DataType) Clean() error {
 	}
 
 	switch referencedType {
-	case intStr, textStr, boolStr, byteaStr, uuidStr: // ok
+	case intStr, int4Str, textStr, boolStr, byteaStr, uuidStr: // ok
 		if c.HasMetadata() {
 			return fmt.Errorf("type %s cannot have metadata", c.Name)
 		}
@@ -249,7 +251,7 @@ func (c *DataType) IsNumeric() bool {
 		return false
 	}
 
-	return c.Name == intStr || c.Name == NumericStr || c.Name == nullStr
+	return c.Name == intStr || c.Name == int4Str || c.Name == NumericStr || c.Name == nullStr
 }
 
 // declared DataType constants.
@@ -259,7 +261,11 @@ var (
 		Name: intStr,
 	}
 	IntArrayType = ArrayType(IntType)
-	TextType     = &DataType{
+	Int4Type     = &DataType{
+		Name: int4Str,
+	}
+	Int4ArrayType = ArrayType(Int4Type)
+	TextType      = &DataType{
 		Name: textStr,
 	}
 	TextArrayType = ArrayType(TextType)
@@ -307,6 +313,7 @@ func ArrayType(t *DataType) *DataType {
 const (
 	textStr  = "text"
 	intStr   = "int8"
+	int4Str  = "int4"
 	boolStr  = "bool"
 	byteaStr = "bytea"
 	uuidStr  = "uuid"
@@ -393,17 +400,19 @@ func ParseDataType(s string) (*DataType, error) {
 // maps type names to their base names.
 // null is not included here because it is a special type.
 var typeAlias = map[string]string{
-	"string":  textStr,
-	"text":    textStr,
-	"int":     intStr,
-	"integer": intStr,
-	"bigint":  intStr,
-	"int8":    intStr,
-	"bool":    boolStr,
-	"boolean": boolStr,
-	"blob":    byteaStr,
-	"bytea":   byteaStr,
-	"uuid":    uuidStr,
-	"decimal": NumericStr,
-	"numeric": NumericStr,
+	"string":   textStr,
+	"text":     textStr,
+	"int":      intStr,
+	"integer":  intStr,
+	"bigint":   intStr,
+	"int8":     intStr,
+	"int4":     int4Str,
+	"smallint": int4Str,
+	"bool":     boolStr,
+	"boolean":  boolStr,
+	"blob":     byteaStr,
+	"bytea":    byteaStr,
+	"uuid":     uuidStr,
+	"decimal":  NumericStr,
+	"numeric":  NumericStr,
 }
