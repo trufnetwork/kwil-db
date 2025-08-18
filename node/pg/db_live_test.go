@@ -221,8 +221,8 @@ func TestNULL(t *testing.T) {
 
 	// only non-NULL values get a type
 	b := res.Rows[0][1]
-	// t.Logf("%v (%T)", b, b) // 6 (int64)
-	require.Equal(t, reflect.TypeOf(b), reflect.TypeFor[int64]())
+	// t.Logf("%v (%T)", b, b) // 6 (int32) - int4 columns now correctly decode to int32
+	require.Equal(t, reflect.TypeOf(b), reflect.TypeFor[int32]())
 
 	// Now with scan vals
 
@@ -325,7 +325,7 @@ func TestQueryRowFuncAny(t *testing.T) {
 
 	wantTypes := []reflect.Type{ // same for each row scanned, when non-null
 		reflect.TypeFor[int64](),
-		reflect.TypeFor[int64](),
+		reflect.TypeFor[int32](), // int4 columns now correctly decode to int32
 		reflect.TypeFor[string](),
 		reflect.TypeFor[[]byte](),
 		reflect.TypeFor[*types.Decimal](),
@@ -338,7 +338,7 @@ func TestQueryRowFuncAny(t *testing.T) {
 	}
 	wantVals := [][]any{
 		{int64(5), nil, "a", []byte{0xab, 0xab}, mustDec("12.00000"), []*int64{ptrFor(int64(2)), nil, ptrFor(int64(4))}},
-		{int64(9), int64(2), "b", []byte{0xee}, mustDec("0.98760"), toPtrSlice([]int64{99})},
+		{int64(9), int32(2), "b", []byte{0xee}, mustDec("0.98760"), toPtrSlice([]int64{99})},
 	}
 
 	var rowNum int
@@ -374,17 +374,17 @@ func TestQueryRowFuncAny(t *testing.T) {
 	// - OID 19 pertains to information_schema.sql_identifier, which scans as text
 	// - OID 1043 pertains to varchar, which can scan as text
 	wantTypes = []reflect.Type{ // same for each row scanned
-		reflect.TypeFor[int64](),  // ordinal_position
+		reflect.TypeFor[int32](),  // ordinal_position - information_schema INT columns decode to int32
 		reflect.TypeFor[string](), // column_name
 		reflect.TypeFor[string](), // is_nullable has boolean semantics but values of "YES"/"NO"
 	}
 	wantVals = [][]any{
-		{int64(1), "a", "NO"},
-		{int64(2), "b", "YES"},
-		{int64(3), "c", "YES"},
-		{int64(4), "d", "YES"},
-		{int64(5), "e", "YES"},
-		{int64(6), "f", "YES"},
+		{int32(1), "a", "NO"},
+		{int32(2), "b", "YES"},
+		{int32(3), "c", "YES"},
+		{int32(4), "d", "YES"},
+		{int32(5), "e", "YES"},
+		{int32(6), "f", "YES"},
 	}
 
 	rowNum = 0
@@ -810,6 +810,23 @@ func TestTypeRoundtrip(t *testing.T) {
 			typ:  "int8[]", // with nulls
 			val:  []*int64{ptrFor(int64(1)), nil, ptrFor(int64(3))},
 			want: []*int64{ptrFor(int64(1)), nil, ptrFor(int64(3))},
+		},
+		{
+			typ:  "int4",
+			val:  int32(123),
+			want: int32(123),
+		},
+		{
+			typ:          "int4[]",
+			val:          []int32{1, 2, 3},
+			want:         toPtrSlice([]int32{int32(1), int32(2), int32(3)}),
+			skipInferred: true, // int32 types are inferred as INT8, not INT4
+		},
+		{
+			typ:          "int4[]", // with nulls
+			val:          []*int32{ptrFor(int32(1)), nil, ptrFor(int32(3))},
+			want:         []*int32{ptrFor(int32(1)), nil, ptrFor(int32(3))},
+			skipInferred: true, // int32 types are inferred as INT8, not INT4
 		},
 		{
 			typ:  "bool[]",
@@ -1442,13 +1459,14 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 
-	insert0 := toPtrSlice([]int64{1, 2, 3})
-	insert1 := []int64{11, 22, 33}
+	insert0Raw := []int32{1, 2, 3}
+	insert0Vals := toPtrSlice(insert0Raw) // expected decoded shape: []*int32
+	insert1Vals := []int32{11, 22, 33}    // int[] arrays now correctly decode to []*int32
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "hello", insert0)
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "hello", insert0Raw)
 	require.NoError(t, err)
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 2, "mellow", insert1)
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 2, "mellow", insert1Vals)
 	require.NoError(t, err)
 
 	changes := make(chan any, 1)
@@ -1470,7 +1488,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	// verify the insert vals are equal to the first vals
 	require.EqualValues(t, 1, insertVals[0])
 	require.EqualValues(t, "hello", insertVals[1])
-	require.EqualValues(t, insert0, insertVals[2])
+	require.EqualValues(t, insert0Vals, insertVals[2])
 
 	_, insertVals, err = changesetEntries[1].DecodeTuples(relations[0])
 	require.NoError(t, err)
@@ -1478,7 +1496,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	// verify the insert vals are equal to the second vals
 	require.EqualValues(t, 2, insertVals[0])
 	require.EqualValues(t, "mellow", insertVals[1])
-	require.EqualValues(t, toPtrSlice(insert1), insertVals[2])
+	require.EqualValues(t, toPtrSlice(insert1Vals), insertVals[2])
 
 	// Rollback the changes
 	err = tx.Rollback(ctx)
@@ -1493,7 +1511,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	// insert a different value with same id and commit
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "world", []int{4, 5, 6})
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "world", []int32{4, 5, 6})
 	require.NoError(t, err)
 
 	_, err = tx.Precommit(ctx, nil)
@@ -1549,7 +1567,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	// Update: 1, world, {4, 5, 6} -> 1, hello, {1, 2, 3}
-	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "hello", []int64{1, 2, 3}, 1)
+	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "hello", []int32{1, 2, 3}, 1)
 	require.NoError(t, err)
 
 	// Update: 2, mellow, {11, 22, 33} -> 2, yellow, {11, 22, 33}
@@ -1577,8 +1595,8 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	// Update: 1, world, {4, 5, 6} -> 1, helloworld, {111, 222, 333}
-	update0 := []int64{111, 222, 333}
-	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "helloworld", update0, 1)
+	updateVals := []int32{111, 222, 333} // int[] arrays now correctly decode to []*int32
+	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "helloworld", updateVals, 1)
 	require.NoError(t, err)
 
 	// commit
@@ -1614,10 +1632,10 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.Len(t, res.Rows[0], 3)
 	require.EqualValues(t, 1, res.Rows[0][0])
 	require.EqualValues(t, "helloworld", res.Rows[0][1])
-	require.EqualValues(t, toPtrSlice(update0), res.Rows[0][2])
+	require.EqualValues(t, toPtrSlice(updateVals), res.Rows[0][2])
 	require.EqualValues(t, 2, res.Rows[1][0])
 	require.EqualValues(t, "yellow", res.Rows[1][1])
-	require.EqualValues(t, toPtrSlice(insert1), res.Rows[1][2])
+	require.EqualValues(t, toPtrSlice(insert1Vals), res.Rows[1][2])
 
 	// commit the changes
 	_, err = tx.Precommit(ctx, nil)
@@ -1661,7 +1679,8 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 
 	// update the record with id 1
-	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "hello", insert0, 1)
+	updateArray := toPtrSlice([]int32{1, 2, 3}) // int[] arrays now correctly decode to []*int32
+	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "hello", updateArray, 1)
 	require.NoError(t, err)
 
 	// commit
@@ -1685,7 +1704,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.Len(t, res.Rows[0], 3)
 	require.EqualValues(t, 1, res.Rows[0][0])
 	require.EqualValues(t, "hello", res.Rows[0][1])
-	require.EqualValues(t, insert0, res.Rows[0][2])
+	require.EqualValues(t, updateArray, res.Rows[0][2])
 
 	// commit the changes
 	_, err = tx.Precommit(ctx, nil)

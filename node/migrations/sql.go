@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/trufnetwork/kwil-db/node/pg"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
@@ -281,7 +282,8 @@ func insertChangesetChunk(ctx context.Context, db sql.Executor, height int64, in
 }
 
 // getEarliestChangesetMetadata gets the changeset metadata from the database for the earliest changeset received.
-func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height int64, prevHeight int64, chunksToReceive int64, totalChunks int64, err error) {
+// Returns (-1, -1, -1, -1, nil) when no changeset metadata exists in the database.
+func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height int64, prevHeight int64, totalChunks int64, chunksReceived int64, err error) {
 	res, err := db.Execute(ctx, getEarliestChangesetMetadataSQL)
 	if err != nil {
 		return -1, -1, 0, 0, err
@@ -309,14 +311,40 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 		return -1, -1, 0, 0, fmt.Errorf("internal bug: height is not an int64")
 	}
 
-	chunksToReceive, ok = row[1].(int64)
-	if !ok {
-		return -1, -1, 0, 0, fmt.Errorf("internal bug: chunks to receive is not an int64")
+	// total_chunks is INT column, now correctly decodes to int32
+	switch v := row[1].(type) {
+	case int32:
+		if v < 0 {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks cannot be negative: %d", v)
+		}
+		totalChunks = int64(v)
+	case int64:
+		if v < 0 || v > int64(pg.MaxInt4) {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks out of range: %d", v)
+		}
+		totalChunks = v
+	default:
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks is not an int32 or int64, got %T", row[1])
 	}
 
-	totalChunks, ok = row[2].(int64)
-	if !ok {
-		return -1, -1, 0, 0, fmt.Errorf("internal bug: total chunks is not an int64")
+	// received is INT column, now correctly decodes to int32
+	switch v := row[2].(type) {
+	case int32:
+		if v < 0 {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: received cannot be negative: %d", v)
+		}
+		chunksReceived = int64(v)
+	case int64:
+		if v < 0 || v > int64(pg.MaxInt4) {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: received out of range: %d", v)
+		}
+		chunksReceived = v
+	default:
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: received is not an int32 or int64, got %T", row[2])
+	}
+
+	if chunksReceived > totalChunks {
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: received exceeds total_chunks (%d > %d)", chunksReceived, totalChunks)
 	}
 
 	prevHeight, ok = row[3].(int64)
@@ -324,7 +352,7 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 		return -1, -1, 0, 0, fmt.Errorf("internal bug: prev height is not an int64")
 	}
 
-	return height, prevHeight, chunksToReceive, totalChunks, nil
+	return height, prevHeight, totalChunks, chunksReceived, nil
 }
 
 // changesetChunkExists checks if a changeset chunk already exists in the database.

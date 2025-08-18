@@ -139,8 +139,23 @@ func TestChangesetMigration(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 2)
-	require.Equal(t, int64(1), res.Rows[0][0])
+	require.Equal(t, int32(1), res.Rows[0][0]) // int column now correctly decodes to int32
 	require.Equal(t, "hello", res.Rows[0][1])
+
+	// Test INT4[] array decoding
+	arr0, ok := res.Rows[0][2].([]*int32)
+	require.True(t, ok, "array_val should decode to []*int32, got %T", res.Rows[0][2])
+	require.Len(t, arr0, 3)
+	require.Equal(t, int32(1), *arr0[0])
+	require.Equal(t, int32(2), *arr0[1])
+	require.Equal(t, int32(3), *arr0[2])
+
+	arr1, ok := res.Rows[1][2].([]*int32)
+	require.True(t, ok, "array_val should decode to []*int32, got %T", res.Rows[1][2])
+	require.Len(t, arr1, 3)
+	require.Equal(t, int32(11), *arr1[0])
+	require.Equal(t, int32(22), *arr1[1])
+	require.Equal(t, int32(33), *arr1[2])
 }
 
 func createTestSchema(ctx context.Context, db sql.TxMaker, t *testing.T) error {
@@ -164,10 +179,10 @@ func sampleChangeset(ctx context.Context, db sql.PreparedTxMaker, t *testing.T) 
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", pg.QueryModeExec, 1, "hello", []int64{1, 2, 3})
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", pg.QueryModeExec, int32(1), "hello", []int32{1, 2, 3})
 	require.NoError(t, err)
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", pg.QueryModeExec, 2, "mellow", []int64{11, 22, 33})
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", pg.QueryModeExec, int32(2), "mellow", []int32{11, 22, 33})
 	require.NoError(t, err)
 
 	changes := make(chan any, 1)
