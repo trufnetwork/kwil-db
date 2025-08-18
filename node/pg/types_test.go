@@ -167,6 +167,15 @@ func Test_Int4TypeEncodeDecode(t *testing.T) {
 		decoded, err := int4Type.Decode(int64(42))
 		require.NoError(t, err)
 		require.Equal(t, int32(42), decoded)
+
+		// Negative round-trip
+		encodedNeg, err := int4Type.EncodeInferred(int32(-1))
+		require.NoError(t, err)
+		require.Equal(t, int32(-1), encodedNeg)
+
+		decodedNeg, err := int4Type.Decode(int64(-1))
+		require.NoError(t, err)
+		require.Equal(t, int32(-1), decodedNeg)
 	})
 
 	t.Run("int4 range validation on decode", func(t *testing.T) {
@@ -219,6 +228,11 @@ func Test_Int4TypeEncodeDecode(t *testing.T) {
 		// Test invalid number
 		_, err = int4Type.SerializeChangeset("not_a_number")
 		require.Error(t, err)
+
+		// Negative value
+		data, err = int4Type.SerializeChangeset("-1")
+		require.NoError(t, err)
+		require.Equal(t, []byte{0xFF, 0xFF, 0xFF, 0xFF}, data)
 	})
 
 	t.Run("int4 changeset deserialization", func(t *testing.T) {
@@ -244,6 +258,11 @@ func Test_Int4TypeEncodeDecode(t *testing.T) {
 		_, err = int4Type.DeserializeChangeset([]byte{1, 2, 3, 4, 5}) // Oversized payload
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid int32")
+
+		// Negative value
+		decoded, err = int4Type.DeserializeChangeset([]byte{0xFF, 0xFF, 0xFF, 0xFF})
+		require.NoError(t, err)
+		require.Equal(t, int32(-1), decoded)
 	})
 }
 
@@ -293,6 +312,8 @@ func Test_Int4ArrayType(t *testing.T) {
 		require.NotNil(t, decoded[2])
 		require.Equal(t, expected[2], *decoded[2])
 		require.Nil(t, decoded[3]) // NULL
+		require.NotNil(t, decoded[4])
+		require.Equal(t, expected[4], *decoded[4])
 	})
 }
 
@@ -307,6 +328,11 @@ func Test_Int4TypeRegistration(t *testing.T) {
 		dt, ok := dataTypesByMatch[reflect.TypeOf(int32(0))]
 		require.True(t, ok)
 		require.Equal(t, intType, dt) // Not int4Type yet!
+
+		// uint32 should also continue to be handled by intType
+		dt, ok = dataTypesByMatch[reflect.TypeOf(uint32(0))]
+		require.True(t, ok)
+		require.Equal(t, intType, dt)
 	})
 
 	t.Run("int4 array type is registered but not for Go types yet", func(t *testing.T) {
@@ -318,6 +344,11 @@ func Test_Int4TypeRegistration(t *testing.T) {
 		dt, ok = dataTypesByMatch[reflect.TypeOf([]*int32{})]
 		require.True(t, ok)
 		require.Equal(t, intArrayType, dt) // Not int4ArrayType yet!
+
+		// Likewise for uint32 arrays (backward compatibility)
+		dt, ok = dataTypesByMatch[reflect.TypeOf([]uint32{})]
+		require.True(t, ok)
+		require.Equal(t, intArrayType, dt)
 	})
 
 	t.Run("scalar to array mapping", func(t *testing.T) {
@@ -338,10 +369,10 @@ func Test_OidTypesMap_Int4Ownership(t *testing.T) {
 		}()
 
 		// Try to build the OID map - this should not panic
-		oidMap := OidTypesMap(pgtype.NewMap())
+		m := pgtype.NewMap()
+		oidMap := OidTypesMap(m)
 
 		// Verify INT4 OID is owned by int4Type
-		m := pgtype.NewMap()
 		dt, exists := oidMap[int4Type.OID(m)]
 		require.True(t, exists, "INT4 OID should be registered")
 		require.Equal(t, int4Type, dt, "INT4 OID should be owned by int4Type")
@@ -397,5 +428,16 @@ func Test_DeserializePtrArray_BufferOverflow(t *testing.T) {
 		require.Len(t, result, 1)
 		require.NotNil(t, result[0])
 		require.Equal(t, int32(1), *result[0])
+	})
+
+	t.Run("null element decodes to nil pointer", func(t *testing.T) {
+		// Format: [null flag (1 byte == 0)]
+		nullBuffer := []byte{0}
+		result, err := deserializePtrArray[int32](nullBuffer, 1, func(b []byte) (any, error) {
+			return int32(0), nil
+		})
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Nil(t, result[0])
 	})
 }
