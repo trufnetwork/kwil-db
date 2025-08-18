@@ -1459,13 +1459,13 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 
-	insert0 := toPtrSlice([]int32{1, 2, 3}) // int[] arrays now correctly decode to []*int32
-	insert1 := []int32{11, 22, 33}          // int[] arrays now correctly decode to []*int32
+	insert0Vals := toPtrSlice([]int32{1, 2, 3}) // int[] arrays now correctly decode to []*int32
+	insert1Vals := []int32{11, 22, 33}          // int[] arrays now correctly decode to []*int32
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "hello", insert0)
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 1, "hello", insert0Vals)
 	require.NoError(t, err)
 
-	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 2, "mellow", insert1)
+	_, err = tx.Execute(ctx, "insert into ds_test.test (val, name, array_val) values ($1, $2, $3)", QueryModeExec, 2, "mellow", insert1Vals)
 	require.NoError(t, err)
 
 	changes := make(chan any, 1)
@@ -1487,7 +1487,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	// verify the insert vals are equal to the first vals
 	require.EqualValues(t, 1, insertVals[0])
 	require.EqualValues(t, "hello", insertVals[1])
-	require.EqualValues(t, insert0, insertVals[2])
+	require.EqualValues(t, insert0Vals, insertVals[2])
 
 	_, insertVals, err = changesetEntries[1].DecodeTuples(relations[0])
 	require.NoError(t, err)
@@ -1495,7 +1495,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	// verify the insert vals are equal to the second vals
 	require.EqualValues(t, 2, insertVals[0])
 	require.EqualValues(t, "mellow", insertVals[1])
-	require.EqualValues(t, toPtrSlice(insert1), insertVals[2])
+	require.EqualValues(t, toPtrSlice(insert1Vals), insertVals[2])
 
 	// Rollback the changes
 	err = tx.Rollback(ctx)
@@ -1594,8 +1594,8 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	defer tx.Rollback(ctx)
 
 	// Update: 1, world, {4, 5, 6} -> 1, helloworld, {111, 222, 333}
-	update0 := []int32{111, 222, 333} // int[] arrays now correctly decode to []*int32
-	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "helloworld", update0, 1)
+	updateVals := []int32{111, 222, 333} // int[] arrays now correctly decode to []*int32
+	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "helloworld", updateVals, 1)
 	require.NoError(t, err)
 
 	// commit
@@ -1631,10 +1631,10 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.Len(t, res.Rows[0], 3)
 	require.EqualValues(t, 1, res.Rows[0][0])
 	require.EqualValues(t, "helloworld", res.Rows[0][1])
-	require.EqualValues(t, toPtrSlice(update0), res.Rows[0][2])
+	require.EqualValues(t, toPtrSlice(updateVals), res.Rows[0][2])
 	require.EqualValues(t, 2, res.Rows[1][0])
 	require.EqualValues(t, "yellow", res.Rows[1][1])
-	require.EqualValues(t, toPtrSlice(insert1), res.Rows[1][2])
+	require.EqualValues(t, toPtrSlice(insert1Vals), res.Rows[1][2])
 
 	// commit the changes
 	_, err = tx.Precommit(ctx, nil)
@@ -1678,7 +1678,8 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 
 	// update the record with id 1
-	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "hello", insert0, 1)
+	updateArray := toPtrSlice([]int32{1, 2, 3}) // int[] arrays now correctly decode to []*int32
+	_, err = tx.Execute(ctx, "update ds_test.test set name = $1, array_val = $2 where val = $3", QueryModeExec, "hello", updateArray, 1)
 	require.NoError(t, err)
 
 	// commit
@@ -1702,7 +1703,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.Len(t, res.Rows[0], 3)
 	require.EqualValues(t, 1, res.Rows[0][0])
 	require.EqualValues(t, "hello", res.Rows[0][1])
-	require.EqualValues(t, insert0, res.Rows[0][2])
+	require.EqualValues(t, updateArray, res.Rows[0][2])
 
 	// commit the changes
 	_, err = tx.Precommit(ctx, nil)

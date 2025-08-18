@@ -311,6 +311,9 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 
 	// total_chunks is INT column, now correctly decodes to int32
 	if totalChunksInt32, ok := row[1].(int32); ok {
+		if totalChunksInt32 < 0 {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks cannot be negative: %d", totalChunksInt32)
+		}
 		totalChunks = int64(totalChunksInt32)
 	} else {
 		return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks is not an int32")
@@ -318,6 +321,9 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 
 	// received is INT column, now correctly decodes to int32
 	if receivedInt32, ok := row[2].(int32); ok {
+		if receivedInt32 < 0 {
+			return -1, -1, 0, 0, fmt.Errorf("internal bug: received cannot be negative: %d", receivedInt32)
+		}
 		chunksReceived = int64(receivedInt32)
 		if chunksReceived > totalChunks {
 			return -1, -1, 0, 0, fmt.Errorf("internal bug: received exceeds total_chunks (%d > %d)", receivedInt32, int32(totalChunks))

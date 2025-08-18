@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 )
 
@@ -268,8 +269,8 @@ func Test_Int4ArrayType(t *testing.T) {
 	})
 
 	t.Run("int4 array with NULLs", func(t *testing.T) {
-		stringValues := []string{"42", "NULL", "-100", "NULL"}
-		expected := []int32{42, 0, -100, 0} // Note: we assert nil pointers for NULL entries below
+		stringValues := []string{fmt.Sprintf("%d", MinInt4), "NULL", "42", "NULL", fmt.Sprintf("%d", MaxInt4)}
+		expected := []int32{MinInt4, 0, 42, 0, MaxInt4} // Note: we assert nil pointers for NULL entries below
 
 		// Serialize
 		data, err := serializeArray(stringValues, 1, int4Type.SerializeChangeset)
@@ -332,15 +333,16 @@ func Test_OidTypesMap_Int4Ownership(t *testing.T) {
 		}()
 
 		// Try to build the OID map - this should not panic
-		oidMap := OidTypesMap(nil)
+		oidMap := OidTypesMap(pgtype.NewMap())
 
 		// Verify INT4 OID is owned by int4Type
-		dt, exists := oidMap[int4Type.OID(nil)]
+		m := pgtype.NewMap()
+		dt, exists := oidMap[int4Type.OID(m)]
 		require.True(t, exists, "INT4 OID should be registered")
 		require.Equal(t, int4Type, dt, "INT4 OID should be owned by int4Type")
 
 		// Verify INT4 Array OID is owned by int4ArrayType
-		dt, exists = oidMap[int4ArrayType.OID(nil)]
+		dt, exists = oidMap[int4ArrayType.OID(m)]
 		require.True(t, exists, "INT4 Array OID should be registered")
 		require.Equal(t, int4ArrayType, dt, "INT4 Array OID should be owned by int4ArrayType")
 	})
