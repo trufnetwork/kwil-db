@@ -281,7 +281,7 @@ func insertChangesetChunk(ctx context.Context, db sql.Executor, height int64, in
 }
 
 // getEarliestChangesetMetadata gets the changeset metadata from the database for the earliest changeset received.
-func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height int64, prevHeight int64, chunksToReceive int64, totalChunks int64, err error) {
+func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height int64, prevHeight int64, totalChunks int64, chunksReceived int64, err error) {
 	res, err := db.Execute(ctx, getEarliestChangesetMetadataSQL)
 	if err != nil {
 		return -1, -1, 0, 0, err
@@ -309,14 +309,18 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 		return -1, -1, 0, 0, fmt.Errorf("internal bug: height is not an int64")
 	}
 
-	chunksToReceive, ok = row[1].(int64)
-	if !ok {
-		return -1, -1, 0, 0, fmt.Errorf("internal bug: chunks to receive is not an int64")
+	// total_chunks is INT column, now correctly decodes to int32
+	if totalChunksInt32, ok := row[1].(int32); ok {
+		totalChunks = int64(totalChunksInt32)
+	} else {
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: total_chunks is not an int32")
 	}
 
-	totalChunks, ok = row[2].(int64)
-	if !ok {
-		return -1, -1, 0, 0, fmt.Errorf("internal bug: total chunks is not an int64")
+	// received is INT column, now correctly decodes to int32
+	if receivedInt32, ok := row[2].(int32); ok {
+		chunksReceived = int64(receivedInt32)
+	} else {
+		return -1, -1, 0, 0, fmt.Errorf("internal bug: received is not an int32")
 	}
 
 	prevHeight, ok = row[3].(int64)
@@ -324,7 +328,7 @@ func getEarliestChangesetMetadata(ctx context.Context, db sql.Executor) (height 
 		return -1, -1, 0, 0, fmt.Errorf("internal bug: prev height is not an int64")
 	}
 
-	return height, prevHeight, chunksToReceive, totalChunks, nil
+	return height, prevHeight, totalChunks, chunksReceived, nil
 }
 
 // changesetChunkExists checks if a changeset chunk already exists in the database.

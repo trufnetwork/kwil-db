@@ -35,7 +35,7 @@ var (
 var ErrUnsupportedOID = errors.New("unsupported OID")
 
 const (
-	// INT4 range constants
+	// MinInt4 and MaxInt4 define the bounds of a signed 32-bit integer (PostgreSQL INT4).
 	MinInt4 = -2147483648
 	MaxInt4 = 2147483647
 )
@@ -354,7 +354,7 @@ var (
 				return nil, nil
 			}
 			if len(b) != 4 {
-				return nil, fmt.Errorf("invalid int32: %s", b)
+				return nil, fmt.Errorf("invalid int32 length: %d", len(b))
 			}
 			return int32(binary.LittleEndian.Uint32(b)), nil
 		},
