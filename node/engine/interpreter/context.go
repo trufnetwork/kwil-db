@@ -555,7 +555,9 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			if e.engineCtx.InvalidTxCtx {
 				return nil, engine.ErrInvalidTxCtx
 			}
-			// Get leader from block context proposer
+			// Get leader from block context proposer.
+			// Returns lowercase hex of the proposer's public key bytes.
+			// Returns an empty string if the proposer is not available.
 			if e.engineCtx.TxContext.BlockContext.Proposer == nil {
 				return makeText(""), nil
 			}

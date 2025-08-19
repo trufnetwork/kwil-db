@@ -345,15 +345,18 @@ Actions have access to several built-in contextual variables that provide inform
 - **`@caller`** - The address of the account executing the action
 - **`@txid`** - The unique transaction identifier
 - **`@height`** - The current block height
-- **`@leader`** - The address of the current block leader (validator)
+- **`@block_timestamp`** - The timestamp (Unix seconds) of the current block
+- **`@leader`** - The current block proposer's public key as a lowercase hex-encoded string
 
-These variables can be used for authorization, logging, and generating unique identifiers. For example:
+These variables can be used for authorization, logging, and generating unique identifiers.
+
+NOTE: `@leader` is the proposer's public key in hex. Depending on the authenticator in use, `@caller` may be a derived address (e.g., an Ethereum 0x… address) and not equal to the raw public key hex. Only compare `@caller` to `@leader` if your `@caller` representation matches this encoding, or perform the appropriate conversion in your application.
 
 ```sql
 -- Authorization: Only allow the current leader to execute certain operations
 CREATE ACTION i_am_action($param_one INT, $param_two INT) public {
-    IF @caller != @leader {
-        ERROR('Only the leader node can execute this operations');
+    IF @caller != @leader { -- ensure both use the same representation before comparing
+        ERROR('Only the leader node can execute this operation');
     }
     -- ... your logic
 };

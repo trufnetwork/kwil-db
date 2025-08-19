@@ -184,7 +184,7 @@ func TestLeaderVariableInvalidTxContext(t *testing.T) {
 // Helper function to create an Ed25519 key for testing
 func mustCreateEd25519Key(t *testing.T) crypto.PublicKey {
 	t.Helper()
-	// Generate an Ed25519 key for testing
+	// Generate an Ed25519 key for testing (not deterministic across runs)
 	_, pubKey, err := crypto.GenerateEd25519Key(nil)
 	require.NoError(t, err)
 	return pubKey
@@ -193,7 +193,7 @@ func mustCreateEd25519Key(t *testing.T) crypto.PublicKey {
 // Helper function to create a secp256k1 key for testing
 func mustCreateSecp256k1Key(t *testing.T) crypto.PublicKey {
 	t.Helper()
-	// Generate a secp256k1 key for testing
+	// Generate a secp256k1 key for testing (not deterministic across runs)
 	_, pubKey, err := crypto.GenerateSecp256k1Key(nil)
 	require.NoError(t, err)
 	return pubKey
@@ -283,6 +283,10 @@ func TestLeaderAuthorizationScenarios(t *testing.T) {
 			leaderText := leader.(*textValue).String
 
 			// Simulate leader-only authorization check (with hex normalization)
+			// NOTE: We set TxContext.Caller to the hex-encoded public key here
+			// to match @leader's raw pubkey hex. In production, @caller is
+			// derived via the Authenticator (e.g. Ethereum 0x… address)
+			// and will not equal the raw public key hex string.
 			isAuthorized := normalizeHex(callerText) == normalizeHex(leaderText)
 
 			// Verify the authorization result matches expectation
