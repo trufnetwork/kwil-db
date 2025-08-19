@@ -338,6 +338,27 @@ In the above example, the `"tag"` action in the `"kwilapp"` namespace is defined
 };
 ```
 
+### Contextual Variables
+
+Actions have access to several built-in contextual variables that provide information about the current execution context:
+
+- **`@caller`** - The address of the account executing the action
+- **`@txid`** - The unique transaction identifier
+- **`@height`** - The current block height
+- **`@leader`** - The address of the current block leader (validator)
+
+These variables can be used for authorization, logging, and generating unique identifiers. For example:
+
+```sql
+-- Authorization: Only allow the current leader to execute certain operations
+CREATE ACTION i_am_action($param_one INT, $param_two INT) public {
+    IF @caller != @leader {
+        ERROR('Only the leader node can execute this operations');
+    }
+    -- ... your logic
+};
+```
+
 We called the `"tag"` action with arguments `[][]any{{"jon was here", 12}}`. This is
 a `[][]any` to support batched action execution. In this example, we execute the
 action once, using `"jon was here"` as the `$msg` argument and `12` as the `$val` argument.

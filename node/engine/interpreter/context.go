@@ -1,6 +1,7 @@
 package interpreter
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -550,6 +551,16 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 				return nil, engine.ErrInvalidTxCtx
 			}
 			return makeText(e.engineCtx.TxContext.Authenticator), nil
+		case "leader":
+			if e.engineCtx.InvalidTxCtx {
+				return nil, engine.ErrInvalidTxCtx
+			}
+			// Get leader from block context proposer
+			if e.engineCtx.TxContext.BlockContext.Proposer == nil {
+				return makeText(""), nil
+			}
+			leaderBytes := e.engineCtx.TxContext.BlockContext.Proposer.Bytes()
+			return makeText(hex.EncodeToString(leaderBytes)), nil
 		default:
 			return nil, fmt.Errorf("%w: %s", engine.ErrInvalidVariable, name)
 		}
