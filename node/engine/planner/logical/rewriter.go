@@ -2,6 +2,7 @@ package logical
 
 import (
 	"fmt"
+
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
