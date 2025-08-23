@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
 
 /*
@@ -3118,6 +3119,7 @@ func (i *IndexNamed) String() string {
 
 type Visitor interface {
 	VisitTableScanSource(*TableScanSource) any
+	VisitTableFunctionScanSource(*TableFunctionScanSource) any
 	VisitProcedureScanSource(*ProcedureScanSource) any
 	VisitSubquery(*Subquery) any
 	VisitEmptyScan(*EmptyScan) any
@@ -3247,4 +3249,30 @@ func innerFormat(plan LogicalNode, count int, printLong []bool) (string, []*Subp
 		topLevel = append(topLevel, children...)
 	}
 	return msg.String(), topLevel
+}
+
+// TableFunctionScanSource represents a scan of a table-valued function like UNNEST.
+type TableFunctionScanSource struct {
+	FunctionCall *parse.ExpressionFunctionCall
+	rel          *Relation
+}
+
+func (t *TableFunctionScanSource) Accept(v Visitor) any {
+	return v.VisitTableFunctionScanSource(t)
+}
+
+func (t *TableFunctionScanSource) Children() []Traversable {
+	return nil
+}
+
+func (t *TableFunctionScanSource) FormatScan() string {
+	return fmt.Sprintf("%s(...) [table-function]", t.FunctionCall.Name)
+}
+
+func (t *TableFunctionScanSource) Relation() *Relation {
+	return t.rel
+}
+
+func (t *TableFunctionScanSource) Plans() []Plan {
+	return nil
 }

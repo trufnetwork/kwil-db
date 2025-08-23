@@ -1396,6 +1396,19 @@ func (r *RelationSubquery) Accept(v Visitor) any {
 
 func (RelationSubquery) table() {}
 
+type RelationTableFunction struct {
+	Position
+	FunctionCall  *ExpressionFunctionCall
+	Alias         string   // Table alias (optional)
+	ColumnAliases []string // Column aliases for multi-array UNNEST (optional)
+}
+
+func (r *RelationTableFunction) Accept(v Visitor) any {
+	return v.VisitRelationTableFunction(r)
+}
+
+func (RelationTableFunction) table() {}
+
 // Join is a join in a SELECT statement.
 type Join struct {
 	Position
@@ -1789,6 +1802,7 @@ type SQLVisitor interface {
 	VisitResultColumnWildcard(*ResultColumnWildcard) any
 	VisitRelationTable(*RelationTable) any
 	VisitRelationSubquery(*RelationSubquery) any
+	VisitRelationTableFunction(*RelationTableFunction) any
 	VisitJoin(*Join) any
 	VisitUpdateStatement(*UpdateStatement) any
 	VisitUpdateSetClause(*UpdateSetClause) any

@@ -84,6 +84,10 @@ func (r *rewriteVisitor) VisitTableScanSource(p0 *TableScanSource) any {
 	return r.scanSource(p0, func() {})
 }
 
+func (r *rewriteVisitor) VisitTableFunctionScanSource(p0 *TableFunctionScanSource) any {
+	return r.scanSource(p0, func() {})
+}
+
 func (r *rewriteVisitor) slice(v any) {
 	if v == nil {
 		return

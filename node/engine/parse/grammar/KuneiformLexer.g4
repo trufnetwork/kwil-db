@@ -143,6 +143,7 @@ REVOKE:     'revoke';
 ROLE:       'role';
 REPLACE:    'replace';
 ARRAY:      'array';
+UNNEST:     'unnest';
 CURRENT:    'current';
 NAMESPACE:  'namespace';
 TRANSFER:   'transfer';

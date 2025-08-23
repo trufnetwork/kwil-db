@@ -972,6 +972,42 @@ var (
 			},
 			PGFormatFunc: defaultFormat("row_number"),
 		},
+		// Table-valued functions
+		"unnest": &TableValuedFunctionDefinition{
+			ValidateArgsFunc: func(args []*types.DataType) ([]*NamedType, error) {
+				if len(args) == 0 {
+					return nil, fmt.Errorf("unnest requires at least 1 argument, got %d", len(args))
+				}
+
+				var fields []*NamedType
+				for i, arg := range args {
+					if !arg.IsArray {
+						return nil, fmt.Errorf("%w: argument %d must be array type, got %s",
+							ErrType, i+1, arg.String())
+					}
+
+					// Create column from array element type
+					elementType := arg.Copy()
+					elementType.IsArray = false
+
+					// Generate default column name
+					columnName := fmt.Sprintf("unnest_%d", i+1)
+					if len(args) == 1 {
+						columnName = "unnest" // Single array gets simple name
+					}
+
+					fields = append(fields, &NamedType{
+						Name: columnName,
+						Type: elementType,
+					})
+				}
+
+				return fields, nil
+			},
+			PGFormatFunc: func(inputs []string) (string, error) {
+				return fmt.Sprintf("UNNEST(%s)", strings.Join(inputs, ", ")), nil
+			},
+		},
 	}
 )
 
@@ -1059,6 +1095,28 @@ func (w *WindowFunctionDefinition) ValidateArgs(args []*types.DataType) (*types.
 }
 
 func (w *WindowFunctionDefinition) funcdef() {}
+
+// TableValuedFunctionDefinition is a definition of a table-valued function.
+// Table-valued functions return a table (multiple rows and columns) rather than a scalar value.
+type TableValuedFunctionDefinition struct {
+	// ValidateArgsFunc validates the arguments and returns the table schema.
+	ValidateArgsFunc func(args []*types.DataType) ([]*NamedType, error)
+	// PGFormatFunc formats the function call for PostgreSQL.
+	PGFormatFunc func(inputs []string) (string, error)
+}
+
+func (t *TableValuedFunctionDefinition) ValidateArgs(args []*types.DataType) (*types.DataType, error) {
+	// For table-valued functions, we don't return a single type but validate args
+	// The actual schema validation is handled separately
+	_, err := t.ValidateArgsFunc(args)
+	return nil, err
+}
+
+func (t *TableValuedFunctionDefinition) ValidateTableSchema(args []*types.DataType) ([]*NamedType, error) {
+	return t.ValidateArgsFunc(args)
+}
+
+func (t *TableValuedFunctionDefinition) funcdef() {}
 
 // FormatFunc is a function that formats a string of inputs for a SQL function.
 type FormatFunc func(inputs []string) (string, error)

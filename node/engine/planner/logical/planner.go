@@ -2095,6 +2095,8 @@ func (s *scopeContext) table(node parse.Table) (*Scan, *Relation, error) {
 	switch node := node.(type) {
 	default:
 		panic(fmt.Sprintf("unexpected parse table type %T", node))
+	case *parse.RelationTableFunction:
+		return s.tableFunction(node)
 	case *parse.RelationTable:
 		// either a CTE or a physical table
 		alias := node.Table
@@ -2830,4 +2832,67 @@ func (p *planContext) uniqueRefIdentifier() string {
 	p.ReferenceCount++
 
 	return string(runes)
+}
+
+// tableFunction handles table-valued function calls like UNNEST
+func (s *scopeContext) tableFunction(node *parse.RelationTableFunction) (*Scan, *Relation, error) {
+	// Check if this is a known table-valued function
+	fn, ok := engine.Functions[node.FunctionCall.Name]
+	if !ok {
+		return nil, nil, fmt.Errorf("function %s not found", node.FunctionCall.Name)
+	}
+
+	tableFn, ok := fn.(*engine.TableValuedFunctionDefinition)
+	if !ok {
+		return nil, nil, fmt.Errorf("function %s is not a table-valued function", node.FunctionCall.Name)
+	}
+
+	// Validate function arguments and get table schema
+	argTypes := make([]*types.DataType, len(node.FunctionCall.Args))
+	for i, arg := range node.FunctionCall.Args {
+		_, field, err := s.expr(arg, s.OuterRelation, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error evaluating argument %d: %w", i+1, err)
+		}
+		argTypes[i] = field.val.(*types.DataType)
+	}
+
+	tableSchema, err := tableFn.ValidateTableSchema(argTypes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("table function validation failed: %w", err)
+	}
+
+	// Create relation from table schema
+	alias := node.FunctionCall.Name
+	if node.Alias != "" {
+		alias = node.Alias
+	}
+
+	rel := &Relation{}
+	for i, field := range tableSchema {
+		colName := field.Name
+		// Use column aliases if provided
+		if len(node.ColumnAliases) > i {
+			colName = node.ColumnAliases[i]
+		}
+
+		rel.Fields = append(rel.Fields, &Field{
+			Parent: alias,
+			Name:   colName,
+			val:    field.Type,
+		})
+	}
+
+	// Create table function scan source
+	scanSource := &TableFunctionScanSource{
+		FunctionCall: node.FunctionCall,
+		rel:          rel,
+	}
+
+	scan := &Scan{
+		Source:       scanSource,
+		RelationName: alias,
+	}
+
+	return scan, rel, nil
 }

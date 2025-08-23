@@ -94,6 +94,8 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 		pgFmt, err = fn.PGFormatFunc(args, p0.Distinct)
 	case *engine.WindowFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
+	case *engine.TableValuedFunctionDefinition:
+		pgFmt, err = fn.PGFormatFunc(args)
 	default:
 		panic("unknown function type " + fmt.Sprintf("%T", fn))
 	}
@@ -600,6 +602,27 @@ func (s *sqlGenerator) VisitRelationSubquery(p0 *parse.RelationSubquery) any {
 	if p0.Alias != "" {
 		str.WriteString("AS ")
 		str.WriteString(p0.Alias)
+	}
+	return str.String()
+}
+
+func (s *sqlGenerator) VisitRelationTableFunction(p0 *parse.RelationTableFunction) any {
+	str := strings.Builder{}
+	str.WriteString(p0.FunctionCall.Accept(s).(string))
+
+	if p0.Alias != "" || len(p0.ColumnAliases) > 0 {
+		str.WriteString(" AS ")
+		if p0.Alias != "" {
+			str.WriteString(p0.Alias)
+		} else {
+			str.WriteString("t") // Default table alias
+		}
+
+		if len(p0.ColumnAliases) > 0 {
+			str.WriteString("(")
+			str.WriteString(strings.Join(p0.ColumnAliases, ", "))
+			str.WriteString(")")
+		}
 	}
 	return str.String()
 }
