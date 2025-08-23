@@ -393,6 +393,8 @@ func (s *Scan) String() string {
 		str.WriteString(fmt.Sprintf(`Scan Table%s: %s`, alias, s.Source.FormatScan()))
 	case *ProcedureScanSource:
 		str.WriteString(fmt.Sprintf(`Scan Procedure%s: %s`, alias, s.Source.FormatScan()))
+	case *TableFunctionScanSource:
+		str.WriteString(fmt.Sprintf(`Scan Table Function%s: %s`, alias, s.Source.FormatScan()))
 	case *Subquery:
 		str.WriteString(fmt.Sprintf(`Scan Subquery%s: [subplan_id=%s]`, alias, t.Plan.ID))
 		if len(t.Correlated) > 0 {
@@ -3270,9 +3272,29 @@ func (t *TableFunctionScanSource) FormatScan() string {
 }
 
 func (t *TableFunctionScanSource) Relation() *Relation {
-	return t.rel
+	if t.rel == nil {
+		return nil
+	}
+	// Return a copy like TableScanSource/ProcedureScanSource
+	return t.rel.Copy()
 }
 
 func (t *TableFunctionScanSource) Plans() []Plan {
 	return nil
+}
+
+func (t *TableFunctionScanSource) Equal(other Traversable) bool {
+	o, ok := other.(*TableFunctionScanSource)
+	if !ok {
+		return false
+	}
+	// Simple comparison - function name and argument count
+	if t.FunctionCall.Name != o.FunctionCall.Name {
+		return false
+	}
+	if len(t.FunctionCall.Args) != len(o.FunctionCall.Args) {
+		return false
+	}
+	// Could do deeper comparison of arguments if needed
+	return true
 }

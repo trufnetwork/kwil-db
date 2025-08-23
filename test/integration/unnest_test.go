@@ -165,7 +165,7 @@ func TestUNNESTRealWorldScenarios(t *testing.T) {
 		    SELECT 1 AS idx
 		    UNION ALL
 		    SELECT idx + 1 FROM indexes
-		    WHERE idx < array_length($stream_ids)
+		    WHERE idx < array_length($stream_ids, 1)
 		),
 		stream_arrays AS (
 		    SELECT

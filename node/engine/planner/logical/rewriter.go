@@ -1,6 +1,9 @@
 package logical
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/trufnetwork/kwil-db/node/engine/parse"
+)
 
 // RewriteConfig is a configuration for the rewriter.
 type RewriteConfig struct {
@@ -86,6 +89,11 @@ func (r *rewriteVisitor) VisitTableScanSource(p0 *TableScanSource) any {
 
 func (r *rewriteVisitor) VisitTableFunctionScanSource(p0 *TableFunctionScanSource) any {
 	return r.scanSource(p0, func() {})
+}
+
+func (r *rewriteVisitor) VisitRelationTableFunction(p0 *parse.RelationTableFunction) any {
+	// Forward to existing logic or return fallback
+	panic("VisitRelationTableFunction not implemented")
 }
 
 func (r *rewriteVisitor) slice(v any) {

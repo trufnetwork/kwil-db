@@ -2854,7 +2854,11 @@ func (s *scopeContext) tableFunction(node *parse.RelationTableFunction) (*Scan, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("error evaluating argument %d: %w", i+1, err)
 		}
-		argTypes[i] = field.val.(*types.DataType)
+		dataType, err := field.Scalar()
+		if err != nil {
+			return nil, nil, fmt.Errorf("argument %d is not scalar: %w", i+1, err)
+		}
+		argTypes[i] = dataType
 	}
 
 	tableSchema, err := tableFn.ValidateTableSchema(argTypes)
@@ -2866,6 +2870,11 @@ func (s *scopeContext) tableFunction(node *parse.RelationTableFunction) (*Scan, 
 	alias := node.FunctionCall.Name
 	if node.Alias != "" {
 		alias = node.Alias
+	}
+
+	// Enforce column alias count to match table schema width (Postgres-compatible)
+	if len(node.ColumnAliases) > 0 && len(node.ColumnAliases) != len(tableSchema) {
+		return nil, nil, fmt.Errorf("column alias count (%d) must match table function schema width (%d)", len(node.ColumnAliases), len(tableSchema))
 	}
 
 	rel := &Relation{}
