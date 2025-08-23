@@ -93,8 +93,10 @@ func (r *rewriteVisitor) VisitTableFunctionScanSource(p0 *TableFunctionScanSourc
 }
 
 func (r *rewriteVisitor) VisitRelationTableFunction(p0 *parse.RelationTableFunction) any {
-	// Forward to existing logic or return fallback
-	panic("VisitRelationTableFunction not implemented")
+	// The rewriter operates on logical plans, not parse AST nodes.
+	// RelationTableFunction nodes are handled during logical planning phase,
+	// not during rewriting. This visitor should not be called in practice.
+	return p0
 }
 
 func (r *rewriteVisitor) slice(v any) {
