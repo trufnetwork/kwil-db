@@ -161,12 +161,21 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	}
 
 	wasActive := e.queryState.active
+	// Capture current state before overwriting
+	prevQueryType := e.queryState.queryType
+	prevSQL := e.queryState.sql
+
 	e.queryState.active = true
 	e.queryState.queryType = analyzeQueryType(sql)
 	e.queryState.sql = sql
 
 	defer func() {
-		if !wasActive {
+		if wasActive {
+			// Restore previous state when there was already an active query
+			e.queryState.queryType = prevQueryType
+			e.queryState.sql = prevSQL
+		} else {
+			// Reset to defaults when this was the outermost query
 			e.queryState.active = false
 			e.queryState.queryType = QueryTypeUnknown
 			e.queryState.sql = ""

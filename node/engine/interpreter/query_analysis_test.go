@@ -799,3 +799,185 @@ func TestQueryAnalysisErrorConditions(t *testing.T) {
 		})
 	}
 }
+
+// TestPreprocessSQL_DollarQuotedStrings tests dollar-quoted PostgreSQL literals
+func TestPreprocessSQL_DollarQuotedStrings(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple dollar quotes",
+			input:    "SELECT $$ WITH RECURSIVE malicious $$ FROM table",
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "tagged dollar quotes",
+			input:    "SELECT $tag$ INSERT INTO users VALUES ('hacker') $tag$ FROM table",
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "multiline dollar quotes",
+			input:    "SELECT $$\nWITH RECURSIVE evil\nINSERT INTO system\n$$ FROM table",
+			expected: "SELECT  \n \n  FROM table",
+		},
+		{
+			name:     "nested tags different",
+			input:    "SELECT $outer$ content $inner$ more content $inner$ end $outer$ FROM table",
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "dollar in regular context",
+			input:    "SELECT price FROM products WHERE price > 100",
+			expected: "SELECT price FROM products WHERE price > 100",
+		},
+		{
+			name:     "incomplete dollar quote",
+			input:    "SELECT $ incomplete FROM table",
+			expected: "SELECT $ incomplete FROM table",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := preprocessSQL(tt.input)
+			// Normalize whitespace for comparison
+			expected := strings.Join(strings.Fields(tt.expected), " ")
+			actual := strings.Join(strings.Fields(result), " ")
+			assert.Equal(t, expected, actual)
+		})
+	}
+}
+
+// TestPreprocessSQL_DoubleQuoteEscapes tests double-quoted identifiers with escaped quotes
+func TestPreprocessSQL_DoubleQuoteEscapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple double quotes",
+			input:    `SELECT "column name" FROM table`,
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "escaped double quotes",
+			input:    `SELECT "He said ""Hello""" FROM table`,
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "multiple escaped quotes",
+			input:    `SELECT "column""with""quotes" FROM table`,
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "mixed quotes",
+			input:    `SELECT "quoted", 'string', "more""quotes" FROM table`,
+			expected: "SELECT   ,   ,   FROM table",
+		},
+		{
+			name:     "malicious content in double quotes",
+			input:    `SELECT "WITH RECURSIVE evil INSERT" FROM table`,
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "incomplete escape",
+			input:    `SELECT "incomplete escape" FROM table`,
+			expected: "SELECT   FROM table",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := preprocessSQL(tt.input)
+			// Normalize whitespace for comparison
+			expected := strings.Join(strings.Fields(tt.expected), " ")
+			actual := strings.Join(strings.Fields(result), " ")
+			assert.Equal(t, expected, actual)
+		})
+	}
+}
+
+// TestPreprocessSQL_ComplexCombinations tests complex combinations of string types
+func TestPreprocessSQL_ComplexCombinations(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "all quote types combined",
+			input:    `SELECT 'single', "double""escaped", $tag$dollar$tag$, /* comment */ FROM table -- line comment`,
+			expected: "SELECT   ,   ,   ,   FROM table  ",
+		},
+		{
+			name:     "nested quote types",
+			input:    `SELECT $outer$ 'single in dollar' "double in dollar" $outer$ FROM table`,
+			expected: "SELECT   FROM table",
+		},
+		{
+			name:     "malicious keywords in all quote types",
+			input:    `SELECT 'WITH RECURSIVE', "INSERT INTO", $tag$DELETE FROM$tag$ FROM table`,
+			expected: "SELECT   ,   ,   FROM table",
+		},
+		{
+			name:     "semicolons in quotes should be stripped",
+			input:    `WITH RECURSIVE cte AS (SELECT 1) SELECT 'statement1; DELETE FROM users;' FROM table`,
+			expected: "WITH RECURSIVE cte AS (SELECT 1) SELECT   FROM table",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := preprocessSQL(tt.input)
+			// Normalize whitespace for comparison
+			expected := strings.Join(strings.Fields(tt.expected), " ")
+			actual := strings.Join(strings.Fields(result), " ")
+			assert.Equal(t, expected, actual)
+		})
+	}
+}
+
+// TestContainsWithRecursiveDML_SameStatement tests same-statement enforcement
+func TestContainsWithRecursiveDML_SameStatement(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "same statement - should match",
+			input:    "WITH RECURSIVE cte AS (SELECT 1) INSERT INTO table SELECT * FROM cte",
+			expected: true,
+		},
+		{
+			name:     "different statements - should not match",
+			input:    "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte; INSERT INTO table VALUES (1)",
+			expected: false,
+		},
+		{
+			name:     "semicolon in string literal - should match",
+			input:    "WITH RECURSIVE cte AS (SELECT ';') INSERT INTO table SELECT * FROM cte",
+			expected: true,
+		},
+		{
+			name:     "semicolon in comment - should match",
+			input:    "WITH RECURSIVE cte AS (SELECT 1 /* ; comment */) INSERT INTO table SELECT * FROM cte",
+			expected: true,
+		},
+		{
+			name:     "multiple statements, only first has WITH RECURSIVE",
+			input:    "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte; INSERT INTO table VALUES (1)",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := containsWithRecursiveDML(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
