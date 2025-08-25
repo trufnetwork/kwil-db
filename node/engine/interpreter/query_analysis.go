@@ -18,6 +18,7 @@ var (
 		regexp.MustCompile(`(?is)SELECT.*FROM.*\(.*SELECT.*FROM.*\(.*SELECT`), // Deeply nested SELECT statements (3+ levels)
 		regexp.MustCompile(`(?is)EXISTS\s*\([^)]*EXISTS`),                     // Nested EXISTS clauses
 		regexp.MustCompile(`(?is)IN\s*\([^)]*IN\s*\(`),                        // Nested IN clauses
+		regexp.MustCompile(`(?is)IN\s*\([^)]*SELECT[^)]*\bIN\b`),              // IN with sub-SELECT containing IN
 		regexp.MustCompile(`(?is)UNION\s+ALL.*SELECT.*FROM.*\(.*SELECT`),      // Complex UNION structures
 	}
 )

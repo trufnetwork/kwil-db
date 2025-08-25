@@ -488,14 +488,6 @@ func TestQueryAnalysisIntegration(t *testing.T) {
 
 // TestQueryAnalysisSafeguards verifies that our analysis maintains security
 func TestQueryAnalysisSafeguards(t *testing.T) {
-	execCtx := &executionContext{
-		queryState: QueryExecutionState{
-			active:    true,
-			queryType: QueryTypeSelect,
-			sql:       "SELECT * FROM sensitive_table",
-		},
-	}
-
 	// Test potentially dangerous patterns that should be blocked
 	dangerousQueries := []string{
 		// Excessive nesting
@@ -509,23 +501,26 @@ func TestQueryAnalysisSafeguards(t *testing.T) {
 	}
 
 	for i, query := range dangerousQueries {
-		t.Run(fmt.Sprintf("dangerous_query_%d", i), func(t *testing.T) {
-			result := execCtx.canAllowThisQuery(query)
-			assert.False(t, result, "Dangerous query should be blocked: %s", query)
+		// Capture loop variables for the closure
+		testIndex := i
+		testQuery := query
+		t.Run(fmt.Sprintf("dangerous_query_%d", testIndex), func(t *testing.T) {
+			// Create fresh execCtx for each subtest
+			execCtx := &executionContext{
+				queryState: QueryExecutionState{
+					active:    true,
+					queryType: QueryTypeSelect,
+					sql:       "SELECT * FROM sensitive_table",
+				},
+			}
+			result := execCtx.canAllowThisQuery(testQuery)
+			assert.False(t, result, "Dangerous query should be blocked: %s", testQuery)
 		})
 	}
 }
 
 // TestQueryAnalysisRealWorldScenarios tests scenarios based on our actual use case
 func TestQueryAnalysisRealWorldScenarios(t *testing.T) {
-	execCtx := &executionContext{
-		queryState: QueryExecutionState{
-			active:    true,
-			queryType: QueryTypeSelect,
-			sql:       "SELECT * FROM primitive_events WHERE stream_ref = 1",
-		},
-	}
-
 	// Test the exact patterns we use in our digest operations
 	realWorldQueries := []struct {
 		query    string
@@ -562,23 +557,25 @@ func TestQueryAnalysisRealWorldScenarios(t *testing.T) {
 	}
 
 	for _, tc := range realWorldQueries {
-		t.Run(tc.name, func(t *testing.T) {
-			result := execCtx.canAllowThisQuery(tc.query)
-			assert.Equal(t, tc.expected, result, "Real-world query result mismatch for %s", tc.name)
+		// Capture loop variables for the closure
+		testCase := tc
+		t.Run(testCase.name, func(t *testing.T) {
+			// Create fresh execCtx for each subtest
+			execCtx := &executionContext{
+				queryState: QueryExecutionState{
+					active:    true,
+					queryType: QueryTypeSelect,
+					sql:       "SELECT * FROM primitive_events WHERE stream_ref = 1",
+				},
+			}
+			result := execCtx.canAllowThisQuery(testCase.query)
+			assert.Equal(t, testCase.expected, result, "Real-world query result mismatch for %s", testCase.name)
 		})
 	}
 }
 
 // TestQueryAnalysisNegativeCases focuses on comprehensive negative testing
 func TestQueryAnalysisNegativeCases(t *testing.T) {
-	execCtx := &executionContext{
-		queryState: QueryExecutionState{
-			active:    true,
-			queryType: QueryTypeSelect,
-			sql:       "SELECT * FROM users",
-		},
-	}
-
 	// Test queries that should be blocked
 	negativeTests := []struct {
 		name        string
@@ -663,9 +660,19 @@ func TestQueryAnalysisNegativeCases(t *testing.T) {
 	}
 
 	for _, tt := range negativeTests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := execCtx.canAllowThisQuery(tt.query)
-			assert.False(t, result, tt.description+" - Query: %s", tt.query)
+		// Capture loop variables for the closure
+		testCase := tt
+		t.Run(testCase.name, func(t *testing.T) {
+			// Create fresh execCtx for each subtest
+			execCtx := &executionContext{
+				queryState: QueryExecutionState{
+					active:    true,
+					queryType: QueryTypeSelect,
+					sql:       "SELECT * FROM users",
+				},
+			}
+			result := execCtx.canAllowThisQuery(testCase.query)
+			assert.False(t, result, testCase.description+" - Query: %s", testCase.query)
 		})
 	}
 }
