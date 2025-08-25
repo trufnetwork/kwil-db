@@ -3273,7 +3273,7 @@ func (t *TableFunctionScanSource) FormatScan() string {
 
 func (t *TableFunctionScanSource) Relation() *Relation {
 	if t.rel == nil {
-		return nil
+		return &Relation{} // Return empty Relation for parity with TableScanSource/ProcedureScanSource
 	}
 	// Return a copy like TableScanSource/ProcedureScanSource
 	return t.rel.Copy()

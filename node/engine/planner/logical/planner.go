@@ -2839,12 +2839,17 @@ func (s *scopeContext) tableFunction(node *parse.RelationTableFunction) (*Scan, 
 	// Check if this is a known table-valued function
 	fn, ok := engine.Functions[node.FunctionCall.Name]
 	if !ok {
-		return nil, nil, fmt.Errorf("function %s not found", node.FunctionCall.Name)
+		return nil, nil, fmt.Errorf(`%w: "%s"`, ErrFunctionDoesNotExist, node.FunctionCall.Name)
 	}
 
 	tableFn, ok := fn.(*engine.TableValuedFunctionDefinition)
 	if !ok {
 		return nil, nil, fmt.Errorf("function %s is not a table-valued function", node.FunctionCall.Name)
+	}
+
+	// Enforce that table-valued functions must provide an explicit alias
+	if node.Alias == "" {
+		return nil, nil, fmt.Errorf("table-valued function %s must have an explicit alias", node.FunctionCall.Name)
 	}
 
 	// Validate function arguments and get table schema
@@ -2861,16 +2866,13 @@ func (s *scopeContext) tableFunction(node *parse.RelationTableFunction) (*Scan, 
 		argTypes[i] = dataType
 	}
 
-	tableSchema, err := tableFn.ValidateTableSchema(argTypes)
+	tableSchema, err := tableFn.ValidateArgsFunc(argTypes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("table function validation failed: %w", err)
 	}
 
-	// Create relation from table schema
-	alias := node.FunctionCall.Name
-	if node.Alias != "" {
-		alias = node.Alias
-	}
+	// Use the explicit alias
+	alias := node.Alias
 
 	// Enforce column alias count to match table schema width (Postgres-compatible)
 	if len(node.ColumnAliases) > 0 && len(node.ColumnAliases) != len(tableSchema) {
