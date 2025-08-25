@@ -2348,6 +2348,10 @@ func (i *interpreterPlanner) VisitRelationSubquery(p0 *parse.RelationSubquery) a
 	panic("intepreter planner should not be called for SQL expressions")
 }
 
+func (i *interpreterPlanner) VisitRelationTableFunction(p0 *parse.RelationTableFunction) any {
+	panic("intepreter planner should not be called for SQL expressions")
+}
+
 func (i *interpreterPlanner) VisitJoin(p0 *parse.Join) any {
 	panic("intepreter planner should not be called for SQL expressions")
 }

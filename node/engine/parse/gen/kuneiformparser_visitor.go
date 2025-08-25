@@ -184,6 +184,9 @@ type KuneiformParserVisitor interface {
 	// Visit a parse tree produced by KuneiformParser#subquery_relation.
 	VisitSubquery_relation(ctx *Subquery_relationContext) interface{}
 
+	// Visit a parse tree produced by KuneiformParser#table_function_relation.
+	VisitTable_function_relation(ctx *Table_function_relationContext) interface{}
+
 	// Visit a parse tree produced by KuneiformParser#join.
 	VisitJoin(ctx *JoinContext) interface{}
 

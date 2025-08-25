@@ -243,6 +243,10 @@ func (v *BaseKuneiformParserVisitor) VisitSubquery_relation(ctx *Subquery_relati
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseKuneiformParserVisitor) VisitTable_function_relation(ctx *Table_function_relationContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseKuneiformParserVisitor) VisitJoin(ctx *JoinContext) interface{} {
 	return v.VisitChildren(ctx)
 }

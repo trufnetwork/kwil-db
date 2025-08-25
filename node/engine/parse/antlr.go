@@ -1323,6 +1323,45 @@ func (s *schemaVisitor) VisitSubquery_relation(ctx *gen.Subquery_relationContext
 	return t
 }
 
+func (s *schemaVisitor) VisitTable_function_relation(ctx *gen.Table_function_relationContext) any {
+	// Build function call expression
+	var funcName string
+	if ctx.UNNEST() != nil {
+		funcName = "unnest" // UNNEST keyword
+	} else {
+		funcName = s.getIdent(ctx.Identifier(0)) // Regular identifier
+	}
+
+	funcCall := &ExpressionFunctionCall{
+		Name: funcName,
+		Args: make([]Expression, len(ctx.AllSql_expr())),
+	}
+
+	// Parse function arguments
+	for i, expr := range ctx.AllSql_expr() {
+		funcCall.Args[i] = expr.Accept(s).(Expression)
+	}
+
+	funcCall.Set(ctx)
+
+	t := &RelationTableFunction{
+		FunctionCall: funcCall,
+	}
+
+	// Handle table alias (second identifier if present)
+	if ctx.GetAlias() != nil {
+		t.Alias = s.getIdent(ctx.GetAlias())
+	}
+
+	// Handle column aliases if present
+	if ctx.GetColumn_aliases() != nil {
+		t.ColumnAliases = ctx.GetColumn_aliases().Accept(s).([]string)
+	}
+
+	t.Set(ctx)
+	return t
+}
+
 func (s *schemaVisitor) VisitJoin(ctx *gen.JoinContext) any {
 	j := &Join{
 		Relation: ctx.Relation().Accept(s).(Table),

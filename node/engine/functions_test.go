@@ -34,8 +34,16 @@ func Test_AllFunctionsImplemented(t *testing.T) {
 			if fnt.ValidateArgsFunc == nil {
 				t.Errorf("function %s has no ValidateArgsFunc", name)
 			}
+		case *engine.TableValuedFunctionDefinition:
+			if fnt.PGFormatFunc == nil {
+				t.Errorf("function %s has no PGFormatFunc", name)
+			}
+
+			if fnt.ValidateArgsFunc == nil {
+				t.Errorf("function %s has no ValidateArgsFunc", name)
+			}
 		default:
-			t.Errorf("function %s is not a scalar, aggregate, or window function", name)
+			t.Errorf("function %s is not a scalar, aggregate, window, or table-valued function", name)
 		}
 	}
 }
