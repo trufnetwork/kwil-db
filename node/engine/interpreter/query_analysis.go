@@ -37,10 +37,9 @@ const (
 
 // QueryExecutionState tracks the current query execution context
 type QueryExecutionState struct {
-	active      bool
-	queryType   QueryType
-	allowNested bool
-	sql         string
+	active    bool
+	queryType QueryType
+	sql       string
 }
 
 // preprocessSQL strips SQL comments and string literals to avoid false positives

@@ -305,10 +305,9 @@ func TestExecutionContext_CanAllowThisQuery(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			execCtx := &executionContext{
 				queryState: QueryExecutionState{
-					active:      tt.queryActive,
-					queryType:   QueryTypeSelect,
-					allowNested: false,
-					sql:         tt.currentSQL,
+					active:    tt.queryActive,
+					queryType: QueryTypeSelect,
+					sql:       tt.currentSQL,
 				},
 			}
 
@@ -321,10 +320,9 @@ func TestExecutionContext_CanAllowThisQuery(t *testing.T) {
 func TestQueryExecutionStateTransitions(t *testing.T) {
 	execCtx := &executionContext{
 		queryState: QueryExecutionState{
-			active:      false,
-			queryType:   QueryTypeUnknown,
-			allowNested: false,
-			sql:         "",
+			active:    false,
+			queryType: QueryTypeUnknown,
+			sql:       "",
 		},
 	}
 
@@ -414,10 +412,9 @@ func TestQueryAnalysisIntegration(t *testing.T) {
 	// Create execution context
 	execCtx := &executionContext{
 		queryState: QueryExecutionState{
-			active:      false,
-			queryType:   QueryTypeUnknown,
-			allowNested: false,
-			sql:         "",
+			active:    false,
+			queryType: QueryTypeUnknown,
+			sql:       "",
 		},
 	}
 
