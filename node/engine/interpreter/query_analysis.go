@@ -11,10 +11,10 @@ var (
 	multipleStatementsRe = regexp.MustCompile(`;\s*[^;\s][^;]*`)
 
 	// Dangerous system functions and PostgreSQL server-side operations
-	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_read_binary_file|pg_write_file|pg_stat_file|pg_ls_dir|pg_sleep|pg_execute|copy|pg_stat_activity|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|pg_file_write|pg_file_read)\b`)
+	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_read_binary_file|pg_write_file|pg_stat_file|pg_ls_dir|pg_ls_waldir|pg_ls_logdir|pg_rotate_logfile|pg_file_rename|pg_sleep|pg_execute|copy|pg_stat_activity|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|pg_file_write|pg_file_read)\b`)
 
 	// PostgreSQL meta-commands (psql backslash commands)
-	psqlMetaCommandRe = regexp.MustCompile(`\\\w+`)
+	psqlMetaCommandRe = regexp.MustCompile(`(?:^|\s)\\\w+`)
 )
 
 // QueryType represents the type of SQL query being executed
@@ -110,10 +110,10 @@ func preprocessSQL(sql string) string {
 			}
 		}
 
-		// Handle PostgreSQL E-string literals (E'...' with C-style escapes)
-		if char == 'E' && !inSingleQuote && !inDoubleQuote &&
+		// Handle PostgreSQL E-string literals (E'...' or e'...' with C-style escapes)
+		if (char == 'E' || char == 'e') && !inSingleQuote && !inDoubleQuote &&
 			i < len(sql)-1 && sql[i+1] == '\'' {
-			// This is an E-string literal: E'...'
+			// This is an E-string literal: E'...' or e'...'
 			result.WriteByte(' ') // Replace 'E' with space
 			i++                   // Move to the opening quote
 			result.WriteByte(' ') // Replace opening quote with space

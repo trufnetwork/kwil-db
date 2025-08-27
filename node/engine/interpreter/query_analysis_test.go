@@ -145,6 +145,26 @@ func TestHasTechnicalViolations(t *testing.T) {
 			sql:      "SELECT E'Path: C:\\\\Users\\\\O\\'Reilly\\\\file.txt' FROM config",
 			expected: false,
 		},
+		{
+			name:     "lowercase e-string with semicolon inside - safe",
+			sql:      "SELECT e'one;two;three' FROM users",
+			expected: false,
+		},
+		{
+			name:     "lowercase e-string with escaped quotes - safe",
+			sql:      "SELECT e'O\\'Reilly said \\'hello\\'' FROM users",
+			expected: false,
+		},
+		{
+			name:     "lowercase e-string with complex escapes - safe",
+			sql:      "SELECT e'DROP TABLE users;\\nINSERT INTO logs VALUES (\\'hacked\\');' as fake_sql",
+			expected: false,
+		},
+		{
+			name:     "lowercase e-string with backslashes and quotes - safe",
+			sql:      "SELECT e'Path: C:\\\\Users\\\\O\\'Reilly\\\\file.txt' FROM config",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
