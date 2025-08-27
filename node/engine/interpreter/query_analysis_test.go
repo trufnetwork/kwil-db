@@ -165,6 +165,26 @@ func TestHasTechnicalViolations(t *testing.T) {
 			sql:      "SELECT e'Path: C:\\\\Users\\\\O\\'Reilly\\\\file.txt' FROM config",
 			expected: false,
 		},
+		{
+			name:     "multi-statement with newline - blocked",
+			sql:      "SELECT 1;\nSELECT 2",
+			expected: true,
+		},
+		{
+			name:     "COPY command - blocked",
+			sql:      "COPY users TO '/tmp/stolen_data.csv'",
+			expected: true,
+		},
+		{
+			name:     "pg_logdir_ls legacy function - blocked",
+			sql:      "SELECT pg_logdir_ls('logs')",
+			expected: true,
+		},
+		{
+			name:     "GRANT pg_read_all_data - allowed",
+			sql:      "GRANT pg_read_all_data TO reporting_role",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {

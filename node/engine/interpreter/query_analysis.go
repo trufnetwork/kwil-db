@@ -11,10 +11,10 @@ var (
 	multipleStatementsRe = regexp.MustCompile(`;\s*[^;\s][^;]*`)
 
 	// Dangerous system functions and PostgreSQL server-side operations
-	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_read_binary_file|pg_write_file|pg_stat_file|pg_ls_dir|pg_ls_waldir|pg_ls_logdir|pg_rotate_logfile|pg_file_rename|pg_sleep|pg_execute|pg_execute_server_program|copy|pg_stat_activity|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|pg_file_write|pg_file_read|pg_read_all_data|pg_write_all_data)\b`)
+	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_read_binary_file|pg_write_file|pg_stat_file|pg_ls_dir|pg_ls_waldir|pg_ls_logdir|pg_logdir_ls|pg_rotate_logfile|pg_file_rename|pg_sleep|pg_execute|pg_execute_server_program|copy|pg_stat_activity|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|pg_file_write|pg_file_read)\b`)
 
 	// PostgreSQL meta-commands (psql backslash commands)
-	psqlMetaCommandRe = regexp.MustCompile(`(?i)(?:^|[;\s])\\\w+`)
+	psqlMetaCommandRe = regexp.MustCompile(`(?i)(?:^|[[:space:];])\\\w+`)
 )
 
 // QueryType represents the type of SQL query being executed
