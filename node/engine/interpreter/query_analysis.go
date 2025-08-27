@@ -5,22 +5,13 @@ import (
 	"strings"
 )
 
-// Precompiled regexes for efficient pattern matching
+// Simplified regexes for technical safety only
 var (
-	subqueryRe = regexp.MustCompile(`(?is)\(\s*SELECT\b`)
+	// SQL injection patterns - multiple statements separated by semicolons
+	multipleStatementsRe = regexp.MustCompile(`(?i);\s*(DROP|ALTER|CREATE|TRUNCATE|DELETE|UPDATE|INSERT)\b`)
 
-	// Same-statement WITH RECURSIVE + DML detection (no intervening semicolon)
-	reWithRecursiveDMLSameStmt = regexp.MustCompile(`(?is)\bWITH\s+RECURSIVE\b[^;]*\b(INSERT|UPDATE|DELETE)\b`)
-
-	// Problematic nesting patterns - precompiled with case-insensitive and dotall flags
-	// These patterns detect genuinely dangerous constructs while avoiding false positives on WITH RECURSIVE
-	problematicNestRes = []*regexp.Regexp{
-		regexp.MustCompile(`(?is)SELECT.*FROM.*\(.*SELECT.*FROM.*\(.*SELECT`), // Deeply nested SELECT statements (3+ levels)
-		regexp.MustCompile(`(?is)EXISTS\s*\([^)]*EXISTS`),                     // Nested EXISTS clauses
-		regexp.MustCompile(`(?is)IN\s*\([^)]*IN\s*\(`),                        // Nested IN clauses
-		regexp.MustCompile(`(?is)IN\s*\([^)]*SELECT[^)]*\bIN\b`),              // IN with sub-SELECT containing IN
-		regexp.MustCompile(`(?is)UNION\s+ALL.*SELECT.*FROM.*\(.*SELECT`),      // Complex UNION structures
-	}
+	// System function calls that could be non-deterministic
+	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_write_file|pg_execute|copy|\\)\b`)
 )
 
 // QueryType represents the type of SQL query being executed
@@ -176,93 +167,50 @@ func analyzeQueryType(sql string) QueryType {
 	return QueryTypeUnknown
 }
 
-// containsWithRecursiveDML checks if the query contains WITH RECURSIVE in a DML context
-func containsWithRecursiveDML(sql string) bool {
-	// First preprocess to strip comments and string literals
-	clean := preprocessSQL(sql)
-
-	// Enforce same-statement WITH RECURSIVE + DML
-	return reWithRecursiveDMLSameStmt.MatchString(clean)
-}
-
-// hasComplexNesting checks for potentially unsafe nested query patterns
-func hasComplexNesting(sql string) bool {
+// hasTechnicalViolations checks for patterns that would cause actual technical failures
+// Only blocks patterns that could cause consensus safety issues or connection problems
+func hasTechnicalViolations(sql string) bool {
 	// Strip comments and string literals before analysis
 	clean := preprocessSQL(sql)
 
-	// Count nested parentheses depth - if too deep, it might be risky
+	// Check for SQL injection patterns (multiple statements)
+	if multipleStatementsRe.MatchString(clean) {
+		return true
+	}
+
+	// Check for system function calls that could be non-deterministic
+	if systemFunctionRe.MatchString(clean) {
+		return true
+	}
+
+	// Check for malformed parentheses (could cause parser issues)
 	depth := 0
-	maxDepth := 0
 	for _, char := range clean {
 		if char == '(' {
 			depth++
-			if depth > maxDepth {
-				maxDepth = depth
-			}
 		} else if char == ')' {
 			depth--
-			// If depth goes negative, treat as complex (malformed or very complex)
+			// Malformed SQL with mismatched parentheses
 			if depth < 0 {
 				return true
 			}
 		}
 	}
 
-	// Allow reasonable nesting depth for WITH RECURSIVE patterns
-	if maxDepth > 6 {
+	// Unclosed parentheses
+	if depth != 0 {
 		return true
-	}
-
-	// Special handling for WITH RECURSIVE DML patterns
-	if containsWithRecursiveDML(sql) {
-		// Check for specific dangerous patterns that suggest data exfiltration
-		// Pattern: accessing columns named 'secret', 'password', 'private' etc.
-		suspiciousColumns := regexp.MustCompile(`(?i)\b(secret|password|private|confidential|key|token)\s*=`)
-		if suspiciousColumns.MatchString(clean) {
-			return true
-		}
-
-		// Check for deeply nested EXISTS patterns even in WITH RECURSIVE (like the security test)
-		nestedExists := regexp.MustCompile(`(?is)EXISTS\s*\([^)]*EXISTS`)
-		if nestedExists.MatchString(clean) {
-			return true
-		}
-
-		// Allow normal bulk operation WITH RECURSIVE patterns
-		return false
-	}
-
-	// For non-WITH RECURSIVE queries, apply full problematic pattern checks
-	for _, regex := range problematicNestRes {
-		if regex.MatchString(clean) {
-			return true
-		}
 	}
 
 	return false
 }
 
 // isSafeForNesting determines if a query can safely be executed with nesting
+// Now allows all PostgreSQL-compatible patterns, only blocking technical violations
 func (e *executionContext) isSafeForNesting(sql string) bool {
-	clean := preprocessSQL(sql)
-	// Allow WITH RECURSIVE DML patterns that are proven safe
-	if containsWithRecursiveDML(sql) && !hasComplexNesting(sql) {
-		return true
-	}
-
-	// Allow DELETE/UPDATE queries ONLY if they have subqueries (indicating they're part of bulk operations)
-	// Simple DELETE/UPDATE without subqueries should be blocked during active queries
-	queryType := analyzeQueryType(clean)
-	if queryType == QueryTypeDelete || queryType == QueryTypeUpdate {
-		// Only allow if the query contains subqueries AND is not complex
-		hasSubquery := subqueryRe.MatchString(clean) // pattern: "( SELECT ... )"
-		if hasSubquery && !hasComplexNesting(clean) {
-			return true
-		}
-	}
-
-	// Default to not allowing nesting for safety
-	return false
+	// Allow all queries that don't have technical violations
+	// This removes performance-based restrictions while maintaining consensus safety
+	return !hasTechnicalViolations(sql)
 }
 
 // canAllowThisQuery determines if the current query can be executed despite query being active

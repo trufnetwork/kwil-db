@@ -868,7 +868,7 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 			}
 			// we cannot recursively call Postgres, so if a query is active and we don't
 			// have a Go implementation, we need to error out.
-			// Now uses the new query state logic with safe nesting support.
+			// Uses simplified safety check that allows most patterns except technical violations.
 			if e.queryState.active && !e.isSafeForNesting(fmt.Sprintf("FUNCTION %s", funcName)) {
 				return fmt.Errorf(`%w: cannot execute function "%s" while a query is active`, engine.ErrQueryActive, funcName)
 			}

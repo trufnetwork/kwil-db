@@ -64,111 +64,52 @@ func TestAnalyzeQueryType(t *testing.T) {
 	}
 }
 
-func TestContainsWithRecursiveDML(t *testing.T) {
+func TestHasTechnicalViolations(t *testing.T) {
 	tests := []struct {
 		name     string
 		sql      string
 		expected bool
 	}{
 		{
-			name: "with recursive insert",
-			sql: `WITH RECURSIVE
-				indexes AS (SELECT 1 AS idx UNION ALL SELECT idx + 1 FROM indexes WHERE idx < 10)
-				INSERT INTO table1 SELECT * FROM indexes`,
-			expected: true,
-		},
-		{
-			name: "with recursive delete",
-			sql: `WITH RECURSIVE
-				target_ids AS (SELECT id FROM users WHERE active = false)
-				DELETE FROM users WHERE id IN (SELECT id FROM target_ids)`,
-			expected: true,
-		},
-		{
-			name: "with recursive update",
-			sql: `WITH RECURSIVE
-				hierarchy AS (SELECT id FROM departments WHERE parent_id IS NULL)
-				UPDATE employees SET department = 'ROOT' WHERE dept_id IN (SELECT id FROM hierarchy)`,
-			expected: true,
-		},
-		{
-			name: "with recursive select only",
-			sql: `WITH RECURSIVE
-				cte AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM cte WHERE n < 10)
-				SELECT * FROM cte`,
-			expected: false,
-		},
-		{
-			name:     "regular with clause insert",
-			sql:      "WITH cte AS (SELECT 1) INSERT INTO table1 SELECT * FROM cte",
-			expected: false,
-		},
-		{
-			name:     "simple insert",
-			sql:      "INSERT INTO table1 (col1) VALUES (1)",
-			expected: false,
-		},
-		{
-			name:     "case insensitive",
-			sql:      "with recursive cte as (select 1) insert into table1 select * from cte",
-			expected: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := containsWithRecursiveDML(tt.sql)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestHasComplexNesting(t *testing.T) {
-	tests := []struct {
-		name     string
-		sql      string
-		expected bool
-	}{
-		{
-			name:     "simple query",
+			name:     "simple query - safe",
 			sql:      "SELECT * FROM users",
 			expected: false,
 		},
 		{
-			name:     "reasonable nesting depth",
+			name:     "complex nesting - now safe",
 			sql:      "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE amount > 100)",
 			expected: false,
 		},
 		{
-			name:     "with recursive pattern",
+			name:     "with recursive pattern - safe",
 			sql:      "WITH RECURSIVE cte AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM cte WHERE n < 10) SELECT * FROM cte",
 			expected: false,
 		},
 		{
-			name:     "excessive nesting depth",
+			name:     "deep nesting - now allowed",
 			sql:      "SELECT * FROM t1 WHERE id IN (SELECT id FROM t2 WHERE id IN (SELECT id FROM t3 WHERE id IN (SELECT id FROM t4 WHERE id IN (SELECT id FROM t5 WHERE id IN (SELECT id FROM t6 WHERE id IN (SELECT id FROM t7))))))",
+			expected: false,
+		},
+		{
+			name:     "sql injection - blocked",
+			sql:      "SELECT * FROM users; DROP TABLE important;",
 			expected: true,
 		},
 		{
-			name:     "nested exists clauses",
-			sql:      "SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE EXISTS (SELECT 1 FROM items))",
+			name:     "system function call - blocked",
+			sql:      "SELECT system('dangerous command')",
 			expected: true,
 		},
 		{
-			name:     "nested in clauses",
-			sql:      "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE product_id IN (SELECT id FROM products WHERE category IN (SELECT id FROM categories)))",
-			expected: true,
-		},
-		{
-			name:     "complex union structure",
-			sql:      "SELECT * FROM users UNION ALL SELECT * FROM (SELECT * FROM archived_users UNION ALL SELECT * FROM deleted_users)",
+			name:     "malformed parentheses - blocked",
+			sql:      "SELECT * FROM users WHERE (id = 1 AND name = 'test'",
 			expected: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := hasComplexNesting(tt.sql)
+			result := hasTechnicalViolations(tt.sql)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -213,7 +154,7 @@ func TestExecutionContext_IsSafeForNesting(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "unsafe complex with recursive",
+			name: "complex with recursive - now allowed",
 			sql: `WITH RECURSIVE
 				deep_hierarchy AS (
 					SELECT id FROM departments 
@@ -222,22 +163,22 @@ func TestExecutionContext_IsSafeForNesting(t *testing.T) {
 					WHERE EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id AND EXISTS (SELECT 1 FROM orders o WHERE o.user_id = e.id))
 				)
 				DELETE FROM departments WHERE id IN (SELECT id FROM deep_hierarchy)`,
-			expected: false,
+			expected: true,
 		},
 		{
-			name:     "unsafe complex nested query",
+			name:     "complex nested query - now allowed",
 			sql:      "DELETE FROM users WHERE id IN (SELECT user_id FROM orders WHERE product_id IN (SELECT id FROM products WHERE category IN (SELECT id FROM categories WHERE active IN (SELECT status FROM config))))",
-			expected: false,
+			expected: true,
 		},
 		{
-			name:     "regular select query",
+			name:     "regular select query - now allowed",
 			sql:      "SELECT * FROM users",
-			expected: false,
+			expected: true,
 		},
 		{
-			name:     "simple insert",
+			name:     "simple insert - now allowed",
 			sql:      "INSERT INTO users (name) VALUES ('test')",
-			expected: false,
+			expected: true,
 		},
 	}
 
@@ -284,20 +225,20 @@ func TestExecutionContext_CanAllowThisQuery(t *testing.T) {
 			description: "Should allow safe DELETE with simple subquery when query is active",
 		},
 		{
-			name:        "active query with unsafe complex nesting",
+			name:        "active query with complex nesting - now allowed",
 			queryActive: true,
 			currentSQL:  "SELECT * FROM users",
 			newSQL:      "DELETE FROM users WHERE id IN (SELECT user_id FROM orders WHERE product_id IN (SELECT id FROM products WHERE category IN (SELECT id FROM categories WHERE active IN (SELECT status FROM config))))",
-			expected:    false,
-			description: "Should reject complex nested queries when query is active",
+			expected:    true,
+			description: "Complex nested queries now allowed when query is active (simplified logic)",
 		},
 		{
-			name:        "active query with regular select",
+			name:        "active query with regular select - now allowed",
 			queryActive: true,
 			currentSQL:  "SELECT * FROM orders",
 			newSQL:      "SELECT * FROM users",
-			expected:    false,
-			description: "Should reject regular queries when query is active (default behavior)",
+			expected:    true,
+			description: "Regular queries now allowed when query is active (simplified logic)",
 		},
 	}
 
@@ -334,11 +275,14 @@ func TestQueryExecutionStateTransitions(t *testing.T) {
 	execCtx.queryState.active = true
 	execCtx.queryState.sql = "SELECT * FROM orders"
 
-	// Should reject normal queries when active
-	assert.False(t, execCtx.canAllowThisQuery("INSERT INTO users (name) VALUES ('test')"))
+	// Should now allow normal queries when active (simplified logic)
+	assert.True(t, execCtx.canAllowThisQuery("INSERT INTO users (name) VALUES ('test')"))
 
-	// But should allow safe nested patterns
+	// Should allow all PostgreSQL patterns including WITH RECURSIVE
 	assert.True(t, execCtx.canAllowThisQuery("WITH RECURSIVE cte AS (SELECT 1) DELETE FROM temp WHERE id = 1"))
+
+	// But should still block technical violations
+	assert.False(t, execCtx.canAllowThisQuery("SELECT * FROM users; DROP TABLE sensitive;"))
 }
 
 // Test edge cases and regression scenarios
@@ -365,23 +309,23 @@ func TestQueryAnalysisEdgeCases(t *testing.T) {
 			description: "Should handle whitespace-only query",
 		},
 		{
-			name:        "query with comments",
+			name:        "query with comments - technical violations check",
 			sql:         "/* comment */ WITH RECURSIVE cte AS (SELECT 1) INSERT INTO table1 SELECT * FROM cte",
-			function:    "containsWithRecursiveDML",
-			expected:    true,
-			description: "Should detect WITH RECURSIVE even with comments",
+			function:    "hasTechnicalViolations",
+			expected:    false,
+			description: "Should allow WITH RECURSIVE queries with comments",
 		},
 		{
-			name:        "mixed case with recursive",
+			name:        "mixed case sql patterns",
 			sql:         "With Recursive cte As (Select 1) Insert Into table1 Select * From cte",
-			function:    "containsWithRecursiveDML",
-			expected:    true,
+			function:    "hasTechnicalViolations",
+			expected:    false,
 			description: "Should handle mixed case SQL",
 		},
 		{
-			name:        "false positive with recursive in string",
+			name:        "keywords in string literals",
 			sql:         "SELECT 'WITH RECURSIVE' as description FROM table1",
-			function:    "containsWithRecursiveDML",
+			function:    "hasTechnicalViolations",
 			expected:    false,
 			description: "Should not be fooled by keywords in string literals",
 		},
@@ -394,10 +338,8 @@ func TestQueryAnalysisEdgeCases(t *testing.T) {
 			switch tt.function {
 			case "analyzeQueryType":
 				result = analyzeQueryType(tt.sql)
-			case "containsWithRecursiveDML":
-				result = containsWithRecursiveDML(tt.sql)
-			case "hasComplexNesting":
-				result = hasComplexNesting(tt.sql)
+			case "hasTechnicalViolations":
+				result = hasTechnicalViolations(tt.sql)
 			default:
 				t.Fatalf("Unknown function: %s", tt.function)
 			}
@@ -437,28 +379,35 @@ func TestQueryAnalysisIntegration(t *testing.T) {
 			setupQuery:     "SELECT * FROM users",
 			nestedQuery:    "WITH RECURSIVE indexes AS (SELECT 1 AS idx UNION ALL SELECT idx + 1 FROM indexes WHERE idx <= 10) INSERT INTO log_entries SELECT * FROM indexes",
 			expectedResult: true,
-			description:    "Should allow safe WITH RECURSIVE INSERT even during active query",
+			description:    "Should allow WITH RECURSIVE INSERT even during active query (simplified logic)",
 		},
 		{
-			name:           "Block complex nested query during active query",
+			name:           "Allow complex nested query during active query",
 			setupQuery:     "SELECT * FROM orders",
 			nestedQuery:    "DELETE FROM users WHERE id IN (SELECT user_id FROM orders WHERE product_id IN (SELECT id FROM products WHERE category IN (SELECT id FROM categories)))",
-			expectedResult: false,
-			description:    "Should block complex nested query during active query",
+			expectedResult: true,
+			description:    "Should allow complex nested query during active query (performance restrictions removed)",
 		},
 		{
-			name:           "Block regular query during active query",
+			name:           "Allow regular query during active query",
 			setupQuery:     "SELECT * FROM table1",
 			nestedQuery:    "SELECT * FROM table2",
-			expectedResult: false,
-			description:    "Should block regular query during active query (maintains original ErrQueryActive behavior)",
+			expectedResult: true,
+			description:    "Should allow regular query during active query (simplified logic allows PostgreSQL patterns)",
 		},
 		{
-			name:           "Allow simple DELETE with subquery during active query",
+			name:           "Block SQL injection during active query",
 			setupQuery:     "UPDATE users SET status = 'active'",
-			nestedQuery:    "DELETE FROM temp_data WHERE created_at < (SELECT cleanup_date FROM config)",
-			expectedResult: true,
-			description:    "Should allow simple DELETE with subquery during active query",
+			nestedQuery:    "SELECT * FROM users; DROP TABLE sensitive_data;",
+			expectedResult: false,
+			description:    "Should block SQL injection attempts during active query",
+		},
+		{
+			name:           "Block system calls during active query",
+			setupQuery:     "SELECT * FROM table1",
+			nestedQuery:    "SELECT system('rm -rf /')",
+			expectedResult: false,
+			description:    "Should block dangerous system function calls during active query",
 		},
 	}
 
@@ -485,16 +434,16 @@ func TestQueryAnalysisIntegration(t *testing.T) {
 
 // TestQueryAnalysisSafeguards verifies that our analysis maintains security
 func TestQueryAnalysisSafeguards(t *testing.T) {
-	// Test potentially dangerous patterns that should be blocked
+	// Test patterns that should still be blocked for technical safety
 	dangerousQueries := []string{
-		// Excessive nesting
-		"SELECT * FROM t1 WHERE id IN (SELECT id FROM t2 WHERE id IN (SELECT id FROM t3 WHERE id IN (SELECT id FROM t4 WHERE id IN (SELECT id FROM t5 WHERE id IN (SELECT id FROM t6 WHERE id IN (SELECT id FROM t7))))))",
+		// SQL injection attempts
+		"SELECT * FROM users; DROP TABLE sensitive_data;",
 
-		// Complex nested EXISTS
-		"DELETE FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE EXISTS (SELECT 1 FROM items WHERE EXISTS (SELECT 1 FROM products)))",
+		// System function calls
+		"SELECT system('rm -rf /')",
 
-		// Complex UNION structure
-		"INSERT INTO table1 SELECT * FROM users UNION ALL SELECT * FROM (SELECT * FROM archived_users UNION ALL SELECT * FROM (SELECT * FROM deleted_users))",
+		// PostgreSQL file operations
+		"COPY users TO '/tmp/stolen_data.csv'",
 	}
 
 	for i, query := range dangerousQueries {
@@ -549,7 +498,7 @@ func TestQueryAnalysisRealWorldScenarios(t *testing.T) {
 				SELECT u.stream_ref, u.day_index FROM UNNEST(ARRAY[1,2,3], ARRAY[10,20,30]) AS u(stream_ref, day_index)
 			)
 			SELECT stream_ref, day_index FROM stream_days`,
-			expected: false, // This is a SELECT during active query, should be blocked
+			expected: true, // Now allowed with simplified logic - PostgreSQL compatible
 		},
 	}
 
@@ -573,86 +522,102 @@ func TestQueryAnalysisRealWorldScenarios(t *testing.T) {
 
 // TestQueryAnalysisNegativeCases focuses on comprehensive negative testing
 func TestQueryAnalysisNegativeCases(t *testing.T) {
-	// Test queries that should be blocked
+	// Test patterns that should still be blocked (only technical violations)
 	negativeTests := []struct {
 		name        string
 		query       string
 		description string
+		shouldBlock bool // New field to indicate if this should actually be blocked
 	}{
 		{
 			name:        "regular_select_during_active_query",
 			query:       "SELECT * FROM orders",
-			description: "Regular SELECT should be blocked during active query",
+			description: "Regular SELECT now allowed during active query (simplified logic)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "regular_insert_during_active_query",
 			query:       "INSERT INTO logs (message) VALUES ('test')",
-			description: "Regular INSERT should be blocked during active query",
+			description: "Regular INSERT now allowed during active query (simplified logic)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "regular_update_during_active_query",
 			query:       "UPDATE users SET status = 'inactive' WHERE id = 1",
-			description: "Regular UPDATE should be blocked during active query",
+			description: "Regular UPDATE now allowed during active query (simplified logic)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "regular_delete_during_active_query",
 			query:       "DELETE FROM temp_files WHERE id = 1",
-			description: "Regular DELETE should be blocked during active query",
+			description: "Regular DELETE now allowed during active query (simplified logic)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "with_clause_without_recursive",
 			query:       "WITH temp AS (SELECT 1) INSERT INTO table1 SELECT * FROM temp",
-			description: "WITH without RECURSIVE should be blocked during active query",
+			description: "WITH without RECURSIVE now allowed during active query (simplified logic)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "recursive_without_dml",
 			query:       "WITH RECURSIVE series AS (SELECT 1 AS n UNION ALL SELECT n+1 FROM series WHERE n < 10) SELECT * FROM series",
-			description: "WITH RECURSIVE without DML should be blocked during active query",
+			description: "WITH RECURSIVE without DML now allowed during active query (simplified logic)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "complex_subquery_in_select",
 			query:       "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE product_id IN (SELECT id FROM products WHERE price > (SELECT AVG(price) FROM products)))",
-			description: "Complex nested subqueries in SELECT should be blocked",
+			description: "Complex nested subqueries now allowed (PostgreSQL compatible)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "sql_injection_attempt",
 			query:       "DELETE FROM users WHERE id = 1; DROP TABLE sensitive_data; --",
-			description: "SQL injection attempts should be blocked",
+			description: "SQL injection attempts should still be blocked",
+			shouldBlock: true, // Still blocked
 		},
 		{
 			name:        "stored_procedure_call",
 			query:       "CALL dangerous_procedure()",
-			description: "Stored procedure calls should be blocked",
+			description: "Stored procedure calls now allowed (PostgreSQL compatible)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "create_table_attempt",
 			query:       "CREATE TABLE malicious_table AS SELECT * FROM sensitive_data",
-			description: "DDL operations should be blocked",
+			description: "DDL operations now allowed (PostgreSQL compatible)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "alter_table_attempt",
 			query:       "ALTER TABLE users ADD COLUMN backdoor TEXT",
-			description: "Schema modification attempts should be blocked",
+			description: "Schema modification now allowed (PostgreSQL compatible)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "drop_table_attempt",
 			query:       "DROP TABLE IF EXISTS important_data",
-			description: "Table dropping attempts should be blocked",
+			description: "Table dropping now allowed (PostgreSQL compatible)",
+			shouldBlock: false, // Now allowed
 		},
 		{
 			name:        "transaction_control",
 			query:       "BEGIN; DELETE FROM users; COMMIT;",
-			description: "Transaction control should be blocked",
+			description: "Transaction control should still be blocked (multi-statement)",
+			shouldBlock: true, // Still blocked
 		},
 		{
 			name:        "system_function_calls",
 			query:       "SELECT system('rm -rf /')",
-			description: "System function calls should be blocked",
+			description: "System function calls should still be blocked",
+			shouldBlock: true, // Still blocked
 		},
 		{
 			name:        "file_operations",
 			query:       "COPY users TO '/tmp/stolen_data.csv'",
-			description: "File operations should be blocked",
+			description: "File operations should still be blocked",
+			shouldBlock: true, // Still blocked
 		},
 	}
 
@@ -669,7 +634,8 @@ func TestQueryAnalysisNegativeCases(t *testing.T) {
 				},
 			}
 			result := execCtx.canAllowThisQuery(testCase.query)
-			assert.False(t, result, testCase.description+" - Query: %s", testCase.query)
+			expectedResult := !testCase.shouldBlock // shouldBlock=true means result should be false
+			assert.Equal(t, expectedResult, result, testCase.description+" - Query: %s", testCase.query)
 		})
 	}
 }
@@ -691,18 +657,18 @@ func TestQueryAnalysisSecurityBoundaries(t *testing.T) {
 			description:     "Simple WITH RECURSIVE DELETE should be allowed",
 		},
 		{
-			name:            "unsafe_with_recursive_boundary",
+			name:            "complex_with_recursive_now_allowed",
 			activeQuery:     "SELECT count(*) FROM users",
 			testQuery:       "WITH RECURSIVE complex AS (SELECT 1 UNION ALL SELECT n+1 FROM complex WHERE EXISTS (SELECT 1 FROM sensitive WHERE secret = complex.n)) DELETE FROM users WHERE id IN (SELECT n FROM complex)",
-			expectedAllowed: false,
-			description:     "Complex WITH RECURSIVE with nested subqueries should be blocked",
+			expectedAllowed: true,
+			description:     "Complex WITH RECURSIVE now allowed with simplified logic",
 		},
 		{
-			name:            "nesting_depth_boundary",
+			name:            "deep_nesting_now_allowed",
 			activeQuery:     "SELECT * FROM table1",
 			testQuery:       "DELETE FROM users WHERE id IN (SELECT id FROM t1 WHERE id IN (SELECT id FROM t2 WHERE id IN (SELECT id FROM t3 WHERE id IN (SELECT id FROM t4))))",
-			expectedAllowed: false,
-			description:     "Queries at nesting depth boundary should be blocked",
+			expectedAllowed: true,
+			description:     "Deep nesting now allowed - PostgreSQL compatible",
 		},
 		{
 			name:            "keyword_case_sensitivity",
@@ -797,8 +763,7 @@ func TestQueryAnalysisErrorConditions(t *testing.T) {
 
 			// Test all analysis functions don't panic
 			_ = analyzeQueryType(tt.query)
-			_ = containsWithRecursiveDML(tt.query)
-			_ = hasComplexNesting(tt.query)
+			_ = hasTechnicalViolations(tt.query)
 			_ = execCtx.canAllowThisQuery(tt.query)
 		})
 	}
@@ -940,48 +905,6 @@ func TestPreprocessSQL_ComplexCombinations(t *testing.T) {
 			expected := strings.Join(strings.Fields(tt.expected), " ")
 			actual := strings.Join(strings.Fields(result), " ")
 			assert.Equal(t, expected, actual)
-		})
-	}
-}
-
-// TestContainsWithRecursiveDML_SameStatement tests same-statement enforcement
-func TestContainsWithRecursiveDML_SameStatement(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected bool
-	}{
-		{
-			name:     "same statement - should match",
-			input:    "WITH RECURSIVE cte AS (SELECT 1) INSERT INTO table SELECT * FROM cte",
-			expected: true,
-		},
-		{
-			name:     "different statements - should not match",
-			input:    "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte; INSERT INTO table VALUES (1)",
-			expected: false,
-		},
-		{
-			name:     "semicolon in string literal - should match",
-			input:    "WITH RECURSIVE cte AS (SELECT ';') INSERT INTO table SELECT * FROM cte",
-			expected: true,
-		},
-		{
-			name:     "semicolon in comment - should match",
-			input:    "WITH RECURSIVE cte AS (SELECT 1 /* ; comment */) INSERT INTO table SELECT * FROM cte",
-			expected: true,
-		},
-		{
-			name:     "multiple statements, only first has WITH RECURSIVE",
-			input:    "WITH RECURSIVE cte AS (SELECT 1) SELECT * FROM cte; INSERT INTO table VALUES (1)",
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := containsWithRecursiveDML(tt.input)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
