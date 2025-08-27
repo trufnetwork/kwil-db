@@ -125,6 +125,26 @@ func TestHasTechnicalViolations(t *testing.T) {
 			sql:      "SELECT 1;",
 			expected: false,
 		},
+		{
+			name:     "E-string with semicolon inside - safe",
+			sql:      "SELECT E'one;two;three' FROM users",
+			expected: false,
+		},
+		{
+			name:     "E-string with escaped quotes - safe",
+			sql:      "SELECT E'O\\'Reilly said \\'hello\\'' FROM users",
+			expected: false,
+		},
+		{
+			name:     "E-string with complex escapes - safe",
+			sql:      "SELECT E'DROP TABLE users;\\nINSERT INTO logs VALUES (\\'hacked\\');' as fake_sql",
+			expected: false,
+		},
+		{
+			name:     "E-string with backslashes and quotes - safe",
+			sql:      "SELECT E'Path: C:\\\\Users\\\\O\\'Reilly\\\\file.txt' FROM config",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -177,9 +197,9 @@ func TestExecutionContext_IsSafeForNesting(t *testing.T) {
 			name: "complex with recursive - now allowed",
 			sql: `WITH RECURSIVE
 				deep_hierarchy AS (
-					SELECT id FROM departments 
-					UNION ALL 
-					SELECT d.id FROM departments d 
+					SELECT id FROM departments
+					UNION ALL
+					SELECT d.id FROM departments d
 					WHERE EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id AND EXISTS (SELECT 1 FROM orders o WHERE o.user_id = e.id))
 				)
 				DELETE FROM departments WHERE id IN (SELECT id FROM deep_hierarchy)`,

@@ -880,7 +880,7 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 			// we cannot recursively call Postgres, so if a query is active and we don't
 			// have a Go implementation, we need to error out.
 			// Check the actual formatted SQL for technical violations.
-			if e.queryState.active && !e.isSafeForNesting(pgFormat) {
+			if e.queryState.active && !e.isSafeForNesting("SELECT "+pgFormat+";") {
 				return fmt.Errorf(`%w: cannot execute function "%s" while a query is active`, engine.ErrQueryActive, funcName)
 			}
 

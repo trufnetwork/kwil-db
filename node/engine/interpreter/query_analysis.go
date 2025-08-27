@@ -110,7 +110,35 @@ func preprocessSQL(sql string) string {
 			}
 		}
 
-		// Handle string literals
+		// Handle PostgreSQL E-string literals (E'...' with C-style escapes)
+		if char == 'E' && !inSingleQuote && !inDoubleQuote &&
+			i < len(sql)-1 && sql[i+1] == '\'' {
+			// This is an E-string literal: E'...'
+			result.WriteByte(' ') // Replace 'E' with space
+			i++                   // Move to the opening quote
+			result.WriteByte(' ') // Replace opening quote with space
+			i++                   // Move past the opening quote
+
+			// Process E-string content with C-style escape handling
+			for i < len(sql) {
+				if sql[i] == '\\' && i < len(sql)-1 {
+					// C-style escape sequence - skip both characters
+					i += 2
+				} else if sql[i] == '\'' {
+					// Found closing quote
+					result.WriteByte(' ') // Replace closing quote with space
+					i++                   // Move past the closing quote
+					break
+				} else {
+					// Regular character inside E-string - skip it
+					i++
+				}
+			}
+			i-- // Adjust because the for loop will increment
+			continue
+		}
+
+		// Handle regular string literals
 		if char == '\'' && !inDoubleQuote {
 			if inSingleQuote && i < len(sql)-1 && sql[i+1] == '\'' {
 				// Escaped single quote

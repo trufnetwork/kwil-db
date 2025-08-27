@@ -1729,8 +1729,8 @@ func Test_Actions(t *testing.T) {
 					return SELECT name, age FROM users;
 				}`,
 			},
-			action: "create_users",
-			err:    engine.ErrQueryActive,
+			action:      "create_users",
+			errContains: "unknown variable", // Now hits PostgreSQL constraint instead of artificial restriction
 		},
 		// case sensitivity
 		{
@@ -2134,8 +2134,8 @@ func Test_Actions(t *testing.T) {
 					}
 				}`,
 			},
-			action: "call_function_in_loop",
-			err:    engine.ErrQueryActive,
+			action:      "call_function_in_loop",
+			errContains: "conn busy", // Now hits actual PostgreSQL connection constraint
 		},
 		{
 			// regression test from a bug hit by Usher Labs.
