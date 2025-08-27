@@ -105,6 +105,26 @@ func TestHasTechnicalViolations(t *testing.T) {
 			sql:      "SELECT * FROM users WHERE (id = 1 AND name = 'test'",
 			expected: true,
 		},
+		{
+			name:     "multi-statement injection - blocked",
+			sql:      "SELECT 1; SELECT 2",
+			expected: true,
+		},
+		{
+			name:     "multi-statement with WITH - blocked",
+			sql:      "WITH x AS (SELECT 1); SELECT x FROM x",
+			expected: true,
+		},
+		{
+			name:     "psql copy meta-command - blocked",
+			sql:      "\\copy users from 'file.csv'",
+			expected: true,
+		},
+		{
+			name:     "single statement with trailing semicolon - allowed",
+			sql:      "SELECT 1;",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -866,13 +866,6 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 					Values:  []Value{res},
 				})
 			}
-			// we cannot recursively call Postgres, so if a query is active and we don't
-			// have a Go implementation, we need to error out.
-			// Uses simplified safety check that allows most patterns except technical violations.
-			if e.queryState.active && !e.isSafeForNesting(fmt.Sprintf("FUNCTION %s", funcName)) {
-				return fmt.Errorf(`%w: cannot execute function "%s" while a query is active`, engine.ErrQueryActive, funcName)
-			}
-
 			zeroVal, err := newZeroValue(retTyp)
 			if err != nil {
 				return err
@@ -882,6 +875,13 @@ func funcDefToExecutable(funcName string, funcDef *engine.ScalarFunctionDefiniti
 			pgFormat, err := funcDef.PGFormatFunc(params)
 			if err != nil {
 				return err
+			}
+
+			// we cannot recursively call Postgres, so if a query is active and we don't
+			// have a Go implementation, we need to error out.
+			// Check the actual formatted SQL for technical violations.
+			if e.queryState.active && !e.isSafeForNesting(pgFormat) {
+				return fmt.Errorf(`%w: cannot execute function "%s" while a query is active`, engine.ErrQueryActive, funcName)
 			}
 
 			// execute the query

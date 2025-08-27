@@ -7,11 +7,14 @@ import (
 
 // Simplified regexes for technical safety only
 var (
-	// SQL injection patterns - multiple statements separated by semicolons
-	multipleStatementsRe = regexp.MustCompile(`(?i);\s*(DROP|ALTER|CREATE|TRUNCATE|DELETE|UPDATE|INSERT)\b`)
+	// Multiple statement detection - any non-empty statement following a semicolon
+	multipleStatementsRe = regexp.MustCompile(`;\s*[^;\s][^;]*`)
 
-	// System function calls that could be non-deterministic
-	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_write_file|pg_execute|copy|\\)\b`)
+	// Dangerous system functions and PostgreSQL server-side operations
+	systemFunctionRe = regexp.MustCompile(`(?i)\b(system|pg_read_file|pg_read_binary_file|pg_write_file|pg_stat_file|pg_ls_dir|pg_sleep|pg_execute|copy|pg_stat_activity|pg_terminate_backend|pg_cancel_backend|lo_import|lo_export|pg_file_write|pg_file_read)\b`)
+
+	// PostgreSQL meta-commands (psql backslash commands)
+	psqlMetaCommandRe = regexp.MustCompile(`\\\w+`)
 )
 
 // QueryType represents the type of SQL query being executed
@@ -180,6 +183,11 @@ func hasTechnicalViolations(sql string) bool {
 
 	// Check for system function calls that could be non-deterministic
 	if systemFunctionRe.MatchString(clean) {
+		return true
+	}
+
+	// Check for PostgreSQL meta-commands (psql backslash commands)
+	if psqlMetaCommandRe.MatchString(clean) {
 		return true
 	}
 
