@@ -185,6 +185,36 @@ func TestHasTechnicalViolations(t *testing.T) {
 			sql:      "GRANT pg_read_all_data TO reporting_role",
 			expected: false,
 		},
+		{
+			name:     "nondeterministic function now() - blocked",
+			sql:      "SELECT now()",
+			expected: true,
+		},
+		{
+			name:     "nondeterministic function clock_timestamp() - blocked",
+			sql:      "SELECT clock_timestamp()",
+			expected: true,
+		},
+		{
+			name:     "nondeterministic function random() - blocked",
+			sql:      "SELECT random()",
+			expected: true,
+		},
+		{
+			name:     "nondeterministic UUID gen - blocked",
+			sql:      "SELECT gen_random_uuid()",
+			expected: true,
+		},
+		{
+			name:     "transaction id function - blocked",
+			sql:      "SELECT txid_current()",
+			expected: true,
+		},
+		{
+			name:     "current_timestamp function - blocked",
+			sql:      "SELECT current_timestamp",
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
