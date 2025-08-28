@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
@@ -41,8 +42,8 @@ func TestGenerateSubscriptsIntegration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Parse the SQL
 			stmts, err := parse.Parse(tt.sql)
-			assert.NoError(t, err, "Failed to parse SQL: %s", tt.sql)
-			assert.Len(t, stmts, 1, "Should parse exactly one statement")
+			require.NoError(t, err, "Failed to parse SQL: %s", tt.sql)
+			require.Len(t, stmts, 1, "Should parse exactly one statement")
 
 			stmt := stmts[0]
 
@@ -58,9 +59,9 @@ func TestGenerateSubscriptsIntegration(t *testing.T) {
 
 			// Generate PostgreSQL SQL
 			generatedSQL, params, err := pggenerate.GenerateSQL(stmt, "test_schema", getVar)
-			assert.NoError(t, err, "Failed to generate SQL")
-			assert.NotEmpty(t, generatedSQL, "Generated SQL should not be empty")
-			assert.NotEmpty(t, params, "Should have parameters")
+			require.NoError(t, err, "Failed to generate SQL")
+			require.NotEmpty(t, generatedSQL, "Generated SQL should not be empty")
+			require.NotEmpty(t, params, "Should have parameters")
 
 			// Verify the generated SQL contains expected components
 			for _, expected := range tt.expectedContains {
@@ -80,31 +81,31 @@ func TestGenerateSubscriptsASTStructure(t *testing.T) {
 	sql := "SELECT * FROM generate_subscripts($ids) AS t(idx)"
 
 	stmts, err := parse.Parse(sql)
-	assert.NoError(t, err)
-	assert.Len(t, stmts, 1)
+	require.NoError(t, err)
+	require.Len(t, stmts, 1)
 
 	stmt := stmts[0]
 
 	// Navigate to the FROM clause to find the table function
 	sqlStmt, ok := stmt.(*parse.SQLStatement)
-	assert.True(t, ok, "Should be SQLStatement")
+	require.True(t, ok, "Should be SQLStatement")
 
 	selectStmt, ok := sqlStmt.SQL.(*parse.SelectStatement)
-	assert.True(t, ok, "Should be SelectStatement")
+	require.True(t, ok, "Should be SelectStatement")
 
 	selectCore := selectStmt.SelectCores[0]
-	assert.NotNil(t, selectCore.From, "Should have FROM clause")
+	require.NotNil(t, selectCore.From, "Should have FROM clause")
 
 	// Check if the FROM clause contains our table function
 	tableFuncRel, ok := selectCore.From.(*parse.RelationTableFunction)
-	assert.True(t, ok, "Should be RelationTableFunction")
+	require.True(t, ok, "Should be RelationTableFunction")
 
 	// Verify function details
-	assert.Equal(t, "generate_subscripts", tableFuncRel.FunctionCall.Name, "Function name should be 'generate_subscripts'")
-	assert.Len(t, tableFuncRel.FunctionCall.Args, 1, "Should have 1 argument")
-	assert.Equal(t, "t", tableFuncRel.Alias, "Table alias should be 't'")
-	assert.Len(t, tableFuncRel.ColumnAliases, 1, "Should have 1 column alias")
-	assert.Equal(t, "idx", tableFuncRel.ColumnAliases[0], "Column alias should be 'idx'")
+	require.Equal(t, "generate_subscripts", tableFuncRel.FunctionCall.Name, "Function name should be 'generate_subscripts'")
+	require.Len(t, tableFuncRel.FunctionCall.Args, 1, "Should have 1 argument")
+	require.Equal(t, "t", tableFuncRel.Alias, "Table alias should be 't'")
+	require.Len(t, tableFuncRel.ColumnAliases, 1, "Should have 1 column alias")
+	require.Equal(t, "idx", tableFuncRel.ColumnAliases[0], "Column alias should be 'idx'")
 }
 
 func TestGenerateSubscriptsErrorHandling(t *testing.T) {
