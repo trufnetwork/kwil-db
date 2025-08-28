@@ -33,10 +33,10 @@ type executionContext struct {
 	// it is a pointer to a slice to allow for child scopes to allocate
 	// space for more logs on the parent.
 	logs *[]string
-	// queryState tracks the current query execution state.
-	// This is used to prevent unsafe nested queries while allowing
-	// specific safe patterns like WITH RECURSIVE in DML operations.
-	queryState QueryExecutionState
+	// queryActive is true if a query is currently active.
+	// This is used to prevent nested queries, which can cause
+	// a deadlock or unexpected behavior.
+	queryActive bool
 	// inAction is true if the execution is currently in an action.
 	inAction bool
 }
@@ -154,33 +154,12 @@ func (e *executionContext) getVariableType(name string) (*types.DataType, error)
 
 // query executes a query.
 // It will parse the SQL, create a logical plan, and execute the query.
-// Now supports safe nested queries for specific patterns like WITH RECURSIVE DML.
 func (e *executionContext) query(sql string, fn func(*row) error) error {
-	if !e.canAllowThisQuery(sql) {
+	if e.queryActive {
 		return engine.ErrQueryActive
 	}
-
-	wasActive := e.queryState.active
-	// Capture current state before overwriting
-	prevQueryType := e.queryState.queryType
-	prevSQL := e.queryState.sql
-
-	e.queryState.active = true
-	e.queryState.queryType = analyzeQueryType(sql)
-	e.queryState.sql = sql
-
-	defer func() {
-		if wasActive {
-			// Restore previous state when there was already an active query
-			e.queryState.queryType = prevQueryType
-			e.queryState.sql = prevSQL
-		} else {
-			// Reset to defaults when this was the outermost query
-			e.queryState.active = false
-			e.queryState.queryType = QueryTypeUnknown
-			e.queryState.sql = ""
-		}
-	}()
+	e.queryActive = true
+	defer func() { e.queryActive = false }()
 
 	generatedSQL, analyzed, args, err := e.prepareQuery(sql)
 	if err != nil {
