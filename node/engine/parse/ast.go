@@ -1401,9 +1401,10 @@ func (RelationSubquery) table() {}
 
 type RelationTableFunction struct {
 	Position
-	FunctionCall  *ExpressionFunctionCall
-	Alias         string   // Table alias (optional)
-	ColumnAliases []string // Column aliases for multi-array UNNEST (optional)
+	FunctionCall   *ExpressionFunctionCall
+	Alias          string   // Table alias (optional)
+	ColumnAliases  []string // Column aliases for multi-array UNNEST (optional)
+	WithOrdinality bool     // Whether WITH ORDINALITY was specified
 }
 
 func (r *RelationTableFunction) Accept(v Visitor) any {

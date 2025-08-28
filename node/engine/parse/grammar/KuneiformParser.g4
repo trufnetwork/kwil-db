@@ -97,6 +97,7 @@ allowed_identifier:
     | TRANSFER
     | OWNERSHIP
     | CURRENT
+    | ORDINALITY
 ;
 
 identifier_list:
@@ -320,7 +321,8 @@ relation:
     // but we allow it to pass here since it is standard SQL to not require it, and
     // we can throw a better error message after parsing.
     | LPAREN select_statement RPAREN (AS? alias=identifier)?    # subquery_relation
-    | (identifier | UNNEST) LPAREN sql_expr (COMMA sql_expr)* RPAREN 
+    | (identifier | UNNEST) LPAREN sql_expr (COMMA sql_expr)* RPAREN
+      (WITH ORDINALITY)?
       (AS? alias=identifier (LPAREN column_aliases=identifier_list RPAREN)?)?    # table_function_relation
 ;
 

@@ -2940,6 +2940,14 @@ func (s *scopeContext) tableFunction(node *parse.RelationTableFunction) (*Scan, 
 		return nil, nil, fmt.Errorf("table function validation failed: %w", err)
 	}
 
+	// Add ordinality column if WITH ORDINALITY was specified
+	if node.WithOrdinality {
+		tableSchema = append(tableSchema, &engine.NamedType{
+			Name: "ordinality",
+			Type: types.IntType,
+		})
+	}
+
 	// Use the explicit alias
 	alias := node.Alias
 

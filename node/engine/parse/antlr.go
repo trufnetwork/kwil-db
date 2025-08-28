@@ -1348,6 +1348,11 @@ func (s *schemaVisitor) VisitTable_function_relation(ctx *gen.Table_function_rel
 		FunctionCall: funcCall,
 	}
 
+	// Handle WITH ORDINALITY
+	if ctx.ORDINALITY() != nil {
+		t.WithOrdinality = true
+	}
+
 	// Handle table alias (second identifier if present)
 	if ctx.GetAlias() != nil {
 		t.Alias = s.getIdent(ctx.GetAlias())

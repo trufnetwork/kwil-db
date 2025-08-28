@@ -647,6 +647,11 @@ func (s *sqlGenerator) VisitRelationTableFunction(p0 *parse.RelationTableFunctio
 	str := strings.Builder{}
 	str.WriteString(p0.FunctionCall.Accept(s).(string))
 
+	// Add WITH ORDINALITY if specified
+	if p0.WithOrdinality {
+		str.WriteString(" WITH ORDINALITY")
+	}
+
 	if p0.Alias != "" || len(p0.ColumnAliases) > 0 {
 		str.WriteString(" AS ")
 		if p0.Alias != "" {

@@ -137,6 +137,7 @@ PARTITION:  'partition';
 WINDOW:     'window';
 FILTER:     'filter';
 RECURSIVE:  'recursive';
+ORDINALITY: 'ordinality';
 GRANT:      'grant';
 GRANTED:    'granted';
 REVOKE:     'revoke';
