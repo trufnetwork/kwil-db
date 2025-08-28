@@ -599,6 +599,75 @@ func Test_SQL(t *testing.T) {
 			},
 		},
 		{
+			name: "array_agg with order by",
+			sql:  "select array_agg(name order by id asc) from users;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionFunctionCall{
+										Name: "array_agg",
+										Args: []Expression{
+											exprColumn("", "name"),
+										},
+										OrderBy: []*OrderingTerm{
+											{
+												Expression: exprColumn("", "id"),
+												Order:      OrderTypeAsc,
+												Nulls:      "",
+											},
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "array_agg with multiple order by terms",
+			sql:  "select array_agg(name order by age desc, name asc) from users;",
+			want: &SQLStatement{
+				SQL: &SelectStatement{
+					SelectCores: []*SelectCore{
+						{
+							Columns: []ResultColumn{
+								&ResultColumnExpression{
+									Expression: &ExpressionFunctionCall{
+										Name: "array_agg",
+										Args: []Expression{
+											exprColumn("", "name"),
+										},
+										OrderBy: []*OrderingTerm{
+											{
+												Expression: exprColumn("", "age"),
+												Order:      OrderTypeDesc,
+												Nulls:      "",
+											},
+											{
+												Expression: exprColumn("", "name"),
+												Order:      OrderTypeAsc,
+												Nulls:      "",
+											},
+										},
+									},
+								},
+							},
+							From: &RelationTable{
+								Table: "users",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "insert",
 			sql: `insert into posts (id, author_id) values (1, 1),
 			(2, (SELECT id from users where username = 'user2' LIMIT 1));`,

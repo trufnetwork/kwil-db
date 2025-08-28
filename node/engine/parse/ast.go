@@ -145,6 +145,9 @@ type ExpressionFunctionCall struct {
 	// Star is true if the function call is a * function call.
 	// If it is set, then Args must be empty.
 	Star bool
+	// OrderBy allows ORDER BY inside aggregate function calls (e.g., array_agg(x ORDER BY y))
+	// If empty, generator can apply deterministic defaults when needed.
+	OrderBy []*OrderingTerm
 }
 
 func (e *ExpressionFunctionCall) Accept(v Visitor) any {

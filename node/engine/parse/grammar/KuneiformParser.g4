@@ -430,7 +430,7 @@ sql_expr_list:
 ;
 
 sql_function_call:
-    identifier LPAREN (DISTINCT? sql_expr_list|STAR)? RPAREN                                                #normal_call_sql
+    identifier LPAREN (DISTINCT? sql_expr_list|STAR)? (ORDER BY ordering_term (COMMA ordering_term)*)? RPAREN #normal_call_sql
 ;
 
 /*

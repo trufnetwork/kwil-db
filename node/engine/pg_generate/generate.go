@@ -92,6 +92,32 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 		pgFmt, err = fn.PGFormatFunc(args)
 	case *engine.AggregateFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args, p0.Distinct)
+		if err == nil && len(p0.OrderBy) > 0 {
+			// Render ORDER BY terms from parse.OrderingTerm (AST nodes)
+			var ob []string
+			for _, term := range p0.OrderBy {
+				ob = append(ob, term.Accept(s).(string))
+			}
+			// If default format already injected an ORDER BY (like array_agg(%s ORDER BY %s)),
+			// replace it with the explicit one.
+			if strings.Contains(pgFmt, " ORDER BY ") {
+				idx := strings.LastIndex(pgFmt, " ORDER BY ")
+				if idx > -1 {
+					left := pgFmt[:idx]
+					if strings.HasSuffix(pgFmt, ")") {
+						pgFmt = left + " ORDER BY " + strings.Join(ob, ", ") + ")"
+					} else {
+						pgFmt = left + " ORDER BY " + strings.Join(ob, ", ")
+					}
+				}
+			} else {
+				if strings.HasSuffix(pgFmt, ")") {
+					pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
+				} else {
+					pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
+				}
+			}
+		}
 	case *engine.WindowFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
 	case *engine.TableValuedFunctionDefinition:

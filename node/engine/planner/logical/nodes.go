@@ -1457,6 +1457,7 @@ type AggregateFunctionCall struct {
 	Args         []Expression
 	Star         bool
 	Distinct     bool
+	OrderBy      []*SortExpression // ORDER BY terms inside the aggregate function
 	// returnType is the data type of the return value.
 	// It is set during the evaluation phase.
 	returnType *types.DataType
@@ -1479,6 +1480,15 @@ func (a *AggregateFunctionCall) String() string {
 			buf.WriteString(arg.String())
 		}
 	}
+	if len(a.OrderBy) > 0 {
+		buf.WriteString(" ORDER BY ")
+		for i, term := range a.OrderBy {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(term.String())
+		}
+	}
 	buf.WriteString(")")
 	return buf.String()
 }
@@ -1491,6 +1501,9 @@ func (a *AggregateFunctionCall) Children() []Traversable {
 	for _, arg := range a.Args {
 		c = append(c, arg)
 	}
+	for _, orderBy := range a.OrderBy {
+		c = append(c, orderBy.Expr)
+	}
 	return c
 }
 
@@ -1498,6 +1511,9 @@ func (a *AggregateFunctionCall) Plans() []Plan {
 	var c []Plan
 	for _, arg := range a.Args {
 		c = append(c, arg.Plans()...)
+	}
+	for _, orderBy := range a.OrderBy {
+		c = append(c, orderBy.Expr.Plans()...)
 	}
 	return c
 }
@@ -1533,6 +1549,18 @@ func (a *AggregateFunctionCall) Equal(other Traversable) bool {
 
 	for i, arg := range a.Args {
 		if !eq(arg, o.Args[i]) {
+			return false
+		}
+	}
+
+	if len(a.OrderBy) != len(o.OrderBy) {
+		return false
+	}
+
+	for i, orderBy := range a.OrderBy {
+		if !eq(orderBy.Expr, o.OrderBy[i].Expr) ||
+			orderBy.Ascending != o.OrderBy[i].Ascending ||
+			orderBy.NullsLast != o.OrderBy[i].NullsLast {
 			return false
 		}
 	}

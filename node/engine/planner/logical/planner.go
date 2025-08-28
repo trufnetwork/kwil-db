@@ -924,11 +924,31 @@ func (s *scopeContext) makeOnAggregateFunc(aggTerms map[string]*exprFieldPair[*I
 			return nil, nil, err
 		}
 
+		// Process ORDER BY terms if present
+		var orderByTerms []*SortExpression
+		if len(efc.OrderBy) > 0 {
+			orderByTerms = make([]*SortExpression, len(efc.OrderBy))
+			for i, orderTerm := range efc.OrderBy {
+				// Process the ORDER BY expression
+				orderExpr, _, err := s.expr(orderTerm.Expression, s.preGroupRelation, groupingTerms)
+				if err != nil {
+					return nil, nil, err
+				}
+
+				orderByTerms[i] = &SortExpression{
+					Expr:      orderExpr,
+					Ascending: get(orderAsc, orderTerm.Order),
+					NullsLast: get(orderNullsLast, orderTerm.Nulls),
+				}
+			}
+		}
+
 		rawExpr := &AggregateFunctionCall{
 			FunctionName: efc.Name,
 			Args:         args,
 			Star:         efc.Star,
 			Distinct:     efc.Distinct,
+			OrderBy:      orderByTerms,
 			returnType:   returnType,
 		}
 

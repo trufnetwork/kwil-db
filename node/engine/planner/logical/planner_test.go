@@ -33,6 +33,22 @@ func Test_Planner(t *testing.T) {
 				"  └─Empty Scan\n",
 		},
 		{
+			name: "array_agg with order by",
+			sql:  "select array_agg(name order by id) from users",
+			wt: "Return: array_agg [text[]]\n" +
+				"└─Project: {#ref(A)}\n" +
+				"  └─Aggregate: {#ref(A) = array_agg(users.name ORDER BY users.id asc nulls last)}\n" +
+				"    └─Scan Table: users [physical]\n",
+		},
+		{
+			name: "array_agg with multiple order by terms",
+			sql:  "select array_agg(name order by age desc, name asc) from users",
+			wt: "Return: array_agg [text[]]\n" +
+				"└─Project: {#ref(A)}\n" +
+				"  └─Aggregate: {#ref(A) = array_agg(users.name ORDER BY users.age desc nulls last, users.name asc nulls last)}\n" +
+				"    └─Scan Table: users [physical]\n",
+		},
+		{
 			name: "array and object",
 			sql:  "select $a.b, $c as c1",
 			vars: map[string]*types.DataType{

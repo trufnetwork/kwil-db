@@ -34,6 +34,21 @@ func Test_PgGenerate(t *testing.T) {
 			params: []string{"$a", "$b"},
 		},
 		{
+			name: "array_agg with order by",
+			sql:  "SELECT array_agg(name ORDER BY id ASC) FROM users;",
+			want: "SELECT array_agg(name ORDER BY id ASC) FROM users;",
+		},
+		{
+			name: "array_agg with multiple order by terms",
+			sql:  "SELECT array_agg(name ORDER BY age DESC, name ASC) FROM users;",
+			want: "SELECT array_agg(name ORDER BY age DESC, name ASC) FROM users;",
+		},
+		{
+			name: "array_agg without order by (default behavior)",
+			sql:  "SELECT array_agg(name) FROM users;",
+			want: "SELECT array_agg(name ORDER BY name) FROM users;",
+		},
+		{
 			name: "select with @caller",
 			sql:  "SELECT * FROM tbl WHERE col = @caller;",
 			want: "SELECT * FROM tbl WHERE col = $1::TEXT;",

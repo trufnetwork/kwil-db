@@ -235,6 +235,7 @@ func (r *rewriteVisitor) VisitColumnRef(p0 *ColumnRef) any {
 func (r *rewriteVisitor) VisitAggregateFunctionCall(p0 *AggregateFunctionCall) any {
 	return r.expr(p0,
 		func() { r.slice(p0.Args) },
+		func() { r.slice(p0.OrderBy) },
 	)
 }
 

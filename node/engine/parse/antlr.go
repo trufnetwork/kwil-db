@@ -1952,6 +1952,13 @@ func (s *schemaVisitor) VisitNormal_call_sql(ctx *gen.Normal_call_sqlContext) an
 		call.Star = true
 	}
 
+	// capture optional ORDER BY terms inside the function call
+	if ctx.ORDER() != nil {
+		for _, o := range ctx.AllOrdering_term() {
+			call.OrderBy = append(call.OrderBy, o.Accept(s).(*OrderingTerm))
+		}
+	}
+
 	call.Set(ctx)
 	return call
 }
