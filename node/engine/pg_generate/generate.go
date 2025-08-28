@@ -237,8 +237,11 @@ func (s *sqlGenerator) VisitExpressionVariable(p0 *parse.ExpressionVariable) any
 
 func (s *sqlGenerator) VisitExpressionArrayAccess(p0 *parse.ExpressionArrayAccess) any {
 	str := strings.Builder{}
-	str.WriteString(p0.Array.Accept(s).(string))
-	str.WriteString("[")
+	// Parenthesize base expression to avoid Postgres syntax issues with casts, e.g. ($1::TEXT[])[idx]
+	base := p0.Array.Accept(s).(string)
+	str.WriteString("(")
+	str.WriteString(base)
+	str.WriteString(")[")
 	switch {
 	case p0.Index != nil:
 		str.WriteString(p0.Index.Accept(s).(string))
