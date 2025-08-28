@@ -401,3 +401,98 @@ func removeWhitespace(s string) string {
 		return r
 	}, s)
 }
+
+func Test_OrderByScalarFunctionRejection(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "scalar function with ORDER BY should be rejected",
+			sql:     "SELECT lower(name ORDER BY id) FROM users;",
+			wantErr: true,
+			errMsg:  "ORDER BY is only supported inside aggregate function calls (got lower)",
+		},
+		{
+			name:    "scalar function with multiple ORDER BY terms should be rejected",
+			sql:     "SELECT upper(name ORDER BY age DESC, id ASC) FROM users;",
+			wantErr: true,
+			errMsg:  "ORDER BY is only supported inside aggregate function calls (got upper)",
+		},
+		{
+			name:    "scalar function without ORDER BY should work",
+			sql:     "SELECT lower(name) FROM users;",
+			wantErr: false,
+		},
+		{
+			name:    "aggregate function with ORDER BY should work",
+			sql:     "SELECT array_agg(name ORDER BY id) FROM users;",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmts, err := parse.Parse(tt.sql)
+			require.NoError(t, err)
+			require.Len(t, stmts, 1)
+
+			_, _, err = pggenerate.GenerateSQL(stmts[0], "kwil", func(varName string) (*types.DataType, error) {
+				return types.TextType, nil
+			})
+
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func Test_OrderBySafeInsertion(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "aggregate with explicit ORDER BY replaces default",
+			sql:  "SELECT array_agg(name ORDER BY id DESC) FROM users;",
+			want: "\nSELECT array_agg(name ORDER BY id DESC)\nFROM users\n;",
+		},
+		{
+			name: "aggregate with multiple ORDER BY terms",
+			sql:  "SELECT array_agg(name ORDER BY age DESC, name ASC) FROM users;",
+			want: "\nSELECT array_agg(name ORDER BY age DESC, name ASC)\nFROM users\n;",
+		},
+		{
+			name: "aggregate without explicit ORDER BY uses default",
+			sql:  "SELECT array_agg(name) FROM users;",
+			want: "\nSELECT array_agg(name ORDER BY name)\nFROM users\n;",
+		},
+		{
+			name: "count aggregate with query-level ORDER BY",
+			sql:  "SELECT count(*) FROM users ORDER BY id;",
+			want: "\nSELECT count(*)\nFROM users\nORDER BY id;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmts, err := parse.Parse(tt.sql)
+			require.NoError(t, err)
+			require.Len(t, stmts, 1)
+
+			got, params, err := pggenerate.GenerateSQL(stmts[0], "kwil", func(varName string) (*types.DataType, error) {
+				return types.TextType, nil
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+			require.Equal(t, []string(nil), params)
+		})
+	}
+}

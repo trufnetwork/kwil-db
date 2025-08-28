@@ -87,6 +87,11 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 
 	var pgFmt string
 	var err error
+	// Disallow ORDER BY inside non-aggregate function calls
+	if _, isScalar := fn.(*engine.ScalarFunctionDefinition); isScalar && len(p0.OrderBy) > 0 {
+		panic(fmt.Errorf("ORDER BY is only supported inside aggregate function calls (got %s)", p0.Name))
+	}
+
 	switch fn := fn.(type) {
 	case *engine.ScalarFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
@@ -98,19 +103,22 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 			for _, term := range p0.OrderBy {
 				ob = append(ob, term.Accept(s).(string))
 			}
-			// If default format already injected an ORDER BY (like array_agg(%s ORDER BY %s)),
-			// replace it with the explicit one.
-			if strings.Contains(pgFmt, " ORDER BY ") {
-				idx := strings.LastIndex(pgFmt, " ORDER BY ")
-				if idx > -1 {
-					left := pgFmt[:idx]
-					if strings.HasSuffix(pgFmt, ")") {
-						pgFmt = left + " ORDER BY " + strings.Join(ob, ", ") + ")"
-					} else {
-						pgFmt = left + " ORDER BY " + strings.Join(ob, ", ")
-					}
+			// Replace/append ORDER BY strictly within the function's final parentheses
+			openIdx := strings.LastIndex(pgFmt, "(")
+			closeIdx := strings.LastIndex(pgFmt, ")")
+			if openIdx >= 0 && closeIdx > openIdx {
+				inner := pgFmt[openIdx:closeIdx]
+				obIdx := strings.LastIndex(inner, " ORDER BY ")
+				if obIdx >= 0 {
+					// replace existing ORDER BY inside the parens
+					inner = inner[:obIdx] + " ORDER BY " + strings.Join(ob, ", ")
+				} else {
+					// append ORDER BY before closing paren
+					inner = inner + " ORDER BY " + strings.Join(ob, ", ")
 				}
+				pgFmt = pgFmt[:openIdx] + inner + pgFmt[closeIdx:]
 			} else {
+				// Fallback: append ORDER BY at the end
 				if strings.HasSuffix(pgFmt, ")") {
 					pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
 				} else {
