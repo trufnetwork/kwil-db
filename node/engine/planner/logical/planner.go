@@ -1344,32 +1344,81 @@ func (s *scopeContext) exprWithAggRewrite(node parse.Expression, currentRel *Rel
 			return nil, nil, false, err
 		}
 
-		index, idxField, err := rExpr(node.Index)
-		if err != nil {
-			return nil, nil, false, err
+		// Handle range access (slice) like arr[1:5]
+		if node.FromTo != nil {
+			var start, end Expression
+			var startField, endField *Field
+
+			if node.FromTo[0] != nil {
+				start, startField, err = rExpr(node.FromTo[0])
+				if err != nil {
+					return nil, nil, false, err
+				}
+
+				scalar, err := startField.Scalar()
+				if err != nil {
+					return nil, nil, false, err
+				}
+
+				if !scalar.Equals(types.IntType) {
+					return nil, nil, false, fmt.Errorf("array slice start index must be an int")
+				}
+			}
+
+			if node.FromTo[1] != nil {
+				end, endField, err = rExpr(node.FromTo[1])
+				if err != nil {
+					return nil, nil, false, err
+				}
+
+				scalar, err := endField.Scalar()
+				if err != nil {
+					return nil, nil, false, err
+				}
+
+				if !scalar.Equals(types.IntType) {
+					return nil, nil, false, fmt.Errorf("array slice end index must be an int")
+				}
+			}
+
+			// Array slicing returns the same array type
+			return cast(&ArraySlice{
+				Array: array,
+				Start: start,
+				End:   end,
+			}, field)
+
+			// Handle single index access like arr[1]
+		} else if node.Index != nil {
+			index, idxField, err := rExpr(node.Index)
+			if err != nil {
+				return nil, nil, false, err
+			}
+
+			scalar, err := idxField.Scalar()
+			if err != nil {
+				return nil, nil, false, err
+			}
+
+			if !scalar.Equals(types.IntType) {
+				return nil, nil, false, fmt.Errorf("array index must be an int")
+			}
+
+			field2 := field.Copy()
+			scalar2, err := field2.Scalar()
+			if err != nil {
+				return nil, nil, false, err
+			}
+
+			scalar2.IsArray = false // since we are accessing an array, it is no longer an array
+
+			return cast(&ArrayAccess{
+				Array: array,
+				Index: index,
+			}, field2)
+		} else {
+			return nil, nil, false, fmt.Errorf("array access must have either Index or FromTo specified")
 		}
-
-		scalar, err := idxField.Scalar()
-		if err != nil {
-			return nil, nil, false, err
-		}
-
-		if !scalar.Equals(types.IntType) {
-			return nil, nil, false, fmt.Errorf("array index must be an int")
-		}
-
-		field2 := field.Copy()
-		scalar2, err := field2.Scalar()
-		if err != nil {
-			return nil, nil, false, err
-		}
-
-		scalar2.IsArray = false // since we are accessing an array, it is no longer an array
-
-		return cast(&ArrayAccess{
-			Array: array,
-			Index: index,
-		}, field2)
 	case *parse.ExpressionMakeArray:
 		if len(node.Values) == 0 {
 			// if there are no values, we cannot determine the type unless

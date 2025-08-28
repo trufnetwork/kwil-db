@@ -26,6 +26,46 @@ func Test_Planner(t *testing.T) {
 
 	tests := []testcase{
 		{
+			name: "array slicing start:end",
+			sql:  "select arr[1:10] as arr from (select array[1,2,3,4,5,6,7,8,9,10] as arr) t",
+			wt: "Return: arr [int8[]]\n" +
+				"└─Project: t.arr[1:10] AS arr\n" +
+				"  └─Scan Subquery [alias=\"t\"]: [subplan_id=0] (uncorrelated)\n" +
+				"Subplan [subquery] [id=0]\n" +
+				"└─Project: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] AS arr\n" +
+				"  └─Empty Scan\n",
+		},
+		{
+			name: "array slicing :end",
+			sql:  "select arr[:5] as arr from (select array[1,2,3,4,5,6] as arr) t",
+			wt: "Return: arr [int8[]]\n" +
+				"└─Project: t.arr[:5] AS arr\n" +
+				"  └─Scan Subquery [alias=\"t\"]: [subplan_id=0] (uncorrelated)\n" +
+				"Subplan [subquery] [id=0]\n" +
+				"└─Project: [1, 2, 3, 4, 5, 6] AS arr\n" +
+				"  └─Empty Scan\n",
+		},
+		{
+			name: "array slicing start:",
+			sql:  "select arr[2:] as arr from (select array[1,2,3,4] as arr) t",
+			wt: "Return: arr [int8[]]\n" +
+				"└─Project: t.arr[2:] AS arr\n" +
+				"  └─Scan Subquery [alias=\"t\"]: [subplan_id=0] (uncorrelated)\n" +
+				"Subplan [subquery] [id=0]\n" +
+				"└─Project: [1, 2, 3, 4] AS arr\n" +
+				"  └─Empty Scan\n",
+		},
+		{
+			name: "array slicing :",
+			sql:  "select arr[:] as arr from (select array[1,2,3] as arr) t",
+			wt: "Return: arr [int8[]]\n" +
+				"└─Project: t.arr[:] AS arr\n" +
+				"  └─Scan Subquery [alias=\"t\"]: [subplan_id=0] (uncorrelated)\n" +
+				"Subplan [subquery] [id=0]\n" +
+				"└─Project: [1, 2, 3] AS arr\n" +
+				"  └─Empty Scan\n",
+		},
+		{
 			name: "basic select",
 			sql:  "select 1",
 			wt: "Return: ?column? [int8]\n" +

@@ -1992,6 +1992,65 @@ func (a *ArrayAccess) Equal(other Traversable) bool {
 	return eq(a.Array, o.Array) && eq(a.Index, o.Index)
 }
 
+type ArraySlice struct {
+	Array Expression
+	Start Expression // can be nil for [:end]
+	End   Expression // can be nil for [start:]
+}
+
+func (a *ArraySlice) String() string {
+	start := ""
+	end := ""
+	if a.Start != nil {
+		start = a.Start.String()
+	}
+	if a.End != nil {
+		end = a.End.String()
+	}
+	return fmt.Sprintf("%s[%s:%s]", a.Array.String(), start, end)
+}
+
+func (s *ArraySlice) Accept(v Visitor) any {
+	return v.VisitArraySlice(s)
+}
+func (a *ArraySlice) Children() []Traversable {
+	children := []Traversable{a.Array}
+	if a.Start != nil {
+		children = append(children, a.Start)
+	}
+	if a.End != nil {
+		children = append(children, a.End)
+	}
+	return children
+}
+
+func (a *ArraySlice) Plans() []Plan {
+	plans := a.Array.Plans()
+	if a.Start != nil {
+		plans = append(plans, a.Start.Plans()...)
+	}
+	if a.End != nil {
+		plans = append(plans, a.End.Plans()...)
+	}
+	return plans
+}
+
+func (a *ArraySlice) Field() *Field {
+	// Array slicing returns the same type as the original array
+	return a.Array.Field()
+}
+
+func (a *ArraySlice) Equal(other Traversable) bool {
+	o, ok := other.(*ArraySlice)
+	if !ok {
+		return false
+	}
+
+	return eq(a.Array, o.Array) &&
+		((a.Start == nil && o.Start == nil) || eq(a.Start, o.Start)) &&
+		((a.End == nil && o.End == nil) || eq(a.End, o.End))
+}
+
 type ArrayConstructor struct {
 	Elements []Expression
 }
@@ -3176,6 +3235,7 @@ type Visitor interface {
 	VisitTypeCast(*TypeCast) any
 	VisitAliasExpr(*AliasExpr) any
 	VisitArrayAccess(*ArrayAccess) any
+	VisitArraySlice(*ArraySlice) any
 	VisitArrayConstructor(*ArrayConstructor) any
 	VisitFieldAccess(*FieldAccess) any
 	VisitSubqueryExpr(*SubqueryExpr) any
