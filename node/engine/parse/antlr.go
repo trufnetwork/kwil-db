@@ -1348,6 +1348,11 @@ func (s *schemaVisitor) VisitTable_function_relation(ctx *gen.Table_function_rel
 		FunctionCall: funcCall,
 	}
 
+	// Handle WITH ORDINALITY
+	if ctx.ORDINALITY() != nil {
+		t.WithOrdinality = true
+	}
+
 	// Handle table alias (second identifier if present)
 	if ctx.GetAlias() != nil {
 		t.Alias = s.getIdent(ctx.GetAlias())
@@ -1950,6 +1955,13 @@ func (s *schemaVisitor) VisitNormal_call_sql(ctx *gen.Normal_call_sqlContext) an
 		}
 	case ctx.STAR() != nil:
 		call.Star = true
+	}
+
+	// capture optional ORDER BY terms inside the function call
+	if ctx.ORDER() != nil {
+		for _, o := range ctx.AllOrdering_term() {
+			call.OrderBy = append(call.OrderBy, o.Accept(s).(*OrderingTerm))
+		}
 	}
 
 	call.Set(ctx)

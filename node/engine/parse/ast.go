@@ -145,6 +145,9 @@ type ExpressionFunctionCall struct {
 	// Star is true if the function call is a * function call.
 	// If it is set, then Args must be empty.
 	Star bool
+	// OrderBy allows ORDER BY inside aggregate function calls (e.g., array_agg(x ORDER BY y))
+	// If empty, generator can apply deterministic defaults when needed.
+	OrderBy []*OrderingTerm
 }
 
 func (e *ExpressionFunctionCall) Accept(v Visitor) any {
@@ -1398,9 +1401,10 @@ func (RelationSubquery) table() {}
 
 type RelationTableFunction struct {
 	Position
-	FunctionCall  *ExpressionFunctionCall
-	Alias         string   // Table alias (optional)
-	ColumnAliases []string // Column aliases for multi-array UNNEST (optional)
+	FunctionCall   *ExpressionFunctionCall
+	Alias          string   // Table alias (optional)
+	ColumnAliases  []string // Column aliases for multi-array UNNEST (optional)
+	WithOrdinality bool     // Whether WITH ORDINALITY was specified
 }
 
 func (r *RelationTableFunction) Accept(v Visitor) any {

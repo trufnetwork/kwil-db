@@ -87,11 +87,91 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 
 	var pgFmt string
 	var err error
+	// Disallow ORDER BY for any non-aggregate function (scalar, window, table-valued)
+	if len(p0.OrderBy) > 0 {
+		if _, isAgg := fn.(*engine.AggregateFunctionDefinition); !isAgg {
+			panic(fmt.Errorf("ORDER BY is only supported inside aggregate function calls (got %s)", p0.Name))
+		}
+	}
+
 	switch fn := fn.(type) {
 	case *engine.ScalarFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
 	case *engine.AggregateFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args, p0.Distinct)
+		if err == nil && len(p0.OrderBy) > 0 {
+			// Render ORDER BY terms from parse.OrderingTerm (AST nodes)
+			var ob []string
+			for _, term := range p0.OrderBy {
+				ob = append(ob, term.Accept(s).(string))
+			}
+			// Replace/append ORDER BY strictly within the function's own parentheses (balanced scan)
+			closeIdx := strings.LastIndex(pgFmt, ")")
+			if closeIdx > -1 {
+				// find matching '(' for that last ')'
+				depth := 0
+				openIdx := -1
+			scan:
+				for i := closeIdx; i >= 0; i-- {
+					switch pgFmt[i] {
+					case ')':
+						depth++
+					case '(':
+						depth--
+						if depth == 0 {
+							openIdx = i
+							break scan
+						}
+					}
+				}
+				if openIdx >= 0 {
+					// work on contents without surrounding parens
+					inner := pgFmt[openIdx+1 : closeIdx]
+					// find a top-level " ORDER BY " (not inside nested parens)
+					obIdx := -1
+					depth2 := 0
+					for i := 0; i+10 <= len(inner); i++ {
+						switch inner[i] {
+						case '(':
+							depth2++
+						case ')':
+							if depth2 > 0 {
+								depth2--
+							}
+						}
+						if depth2 == 0 && strings.HasPrefix(inner[i:], " ORDER BY ") {
+							obIdx = i
+							break
+						}
+					}
+					if obIdx >= 0 {
+						inner = inner[:obIdx] + " ORDER BY " + strings.Join(ob, ", ")
+					} else {
+						inner = strings.TrimRight(inner, " ")
+						if inner != "" {
+							inner = inner + " ORDER BY " + strings.Join(ob, ", ")
+						} else {
+							inner = "ORDER BY " + strings.Join(ob, ", ")
+						}
+					}
+					pgFmt = pgFmt[:openIdx+1] + inner + pgFmt[closeIdx:]
+				} else {
+					// Fallback: append ORDER BY at the end
+					if strings.HasSuffix(pgFmt, ")") {
+						pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
+					} else {
+						pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
+					}
+				}
+			} else {
+				// Fallback: append ORDER BY at the end
+				if strings.HasSuffix(pgFmt, ")") {
+					pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
+				} else {
+					pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
+				}
+			}
+		}
 	case *engine.WindowFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
 	case *engine.TableValuedFunctionDefinition:
@@ -203,7 +283,27 @@ func (s *sqlGenerator) VisitExpressionVariable(p0 *parse.ExpressionVariable) any
 
 func (s *sqlGenerator) VisitExpressionArrayAccess(p0 *parse.ExpressionArrayAccess) any {
 	str := strings.Builder{}
-	str.WriteString(p0.Array.Accept(s).(string))
+	// Parenthesize only when necessary (e.g., for casts or complex expressions)
+	base := p0.Array.Accept(s).(string)
+	needsParens := false
+	switch p0.Array.(type) {
+	case *parse.ExpressionColumn, *parse.ExpressionFieldAccess:
+		// Simple column/field access doesn't need parens unless a cast is present
+		if strings.Contains(base, "::") {
+			needsParens = true
+		}
+	default:
+		needsParens = true
+	}
+
+	if needsParens && !(strings.HasPrefix(base, "(") && strings.HasSuffix(base, ")")) {
+		str.WriteString("(")
+		str.WriteString(base)
+		str.WriteString(")")
+	} else {
+		str.WriteString(base)
+	}
+
 	str.WriteString("[")
 	switch {
 	case p0.Index != nil:
@@ -609,6 +709,11 @@ func (s *sqlGenerator) VisitRelationSubquery(p0 *parse.RelationSubquery) any {
 func (s *sqlGenerator) VisitRelationTableFunction(p0 *parse.RelationTableFunction) any {
 	str := strings.Builder{}
 	str.WriteString(p0.FunctionCall.Accept(s).(string))
+
+	// Add WITH ORDINALITY if specified
+	if p0.WithOrdinality {
+		str.WriteString(" WITH ORDINALITY")
+	}
 
 	if p0.Alias != "" || len(p0.ColumnAliases) > 0 {
 		str.WriteString(" AS ")

@@ -1457,6 +1457,7 @@ type AggregateFunctionCall struct {
 	Args         []Expression
 	Star         bool
 	Distinct     bool
+	OrderBy      []*SortExpression // ORDER BY terms inside the aggregate function
 	// returnType is the data type of the return value.
 	// It is set during the evaluation phase.
 	returnType *types.DataType
@@ -1479,6 +1480,15 @@ func (a *AggregateFunctionCall) String() string {
 			buf.WriteString(arg.String())
 		}
 	}
+	if len(a.OrderBy) > 0 {
+		buf.WriteString(" ORDER BY ")
+		for i, term := range a.OrderBy {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(term.String())
+		}
+	}
 	buf.WriteString(")")
 	return buf.String()
 }
@@ -1491,6 +1501,9 @@ func (a *AggregateFunctionCall) Children() []Traversable {
 	for _, arg := range a.Args {
 		c = append(c, arg)
 	}
+	for _, orderBy := range a.OrderBy {
+		c = append(c, orderBy.Expr)
+	}
 	return c
 }
 
@@ -1498,6 +1511,9 @@ func (a *AggregateFunctionCall) Plans() []Plan {
 	var c []Plan
 	for _, arg := range a.Args {
 		c = append(c, arg.Plans()...)
+	}
+	for _, orderBy := range a.OrderBy {
+		c = append(c, orderBy.Expr.Plans()...)
 	}
 	return c
 }
@@ -1533,6 +1549,18 @@ func (a *AggregateFunctionCall) Equal(other Traversable) bool {
 
 	for i, arg := range a.Args {
 		if !eq(arg, o.Args[i]) {
+			return false
+		}
+	}
+
+	if len(a.OrderBy) != len(o.OrderBy) {
+		return false
+	}
+
+	for i, orderBy := range a.OrderBy {
+		if !eq(orderBy.Expr, o.OrderBy[i].Expr) ||
+			orderBy.Ascending != o.OrderBy[i].Ascending ||
+			orderBy.NullsLast != o.OrderBy[i].NullsLast {
 			return false
 		}
 	}
@@ -1951,8 +1979,10 @@ func (a *ArrayAccess) Field() *Field {
 		panic(err)
 	}
 
-	scalar.IsArray = false
-	return anonField(scalar.Copy())
+	// Copy before toggling arrayness to avoid mutating shared type info
+	scalarCopy := scalar.Copy()
+	scalarCopy.IsArray = false
+	return anonField(scalarCopy)
 }
 
 func (a *ArrayAccess) Equal(other Traversable) bool {
@@ -1962,6 +1992,65 @@ func (a *ArrayAccess) Equal(other Traversable) bool {
 	}
 
 	return eq(a.Array, o.Array) && eq(a.Index, o.Index)
+}
+
+type ArraySlice struct {
+	Array Expression
+	Start Expression // can be nil for [:end]
+	End   Expression // can be nil for [start:]
+}
+
+func (a *ArraySlice) String() string {
+	start := ""
+	end := ""
+	if a.Start != nil {
+		start = a.Start.String()
+	}
+	if a.End != nil {
+		end = a.End.String()
+	}
+	return fmt.Sprintf("%s[%s:%s]", a.Array.String(), start, end)
+}
+
+func (s *ArraySlice) Accept(v Visitor) any {
+	return v.VisitArraySlice(s)
+}
+func (a *ArraySlice) Children() []Traversable {
+	children := []Traversable{a.Array}
+	if a.Start != nil {
+		children = append(children, a.Start)
+	}
+	if a.End != nil {
+		children = append(children, a.End)
+	}
+	return children
+}
+
+func (a *ArraySlice) Plans() []Plan {
+	plans := a.Array.Plans()
+	if a.Start != nil {
+		plans = append(plans, a.Start.Plans()...)
+	}
+	if a.End != nil {
+		plans = append(plans, a.End.Plans()...)
+	}
+	return plans
+}
+
+func (a *ArraySlice) Field() *Field {
+	// Array slicing returns the same type as the original array
+	return a.Array.Field()
+}
+
+func (a *ArraySlice) Equal(other Traversable) bool {
+	o, ok := other.(*ArraySlice)
+	if !ok {
+		return false
+	}
+
+	return eq(a.Array, o.Array) &&
+		((a.Start == nil && o.Start == nil) || eq(a.Start, o.Start)) &&
+		((a.End == nil && o.End == nil) || eq(a.End, o.End))
 }
 
 type ArrayConstructor struct {
@@ -3148,6 +3237,7 @@ type Visitor interface {
 	VisitTypeCast(*TypeCast) any
 	VisitAliasExpr(*AliasExpr) any
 	VisitArrayAccess(*ArrayAccess) any
+	VisitArraySlice(*ArraySlice) any
 	VisitArrayConstructor(*ArrayConstructor) any
 	VisitFieldAccess(*FieldAccess) any
 	VisitSubqueryExpr(*SubqueryExpr) any

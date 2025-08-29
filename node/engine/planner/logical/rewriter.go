@@ -112,6 +112,12 @@ func (r *rewriteVisitor) slice(v any) {
 		for i := range v {
 			v[i] = v[i].Accept(r).(Expression)
 		}
+	case []*SortExpression:
+		for i := range v {
+			if v[i] != nil && v[i].Expr != nil {
+				v[i].Expr = v[i].Expr.Accept(r).(Expression)
+			}
+		}
 	}
 }
 
@@ -235,6 +241,7 @@ func (r *rewriteVisitor) VisitColumnRef(p0 *ColumnRef) any {
 func (r *rewriteVisitor) VisitAggregateFunctionCall(p0 *AggregateFunctionCall) any {
 	return r.expr(p0,
 		func() { r.slice(p0.Args) },
+		func() { r.slice(p0.OrderBy) },
 	)
 }
 
@@ -287,6 +294,22 @@ func (r *rewriteVisitor) VisitArrayAccess(p0 *ArrayAccess) any {
 	return r.expr(p0,
 		func() { p0.Array = p0.Array.Accept(r).(Expression) },
 		func() { p0.Index = p0.Index.Accept(r).(Expression) },
+	)
+}
+
+func (r *rewriteVisitor) VisitArraySlice(p0 *ArraySlice) any {
+	return r.expr(p0,
+		func() { p0.Array = p0.Array.Accept(r).(Expression) },
+		func() {
+			if p0.Start != nil {
+				p0.Start = p0.Start.Accept(r).(Expression)
+			}
+		},
+		func() {
+			if p0.End != nil {
+				p0.End = p0.End.Accept(r).(Expression)
+			}
+		},
 	)
 }
 
