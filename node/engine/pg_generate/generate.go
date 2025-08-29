@@ -87,9 +87,11 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 
 	var pgFmt string
 	var err error
-	// Disallow ORDER BY inside non-aggregate function calls
-	if _, isScalar := fn.(*engine.ScalarFunctionDefinition); isScalar && len(p0.OrderBy) > 0 {
-		panic(fmt.Errorf("ORDER BY is only supported inside aggregate function calls (got %s)", p0.Name))
+	// Disallow ORDER BY for any non-aggregate function (scalar, window, table-valued)
+	if len(p0.OrderBy) > 0 {
+		if _, isAgg := fn.(*engine.AggregateFunctionDefinition); !isAgg {
+			panic(fmt.Errorf("ORDER BY is only supported inside aggregate function calls (got %s)", p0.Name))
+		}
 	}
 
 	switch fn := fn.(type) {
@@ -109,6 +111,7 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 				// find matching '(' for that last ')'
 				depth := 0
 				openIdx := -1
+			scan:
 				for i := closeIdx; i >= 0; i-- {
 					switch pgFmt[i] {
 					case ')':
@@ -117,7 +120,7 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 						depth--
 						if depth == 0 {
 							openIdx = i
-							break
+							break scan
 						}
 					}
 				}
