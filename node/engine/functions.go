@@ -1008,25 +1008,6 @@ var (
 				return fmt.Sprintf("UNNEST(%s)", strings.Join(inputs, ", ")), nil
 			},
 		},
-		"generate_subscripts": &TableValuedFunctionDefinition{
-			ValidateArgsFunc: func(args []*types.DataType) ([]*NamedType, error) {
-				if len(args) != 1 {
-					return nil, wrapErrArgumentNumber(1, len(args))
-				}
-
-				if !args[0].IsArray {
-					return nil, fmt.Errorf("%w: expected array type, got %s", ErrType, args[0].String())
-				}
-
-				return []*NamedType{{
-					Name: "generate_subscripts",
-					Type: types.IntType,
-				}}, nil
-			},
-			PGFormatFunc: func(inputs []string) (string, error) {
-				return fmt.Sprintf("generate_subscripts(%s, 1)", inputs[0]), nil
-			},
-		},
 	}
 )
 
