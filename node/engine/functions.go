@@ -672,8 +672,8 @@ var (
 		},
 		"greatest": &ScalarFunctionDefinition{
 			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
-				if len(args) == 0 {
-					return nil, fmt.Errorf("invalid number of arguments: expected at least 1, got 0")
+				if len(args) < 2 {
+					return nil, fmt.Errorf("invalid number of arguments: expected at least 2, got %d", len(args))
 				}
 
 				if !args[0].IsNumeric() || !args[1].IsNumeric() {
@@ -693,8 +693,8 @@ var (
 		},
 		"least": &ScalarFunctionDefinition{
 			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
-				if len(args) == 0 {
-					return nil, fmt.Errorf("invalid number of arguments: expected at least 1, got 0")
+				if len(args) < 2 {
+					return nil, fmt.Errorf("invalid number of arguments: expected at least 2, got %d", len(args))
 				}
 
 				if !args[0].IsNumeric() || !args[1].IsNumeric() {
@@ -778,16 +778,15 @@ var (
 					retType = args[0].Copy()
 					retType.Metadata[0] = 1000 // max precision
 				default:
-					panic(fmt.Sprintf("unexpected numeric type: %s", retType.String()))
+					panic(fmt.Sprintf("unexpected numeric type: %s", args[0].String()))
 				}
 
 				return retType, nil
 			},
 			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
 				if distinct {
-					return "sum(DISTINCT %s)", nil
+					return fmt.Sprintf("sum(DISTINCT %s)", inputs[0]), nil
 				}
-
 				return fmt.Sprintf("sum(%s)", inputs[0]), nil
 			},
 		},
@@ -806,9 +805,8 @@ var (
 			},
 			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
 				if distinct {
-					return "min(DISTINCT %s)", nil
+					return fmt.Sprintf("min(DISTINCT %s)", inputs[0]), nil
 				}
-
 				return fmt.Sprintf("min(%s)", inputs[0]), nil
 			},
 		},
@@ -827,9 +825,8 @@ var (
 			},
 			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
 				if distinct {
-					return "max(DISTINCT %s)", nil
+					return fmt.Sprintf("max(DISTINCT %s)", inputs[0]), nil
 				}
-
 				return fmt.Sprintf("max(%s)", inputs[0]), nil
 			},
 		},
@@ -849,9 +846,8 @@ var (
 			},
 			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
 				if distinct {
-					return "array_agg(DISTINCT %s)", nil
+					return fmt.Sprintf("array_agg(DISTINCT %s)", inputs[0]), nil
 				}
-
 				return fmt.Sprintf("array_agg(%s ORDER BY %s)", inputs[0], inputs[0]), nil
 			},
 		},
@@ -871,9 +867,8 @@ var (
 			},
 			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
 				if distinct {
-					return "avg(DISTINCT %s)", nil
+					return fmt.Sprintf("avg(DISTINCT %s)", inputs[0]), nil
 				}
-
 				return fmt.Sprintf("avg(%s)", inputs[0]), nil
 			},
 		},

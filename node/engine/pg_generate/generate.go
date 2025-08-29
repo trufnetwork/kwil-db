@@ -103,20 +103,63 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 			for _, term := range p0.OrderBy {
 				ob = append(ob, term.Accept(s).(string))
 			}
-			// Replace/append ORDER BY strictly within the function's final parentheses
-			openIdx := strings.LastIndex(pgFmt, "(")
+			// Replace/append ORDER BY strictly within the function's own parentheses (balanced scan)
 			closeIdx := strings.LastIndex(pgFmt, ")")
-			if openIdx >= 0 && closeIdx > openIdx {
-				inner := pgFmt[openIdx:closeIdx]
-				obIdx := strings.LastIndex(inner, " ORDER BY ")
-				if obIdx >= 0 {
-					// replace existing ORDER BY inside the parens
-					inner = inner[:obIdx] + " ORDER BY " + strings.Join(ob, ", ")
-				} else {
-					// append ORDER BY before closing paren
-					inner = inner + " ORDER BY " + strings.Join(ob, ", ")
+			if closeIdx > -1 {
+				// find matching '(' for that last ')'
+				depth := 0
+				openIdx := -1
+				for i := closeIdx; i >= 0; i-- {
+					switch pgFmt[i] {
+					case ')':
+						depth++
+					case '(':
+						depth--
+						if depth == 0 {
+							openIdx = i
+							break
+						}
+					}
 				}
-				pgFmt = pgFmt[:openIdx] + inner + pgFmt[closeIdx:]
+				if openIdx >= 0 {
+					// work on contents without surrounding parens
+					inner := pgFmt[openIdx+1 : closeIdx]
+					// find a top-level " ORDER BY " (not inside nested parens)
+					obIdx := -1
+					depth2 := 0
+					for i := 0; i+10 <= len(inner); i++ {
+						switch inner[i] {
+						case '(':
+							depth2++
+						case ')':
+							if depth2 > 0 {
+								depth2--
+							}
+						}
+						if depth2 == 0 && strings.HasPrefix(inner[i:], " ORDER BY ") {
+							obIdx = i
+							break
+						}
+					}
+					if obIdx >= 0 {
+						inner = inner[:obIdx] + " ORDER BY " + strings.Join(ob, ", ")
+					} else {
+						inner = strings.TrimRight(inner, " ")
+						if inner != "" {
+							inner = inner + " ORDER BY " + strings.Join(ob, ", ")
+						} else {
+							inner = "ORDER BY " + strings.Join(ob, ", ")
+						}
+					}
+					pgFmt = pgFmt[:openIdx+1] + inner + pgFmt[closeIdx:]
+				} else {
+					// Fallback: append ORDER BY at the end
+					if strings.HasSuffix(pgFmt, ")") {
+						pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
+					} else {
+						pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
+					}
+				}
 			} else {
 				// Fallback: append ORDER BY at the end
 				if strings.HasSuffix(pgFmt, ")") {

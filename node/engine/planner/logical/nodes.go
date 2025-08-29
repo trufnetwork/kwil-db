@@ -1979,8 +1979,10 @@ func (a *ArrayAccess) Field() *Field {
 		panic(err)
 	}
 
-	scalar.IsArray = false
-	return anonField(scalar.Copy())
+	// Copy before toggling arrayness to avoid mutating shared type info
+	scalarCopy := scalar.Copy()
+	scalarCopy.IsArray = false
+	return anonField(scalarCopy)
 }
 
 func (a *ArrayAccess) Equal(other Traversable) bool {
