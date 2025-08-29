@@ -280,11 +280,28 @@ func (s *sqlGenerator) VisitExpressionVariable(p0 *parse.ExpressionVariable) any
 
 func (s *sqlGenerator) VisitExpressionArrayAccess(p0 *parse.ExpressionArrayAccess) any {
 	str := strings.Builder{}
-	// Parenthesize base expression to avoid Postgres syntax issues with casts, e.g. ($1::TEXT[])[idx]
+	// Parenthesize only when necessary (e.g., for casts or complex expressions)
 	base := p0.Array.Accept(s).(string)
-	str.WriteString("(")
-	str.WriteString(base)
-	str.WriteString(")[")
+	needsParens := false
+	switch p0.Array.(type) {
+	case *parse.ExpressionColumn, *parse.ExpressionFieldAccess:
+		// Simple column/field access doesn't need parens unless a cast is present
+		if strings.Contains(base, "::") {
+			needsParens = true
+		}
+	default:
+		needsParens = true
+	}
+
+	if needsParens && !(strings.HasPrefix(base, "(") && strings.HasSuffix(base, ")")) {
+		str.WriteString("(")
+		str.WriteString(base)
+		str.WriteString(")")
+	} else {
+		str.WriteString(base)
+	}
+
+	str.WriteString("[")
 	switch {
 	case p0.Index != nil:
 		str.WriteString(p0.Index.Accept(s).(string))
