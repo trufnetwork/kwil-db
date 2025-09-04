@@ -7,8 +7,10 @@ import (
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/crypto"
 	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/types"
+	extauth "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
@@ -572,9 +574,30 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			if prop == nil {
 				return makeText(""), nil
 			}
-			id, err := coreauth.GetNodeIdentifier(prop)
+			// Determine the identity bytes expected by the current tx authenticator
+			var identBytes []byte
+			switch e.engineCtx.TxContext.Authenticator {
+			case coreauth.EthPersonalSignAuth: // expects 20-byte Ethereum address
+				if pk, ok := prop.(*crypto.Secp256k1PublicKey); ok {
+					identBytes = crypto.EthereumAddressFromPubKey(pk)
+				} else {
+					return makeText(""), nil
+				}
+			case coreauth.Secp256k1Auth: // expects compressed secp256k1 pubkey bytes
+				if _, ok := prop.(*crypto.Secp256k1PublicKey); ok {
+					identBytes = prop.Bytes()
+				} else {
+					return makeText(""), nil
+				}
+			case coreauth.Ed25519Auth:
+				identBytes = prop.Bytes()
+			default:
+				// Attempt generic identifier using the registered authenticator
+				identBytes = prop.Bytes()
+			}
+
+			id, err := extauth.GetIdentifier(e.engineCtx.TxContext.Authenticator, identBytes)
 			if err != nil {
-				// being conservative: surface empty rather than failing a tx at runtime
 				return makeText(""), nil
 			}
 			return makeText(id), nil
