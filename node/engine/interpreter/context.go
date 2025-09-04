@@ -7,8 +7,8 @@ import (
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/trufnetwork/kwil-db/common"
+	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/types"
-	"github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
@@ -572,11 +572,7 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			if prop == nil {
 				return makeText(""), nil
 			}
-			compact := prop.Bytes()
-			if compact == nil {
-				return makeText(""), nil
-			}
-			id, err := auth.GetIdentifier(e.engineCtx.TxContext.Authenticator, compact)
+			id, err := coreauth.GetNodeIdentifier(prop)
 			if err != nil {
 				// being conservative: surface empty rather than failing a tx at runtime
 				return makeText(""), nil

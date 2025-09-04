@@ -11,7 +11,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto"
-	"github.com/trufnetwork/kwil-db/extensions/auth"
+	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
@@ -291,7 +291,7 @@ func TestLeaderIDContextualVariable(t *testing.T) {
 
 			// For dynamic key tests, calculate expected result from the key using helper
 			if tt.expectedResult == "" && tt.proposer != nil {
-				expectedID := identifierFromKey(t, tt.proposer, tt.authenticator)
+				expectedID := identifierFromKey(t, tt.proposer)
 				assert.Equal(t, expectedID, actualResult)
 			} else {
 				assert.Equal(t, tt.expectedResult, actualResult)
@@ -470,18 +470,14 @@ func hexFromKey(key crypto.PublicKey) string {
 	return hex.EncodeToString(key.Bytes())
 }
 
-// Helper function to get identifier from crypto.PublicKey using auth.GetIdentifier (matches @leader_id implementation)
-func identifierFromKey(t *testing.T, key crypto.PublicKey, authenticator string) string {
+// Helper function to get identifier from crypto.PublicKey using core auth (matches @leader_id implementation)
+func identifierFromKey(t *testing.T, key crypto.PublicKey) string {
 	t.Helper()
 	if key == nil {
 		return ""
 	}
 	// This matches the actual implementation in context.go
-	compact := key.Bytes()
-	if compact == nil {
-		return ""
-	}
-	id, err := auth.GetIdentifier(authenticator, compact)
+	id, err := coreauth.GetNodeIdentifier(key)
 	if err != nil {
 		// Return empty string on error (matches implementation behavior)
 		return ""
