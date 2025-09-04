@@ -11,6 +11,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
@@ -199,6 +200,112 @@ func mustCreateSecp256k1Key(t *testing.T) crypto.PublicKey {
 	return pubKey
 }
 
+// TestLeaderIDContextualVariable tests the @leader_id contextual variable
+func TestLeaderIDContextualVariable(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		proposer       crypto.PublicKey
+		authenticator  string
+		invalidTxCtx   bool
+		expectedResult string
+		expectError    bool
+	}{
+		{
+			name:           "valid ed25519 proposer key",
+			proposer:       mustCreateEd25519Key(t),
+			authenticator:  "ed25519_sha256",
+			invalidTxCtx:   false,
+			expectedResult: "", // Will be set dynamically based on actual key
+			expectError:    false,
+		},
+		{
+			name:           "valid secp256k1 proposer key",
+			proposer:       mustCreateSecp256k1Key(t),
+			authenticator:  "secp256k1",
+			invalidTxCtx:   false,
+			expectedResult: "", // Will be set dynamically based on actual key
+			expectError:    false,
+		},
+		{
+			name:           "nil proposer key",
+			proposer:       nil,
+			authenticator:  "ed25519_sha256",
+			invalidTxCtx:   false,
+			expectedResult: "",
+			expectError:    false,
+		},
+		{
+			name:           "invalid transaction context",
+			proposer:       mustCreateEd25519Key(t),
+			authenticator:  "ed25519_sha256",
+			invalidTxCtx:   true,
+			expectedResult: "",
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Create execution context
+			blockCtx := &common.BlockContext{
+				Height:    100,
+				Timestamp: 1640995200, // 2022-01-01 00:00:00 UTC
+				Proposer:  tt.proposer,
+			}
+
+			txCtx := &common.TxContext{
+				Ctx:           context.Background(),
+				BlockContext:  blockCtx,
+				Caller:        "test_caller",
+				TxID:          "test_tx_id",
+				Authenticator: tt.authenticator,
+			}
+
+			engineCtx := &common.EngineContext{
+				TxContext:    txCtx,
+				InvalidTxCtx: tt.invalidTxCtx,
+			}
+
+			execCtx := &executionContext{
+				engineCtx: engineCtx,
+				scope:     newScope("test"),
+			}
+
+			// Test @leader_id variable
+			result, err := execCtx.getVariable("@leader_id")
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Equal(t, engine.ErrInvalidTxCtx, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			// Convert result to string with type-safe assertion
+			require.IsType(t, (*textValue)(nil), result)
+			actualResult := result.(*textValue).String
+
+			// For dynamic key tests, calculate expected result from the key using helper
+			if tt.expectedResult == "" && tt.proposer != nil {
+				expectedID := identifierFromKey(t, tt.proposer, tt.authenticator)
+				assert.Equal(t, expectedID, actualResult)
+			} else {
+				assert.Equal(t, tt.expectedResult, actualResult)
+			}
+
+			// Verify the result is deterministic (same input should give same output)
+			result2, err2 := execCtx.getVariable("@leader_id")
+			require.NoError(t, err2)
+			require.IsType(t, (*textValue)(nil), result2)
+			assert.Equal(t, actualResult, result2.(*textValue).String, "Leader ID variable should be deterministic")
+		})
+	}
+}
+
 // TestLeaderAuthorizationScenarios demonstrates how @leader is used in practice
 // for authorization in multi-validator scenarios
 func TestLeaderAuthorizationScenarios(t *testing.T) {
@@ -361,6 +468,25 @@ func hexFromKey(key crypto.PublicKey) string {
 	}
 	// This matches the actual implementation in context.go
 	return hex.EncodeToString(key.Bytes())
+}
+
+// Helper function to get identifier from crypto.PublicKey using auth.GetIdentifier (matches @leader_id implementation)
+func identifierFromKey(t *testing.T, key crypto.PublicKey, authenticator string) string {
+	t.Helper()
+	if key == nil {
+		return ""
+	}
+	// This matches the actual implementation in context.go
+	compact := key.Bytes()
+	if compact == nil {
+		return ""
+	}
+	id, err := auth.GetIdentifier(authenticator, compact)
+	if err != nil {
+		// Return empty string on error (matches implementation behavior)
+		return ""
+	}
+	return id
 }
 
 // Helper function to normalize hex strings for comparison (handles 0x prefix and case differences)

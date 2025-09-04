@@ -8,6 +8,7 @@ import (
 	"github.com/decred/dcrd/container/lru"
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
@@ -563,6 +564,24 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			}
 			leaderBytes := e.engineCtx.TxContext.BlockContext.Proposer.Bytes()
 			return makeText(hex.EncodeToString(leaderBytes)), nil
+		case "leader_id":
+			if e.engineCtx.InvalidTxCtx {
+				return nil, engine.ErrInvalidTxCtx
+			}
+			prop := e.engineCtx.TxContext.BlockContext.Proposer
+			if prop == nil {
+				return makeText(""), nil
+			}
+			compact := prop.Bytes()
+			if compact == nil {
+				return makeText(""), nil
+			}
+			id, err := auth.GetIdentifier(e.engineCtx.TxContext.Authenticator, compact)
+			if err != nil {
+				// being conservative: surface empty rather than failing a tx at runtime
+				return makeText(""), nil
+			}
+			return makeText(id), nil
 		default:
 			return nil, fmt.Errorf("%w: %s", engine.ErrInvalidVariable, name)
 		}
