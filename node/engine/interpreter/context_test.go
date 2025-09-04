@@ -3,6 +3,7 @@ package interpreter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -699,9 +700,6 @@ func getSignerBytesForAuth(key crypto.PublicKey, authType string) []byte {
 // TestProductionAlignedLeaderSenderScenarios tests @leader_sender in scenarios that match production
 // This test is designed to catch mismatches that might not be caught by simpler unit tests
 func TestProductionAlignedLeaderSenderScenarios(t *testing.T) {
-	t.Parallel()
-
-	factory := NewProductionAlignedBlockContextFactory()
 
 	tests := []struct {
 		name                     string
@@ -721,7 +719,7 @@ func TestProductionAlignedLeaderSenderScenarios(t *testing.T) {
 			name:                     "leader_rotation_ed25519_auth",
 			scenario:                 "leader_rotation",
 			authenticator:            coreauth.Ed25519Auth,
-			expectedLeaderSenderNull: true,
+			expectedLeaderSenderNull: false,
 			description:              "Leader rotation to next validator with Ed25519 auth",
 		},
 		{
@@ -749,7 +747,8 @@ func TestProductionAlignedLeaderSenderScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			// Create fresh factory for each test to avoid state interference
+			factory := NewProductionAlignedBlockContextFactory()
 
 			// Create production-aligned block context
 			blockCtx := factory.CreateBlockContext(tt.scenario, nil)
@@ -801,6 +800,456 @@ func TestProductionAlignedLeaderSenderScenarios(t *testing.T) {
 				t.Logf("  Signer: %x", signerBytes)
 			}
 		})
+	}
+}
+
+// TestEd25519LeaderSenderBug reproduces the specific bug where Ed25519 validators yield null @leader_sender
+func TestEd25519LeaderSenderBug(t *testing.T) {
+	t.Parallel()
+
+	// This test directly reproduces the production bug where Ed25519 validators
+	// incorrectly return NULL for @leader_sender even when they should have a value
+
+	// Create an Ed25519 key pair to simulate the problematic scenario
+	_, ed25519Pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+
+	// Create block context with Ed25519 proposer (simulating Ed25519 validator as leader)
+	blockCtx := &common.BlockContext{
+		Height:    100,
+		Timestamp: 1640995200,
+		Proposer:  ed25519Pub, // This is the key part - Ed25519 proposer
+		ChainContext: &common.ChainContext{
+			ChainID: "test-chain",
+			NetworkParameters: &types.NetworkParameters{
+				MaxBlockSize: 1024 * 1024,
+			},
+		},
+	}
+
+	// Create transaction context with Ed25519 auth (matching the proposer type)
+	signerBytes := ed25519Pub.Bytes() // Use the proposer's own pubkey as signer
+	txCtx := &common.TxContext{
+		Ctx:           context.Background(),
+		BlockContext:  blockCtx,
+		Signer:        signerBytes,
+		Caller:        hex.EncodeToString(ed25519Pub.Bytes()), // For Ed25519 auth, caller is the hex pubkey
+		TxID:          "test_tx_ed25519_bug",
+		Authenticator: coreauth.Ed25519Auth, // This should match the proposer type
+	}
+
+	// Create execution context
+	execCtx := &executionContext{
+		engineCtx: &common.EngineContext{
+			TxContext: txCtx,
+		},
+		scope: newScope("test"),
+	}
+
+	// Test @leader_sender - this should NOT be NULL for Ed25519 proposer + Ed25519 auth
+	leaderSenderResult, err := execCtx.getVariable("@leader_sender")
+	require.NoError(t, err)
+	require.IsType(t, (*blobValue)(nil), leaderSenderResult)
+
+	leaderSenderBlob := leaderSenderResult.(*blobValue)
+
+	// This is the bug! With Ed25519 proposer and Ed25519 auth, leader_sender should NOT be NULL
+	t.Logf("Ed25519 Bug Test:")
+	t.Logf("  Proposer Type: %T", blockCtx.Proposer)
+	t.Logf("  Authenticator: %s", txCtx.Authenticator)
+	t.Logf("  Signer Bytes Length: %d", len(txCtx.Signer))
+	t.Logf("  Leader Sender NULL: %v", leaderSenderBlob.Null())
+
+	if leaderSenderBlob.Null() {
+		t.Errorf("BUG REPRODUCED: @leader_sender is NULL for Ed25519 proposer + Ed25519 auth")
+		t.Errorf("Expected: @leader_sender should contain the Ed25519 public key bytes")
+		t.Errorf("This indicates the leaderCompactIDForAuth function is not working correctly")
+	} else {
+		t.Logf("  Leader Sender: %x", leaderSenderBlob.bts)
+		// Verify the bytes match what we expect
+		expectedBytes := ed25519Pub.Bytes()
+		if !bytes.Equal(expectedBytes, leaderSenderBlob.bts) {
+			t.Errorf("Leader sender bytes don't match expected Ed25519 pubkey bytes")
+			t.Errorf("Expected: %x", expectedBytes)
+			t.Errorf("Actual: %x", leaderSenderBlob.bts)
+		}
+	}
+
+	// Also test @leader to make sure that works
+	leaderResult, err := execCtx.getVariable("@leader")
+	require.NoError(t, err)
+	require.IsType(t, (*textValue)(nil), leaderResult)
+	leaderText := leaderResult.(*textValue).String
+
+	expectedLeaderHex := hex.EncodeToString(ed25519Pub.Bytes())
+	if leaderText != expectedLeaderHex {
+		t.Errorf("@leader doesn't match expected hex encoding")
+		t.Errorf("Expected: %s", expectedLeaderHex)
+		t.Errorf("Actual: %s", leaderText)
+	}
+}
+
+// TestEd25519VsSecp256k1LeaderSenderComparison compares behavior between key types
+func TestEd25519VsSecp256k1LeaderSenderComparison(t *testing.T) {
+	t.Parallel()
+
+	// Test both Ed25519 and secp256k1 scenarios side by side
+
+	// Generate both key types
+	_, ed25519Pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+
+	_, secp256k1Pub, err := crypto.GenerateSecp256k1Key(rand.Reader)
+	require.NoError(t, err)
+
+	testCases := []struct {
+		name        string
+		proposer    crypto.PublicKey
+		authType    string
+		description string
+	}{
+		{
+			name:        "ed25519_proposer_ed25519_auth",
+			proposer:    ed25519Pub,
+			authType:    coreauth.Ed25519Auth,
+			description: "Ed25519 proposer with Ed25519 auth (should work)",
+		},
+		{
+			name:        "ed25519_proposer_secp256k1_auth",
+			proposer:    ed25519Pub,
+			authType:    coreauth.Secp256k1Auth,
+			description: "Ed25519 proposer with secp256k1 auth (should be NULL)",
+		},
+		{
+			name:        "secp256k1_proposer_secp256k1_auth",
+			proposer:    secp256k1Pub,
+			authType:    coreauth.Secp256k1Auth,
+			description: "secp256k1 proposer with secp256k1 auth (should work)",
+		},
+		{
+			name:        "secp256k1_proposer_ed25519_auth",
+			proposer:    secp256k1Pub,
+			authType:    coreauth.Ed25519Auth,
+			description: "secp256k1 proposer with Ed25519 auth (should be NULL)",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create block context
+			blockCtx := &common.BlockContext{
+				Height:    100,
+				Timestamp: 1640995200,
+				Proposer:  tc.proposer,
+				ChainContext: &common.ChainContext{
+					ChainID: "test-chain",
+					NetworkParameters: &types.NetworkParameters{
+						MaxBlockSize: 1024 * 1024,
+					},
+				},
+			}
+
+			// Create signer bytes using the helper function
+			signerBytes := getSignerBytesForAuth(tc.proposer, tc.authType)
+
+			// Create transaction context
+			var caller string
+			if signerBytes != nil {
+				if ident, err := extauth.GetIdentifier(tc.authType, signerBytes); err == nil {
+					caller = ident
+				}
+			}
+
+			txCtx := &common.TxContext{
+				Ctx:           context.Background(),
+				BlockContext:  blockCtx,
+				Signer:        signerBytes,
+				Caller:        caller,
+				TxID:          "test_tx_" + tc.name,
+				Authenticator: tc.authType,
+			}
+
+			// Create execution context
+			execCtx := &executionContext{
+				engineCtx: &common.EngineContext{
+					TxContext: txCtx,
+				},
+				scope: newScope("test"),
+			}
+
+			// Test @leader_sender
+			leaderSenderResult, err := execCtx.getVariable("@leader_sender")
+			require.NoError(t, err)
+			require.IsType(t, (*blobValue)(nil), leaderSenderResult)
+
+			leaderSenderBlob := leaderSenderResult.(*blobValue)
+			isNull := leaderSenderBlob.Null()
+
+			t.Logf("Test: %s", tc.description)
+			t.Logf("  Proposer Type: %T", tc.proposer)
+			t.Logf("  Auth Type: %s", tc.authType)
+			t.Logf("  Signer Bytes: %v", signerBytes != nil)
+			t.Logf("  Leader Sender NULL: %v", isNull)
+
+			// Verify expectations based on type matching
+			proposerType := tc.proposer.Type()
+			authMatchesProposer := false
+
+			switch tc.authType {
+			case coreauth.Ed25519Auth:
+				authMatchesProposer = proposerType == crypto.KeyTypeEd25519
+			case coreauth.Secp256k1Auth:
+				authMatchesProposer = proposerType == crypto.KeyTypeSecp256k1
+			case coreauth.EthPersonalSignAuth:
+				authMatchesProposer = proposerType == crypto.KeyTypeSecp256k1
+			}
+
+			if authMatchesProposer {
+				if isNull {
+					t.Errorf("BUG: @leader_sender should NOT be NULL when auth type matches proposer type")
+					t.Errorf("Proposer: %T, Auth: %s", tc.proposer, tc.authType)
+				}
+			} else {
+				if !isNull {
+					t.Errorf("UNEXPECTED: @leader_sender should be NULL when auth type doesn't match proposer type")
+					t.Errorf("Proposer: %T, Auth: %s", tc.proposer, tc.authType)
+				}
+			}
+		})
+	}
+}
+
+// TestProductionTypeConversionBug simulates the actual production flow with type conversions
+// This test tries to reproduce the bug by simulating how keys flow through the production system
+func TestProductionTypeConversionBug(t *testing.T) {
+	t.Parallel()
+
+	// This test simulates the production flow where the bug might occur:
+	// 1. Consensus engine sets leader as crypto.PublicKey
+	// 2. Block processor receives types.PublicKey (wrapper)
+	// 3. Block context is created with the wrapped key
+	// 4. Interpreter tries to use the key for @leader_sender
+
+	// Create an Ed25519 key (simulating Ed25519 validator)
+	_, ed25519Pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+
+	// Simulate the production flow: wrap the key in types.PublicKey
+	wrappedKey := types.PublicKey{PublicKey: ed25519Pub}
+
+	testCases := []struct {
+		name        string
+		description string
+		proposer    crypto.PublicKey
+		wrapped     bool
+	}{
+		{
+			name:        "direct_crypto_key",
+			description: "Using crypto.PublicKey directly (unit test style)",
+			proposer:    ed25519Pub,
+			wrapped:     false,
+		},
+		{
+			name:        "wrapped_types_key",
+			description: "Using types.PublicKey wrapper (production style)",
+			proposer:    wrappedKey.PublicKey, // Extract the wrapped key
+			wrapped:     true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create block context
+			blockCtx := &common.BlockContext{
+				Height:    100,
+				Timestamp: 1640995200,
+				Proposer:  tc.proposer, // This is the key difference
+				ChainContext: &common.ChainContext{
+					ChainID: "test-chain",
+					NetworkParameters: &types.NetworkParameters{
+						MaxBlockSize: 1024 * 1024,
+					},
+				},
+			}
+
+			// Create signer bytes - use Ed25519 auth to match the proposer
+			signerBytes := getSignerBytesForAuth(tc.proposer, coreauth.Ed25519Auth)
+
+			// Create transaction context
+			var caller string
+			if signerBytes != nil {
+				if ident, err := extauth.GetIdentifier(coreauth.Ed25519Auth, signerBytes); err == nil {
+					caller = ident
+				}
+			}
+
+			txCtx := &common.TxContext{
+				Ctx:           context.Background(),
+				BlockContext:  blockCtx,
+				Signer:        signerBytes,
+				Caller:        caller,
+				TxID:          "test_tx_type_conversion",
+				Authenticator: coreauth.Ed25519Auth,
+			}
+
+			// Create execution context
+			execCtx := &executionContext{
+				engineCtx: &common.EngineContext{
+					TxContext: txCtx,
+				},
+				scope: newScope("test"),
+			}
+
+			// Test @leader_sender
+			leaderSenderResult, err := execCtx.getVariable("@leader_sender")
+			require.NoError(t, err)
+			require.IsType(t, (*blobValue)(nil), leaderSenderResult)
+
+			leaderSenderBlob := leaderSenderResult.(*blobValue)
+			isNull := leaderSenderBlob.Null()
+
+			t.Logf("Test: %s", tc.description)
+			t.Logf("  Wrapped: %v", tc.wrapped)
+			t.Logf("  Proposer Type: %T", tc.proposer)
+			t.Logf("  Proposer Pointer: %p", tc.proposer)
+			t.Logf("  Signer Bytes: %v", signerBytes != nil)
+			t.Logf("  Leader Sender NULL: %v", isNull)
+
+			if tc.wrapped {
+				t.Logf("  Original wrapped type: %T", wrappedKey)
+				t.Logf("  Extracted key type: %T", wrappedKey.PublicKey)
+			}
+
+			// The expectation: both should work the same way
+			if signerBytes != nil {
+				if isNull {
+					t.Errorf("BUG DETECTED: @leader_sender is NULL despite having valid signer bytes!")
+					t.Errorf("This suggests the type conversion in production is breaking @leader_sender")
+					t.Errorf("Proposer type: %T, Auth: %s", tc.proposer, coreauth.Ed25519Auth)
+				} else {
+					t.Logf("  SUCCESS: @leader_sender works correctly")
+					t.Logf("  Leader Sender: %x", leaderSenderBlob.bts)
+				}
+			} else {
+				t.Logf("  Signer bytes is nil (expected for type mismatch)")
+			}
+		})
+	}
+}
+
+// TestConsensusEngineTypeFlow simulates the exact flow from consensus engine to interpreter
+func TestConsensusEngineTypeFlow(t *testing.T) {
+	t.Parallel()
+
+	// This test simulates the exact production flow:
+	// ConsensusEngine.leader (crypto.PublicKey) -> BlockExecRequest.Proposer (crypto.PublicKey)
+	// -> BlockContext.Proposer (crypto.PublicKey) -> @leader_sender evaluation
+
+	// Create Ed25519 key (simulating Ed25519 validator)
+	_, ed25519Pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+
+	// Simulate consensus engine setting the leader
+	consensusEngineLeader := ed25519Pub // This is what ConsensusEngine.ce.leader would be
+
+	// Simulate block processor receiving the leader in BlockExecRequest
+	blockExecReq := &types.BlockExecRequest{
+		Height:   100,
+		Block:    &types.Block{Header: &types.BlockHeader{Timestamp: time.Unix(1640995200, 0)}},
+		Proposer: consensusEngineLeader, // Passed directly from consensus engine
+	}
+
+	// Simulate block processor creating BlockContext (from processor.go:389-395)
+	blockCtx := &common.BlockContext{
+		Height:    blockExecReq.Height,
+		Timestamp: blockExecReq.Block.Header.Timestamp.Unix(),
+		Proposer:  blockExecReq.Proposer, // This should preserve the type
+		ChainContext: &common.ChainContext{
+			ChainID: "test-chain",
+			NetworkParameters: &types.NetworkParameters{
+				MaxBlockSize: 1024 * 1024,
+			},
+		},
+	}
+
+	// Create transaction with Ed25519 auth
+	signerBytes := ed25519Pub.Bytes()
+	txCtx := &common.TxContext{
+		Ctx:           context.Background(),
+		BlockContext:  blockCtx,
+		Signer:        signerBytes,
+		Caller:        hex.EncodeToString(ed25519Pub.Bytes()),
+		TxID:          "test_tx_consensus_flow",
+		Authenticator: coreauth.Ed25519Auth,
+	}
+
+	// Create execution context
+	execCtx := &executionContext{
+		engineCtx: &common.EngineContext{
+			TxContext: txCtx,
+		},
+		scope: newScope("test"),
+	}
+
+	// Test all contextual variables
+	variables := []string{"@leader", "@leader_sender", "@signer"}
+	results := make(map[string]interface{})
+
+	for _, varName := range variables {
+		result, err := execCtx.getVariable(varName)
+		require.NoError(t, err)
+
+		switch varName {
+		case "@leader":
+			if textVal, ok := result.(*textValue); ok {
+				results[varName] = textVal.String
+			}
+		case "@leader_sender":
+			if blobVal, ok := result.(*blobValue); ok {
+				results[varName] = map[string]interface{}{
+					"null":  blobVal.Null(),
+					"bytes": blobVal.bts,
+				}
+			}
+		case "@signer":
+			if blobVal, ok := result.(*blobValue); ok {
+				results[varName] = blobVal.bts
+			}
+		}
+	}
+
+	// Analyze results
+	t.Logf("Consensus Engine Flow Test:")
+	t.Logf("  Original leader type: %T", consensusEngineLeader)
+	t.Logf("  Block context proposer type: %T", blockCtx.Proposer)
+	t.Logf("  @leader: %v", results["@leader"])
+	t.Logf("  @signer: %x", results["@signer"])
+
+	leaderSenderInfo := results["@leader_sender"].(map[string]interface{})
+	t.Logf("  @leader_sender null: %v", leaderSenderInfo["null"])
+	if !leaderSenderInfo["null"].(bool) {
+		t.Logf("  @leader_sender bytes: %x", leaderSenderInfo["bytes"])
+	}
+
+	// Check if the bug is reproduced
+	isLeaderSenderNull := leaderSenderInfo["null"].(bool)
+	if isLeaderSenderNull {
+		t.Errorf("PRODUCTION BUG REPRODUCED!")
+		t.Errorf("Ed25519 validator @leader_sender is NULL in consensus flow simulation")
+		t.Errorf("This indicates the issue is in the consensus->block processor->interpreter pipeline")
+	} else {
+		t.Logf("SUCCESS: Consensus flow works correctly for Ed25519")
+	}
+
+	// Verify @leader_sender equals @signer when they should match
+	if !isLeaderSenderNull {
+		leaderSenderBytes := leaderSenderInfo["bytes"].([]byte)
+		signerBytes := results["@signer"].([]byte)
+		if !bytes.Equal(leaderSenderBytes, signerBytes) {
+			t.Errorf("Leader sender doesn't match signer!")
+			t.Errorf("Leader sender: %x", leaderSenderBytes)
+			t.Errorf("Signer: %x", signerBytes)
+		}
 	}
 }
 
@@ -903,4 +1352,65 @@ func TestProductionAlignedLeaderElectionScenarios(t *testing.T) {
 			t.Logf("  Leader Sender NULL: %v", leaderSenderBlob.Null())
 		})
 	}
+}
+
+// secpPubWrapper simulates a non-concrete proposer type that still exposes
+// the secp256k1 key interface but is NOT a *crypto.Secp256k1PublicKey.
+// This ensures our logic does not rely on brittle concrete type assertions.
+type secpPubWrapper struct {
+	inner *crypto.Secp256k1PublicKey
+}
+
+func (w *secpPubWrapper) Type() crypto.KeyType { return w.inner.Type() }
+func (w *secpPubWrapper) Bytes() []byte        { return w.inner.Bytes() }
+func (w *secpPubWrapper) Equals(k crypto.Key) bool {
+	return w.inner.Equals(k)
+}
+func (w *secpPubWrapper) Verify(data []byte, sig []byte) (bool, error) {
+	return w.inner.Verify(data, sig)
+}
+
+func wrapSecpPub(pk *crypto.Secp256k1PublicKey) crypto.PublicKey { return &secpPubWrapper{inner: pk} }
+
+func TestLeaderSender_WithWrappedSecp256k1Proposer_EthPersonalAuth(t *testing.T) {
+	t.Parallel()
+
+	// Generate a concrete secp256k1 key then wrap it
+	_, pubKeyGeneric, err := crypto.GenerateSecp256k1Key(rand.Reader)
+	require.NoError(t, err)
+	pubKey, ok := pubKeyGeneric.(*crypto.Secp256k1PublicKey)
+	require.True(t, ok)
+	wrapped := wrapSecpPub(pubKey)
+
+	blockCtx := &common.BlockContext{
+		Height:    123,
+		Timestamp: time.Now().Unix(),
+		Proposer:  wrapped,
+	}
+
+	// signer for eth personal is the 20-byte ethereum address derived from the pubkey
+	signer := crypto.EthereumAddressFromPubKey(pubKey)
+	caller, err := extauth.GetIdentifier(coreauth.EthPersonalSignAuth, signer)
+	require.NoError(t, err)
+
+	txCtx := &common.TxContext{
+		Ctx:           context.Background(),
+		BlockContext:  blockCtx,
+		Signer:        signer,
+		Caller:        caller,
+		TxID:          "test_tx_wrap",
+		Authenticator: coreauth.EthPersonalSignAuth,
+	}
+
+	execCtx := &executionContext{
+		engineCtx: &common.EngineContext{TxContext: txCtx},
+		scope:     newScope("test_namespace"),
+	}
+
+	val, err := execCtx.getVariable("@leader_sender")
+	require.NoError(t, err)
+	blob, ok := val.(*blobValue)
+	require.True(t, ok)
+	require.False(t, blob.Null(), "leader_sender should not be NULL for wrapped secp256k1 with eth personal auth")
+	assert.Equal(t, signer, blob.bts, "leader_sender must equal derived ethereum address")
 }

@@ -27,27 +27,33 @@ func leaderCompactIDForAuth(proposer crypto.PublicKey, authType string) ([]byte,
 	switch strings.ToLower(authType) {
 	case coreauth.Ed25519Auth:
 		// tx signer is an ed25519 pubkey (32B) → proposer must be ed25519
-		pk, ok := proposer.(*crypto.Ed25519PublicKey)
-		if !ok {
+		if proposer.Type() != crypto.KeyTypeEd25519 {
 			// cannot represent leader in this scheme
 			return nil, nil
 		}
-		return pk.Bytes(), nil
+		return proposer.Bytes(), nil
 	case coreauth.Secp256k1Auth:
 		// tx signer is a compressed secp256k1 pubkey (33B)
-		pk, ok := proposer.(*crypto.Secp256k1PublicKey)
-		if !ok {
+		if proposer.Type() != crypto.KeyTypeSecp256k1 {
 			return nil, nil
 		}
-		return pk.Bytes(), nil // compressed
+		return proposer.Bytes(), nil // compressed
 	case coreauth.EthPersonalSignAuth:
 		// tx signer is a 20B Ethereum address derived from secp256k1 pubkey
-		pk, ok := proposer.(*crypto.Secp256k1PublicKey)
+		if proposer.Type() != crypto.KeyTypeSecp256k1 {
+			return nil, nil
+		}
+		// Reconstruct concrete secp256k1 public key from compressed bytes
+		pubKey, err := crypto.UnmarshalPublicKey(proposer.Bytes(), crypto.KeyTypeSecp256k1)
+		if err != nil {
+			return nil, err
+		}
+		secpPub, ok := pubKey.(*crypto.Secp256k1PublicKey)
 		if !ok {
 			return nil, nil
 		}
 		// Use the same derivation as the Eth authenticator: Keccak(uncompressed pubkey)[12:]
-		return crypto.EthereumAddressFromPubKey(pk), nil
+		return crypto.EthereumAddressFromPubKey(secpPub), nil
 	default:
 		return nil, fmt.Errorf("unsupported authenticator: %s", authType)
 	}
