@@ -1,19 +1,21 @@
 package interpreter
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"bytes"
-
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/types"
 	extauth "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/node/engine"
 )
@@ -371,6 +373,137 @@ func hexFromKey(key crypto.PublicKey) string {
 	return hex.EncodeToString(key.Bytes())
 }
 
+// ProductionAlignedBlockContextFactory creates block contexts that match production scenarios
+// This factory helps create more realistic test scenarios that align with production node behavior
+type ProductionAlignedBlockContextFactory struct {
+	// Track validator set for leader rotation scenarios
+	validators []crypto.PublicKey
+	// Current leader index for rotation
+	currentLeaderIdx int
+	// Base timestamp for realistic block timing
+	baseTimestamp time.Time
+	// Current block height
+	currentHeight int64
+}
+
+// NewProductionAlignedBlockContextFactory creates a new factory with realistic defaults
+func NewProductionAlignedBlockContextFactory() *ProductionAlignedBlockContextFactory {
+	// Create a realistic validator set with mixed key types
+	validators := []crypto.PublicKey{
+		mustCreateSecp256k1Key(&testing.T{}), // Primary validator (secp256k1)
+		mustCreateEd25519Key(&testing.T{}),   // Secondary validator (ed25519)
+		mustCreateSecp256k1Key(&testing.T{}), // Third validator (secp256k1)
+	}
+
+	return &ProductionAlignedBlockContextFactory{
+		validators:       validators,
+		currentLeaderIdx: 0,
+		baseTimestamp:    time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC),
+		currentHeight:    1,
+	}
+}
+
+// CreateBlockContext creates a block context that simulates production scenarios
+func (f *ProductionAlignedBlockContextFactory) CreateBlockContext(scenario string, customProposer crypto.PublicKey) *common.BlockContext {
+	var proposer crypto.PublicKey
+	var height int64
+	var timestamp int64
+
+	switch scenario {
+	case "normal_block":
+		// Normal block with current leader
+		proposer = f.validators[f.currentLeaderIdx]
+		height = f.currentHeight
+		timestamp = f.baseTimestamp.Add(time.Duration(f.currentHeight) * time.Second).Unix()
+
+	case "leader_rotation":
+		// Simulate leader rotation to next validator
+		f.currentLeaderIdx = (f.currentLeaderIdx + 1) % len(f.validators)
+		proposer = f.validators[f.currentLeaderIdx]
+		height = f.currentHeight
+		timestamp = f.baseTimestamp.Add(time.Duration(f.currentHeight) * time.Second).Unix()
+
+	case "genesis_block":
+		// Genesis block scenario
+		proposer = f.validators[0]
+		height = 1
+		timestamp = f.baseTimestamp.Unix()
+
+	case "custom_proposer":
+		// Use custom proposer for specific test scenarios
+		if customProposer != nil {
+			proposer = customProposer
+		} else {
+			proposer = f.validators[0]
+		}
+		height = f.currentHeight
+		timestamp = f.baseTimestamp.Add(time.Duration(f.currentHeight) * time.Second).Unix()
+
+	case "nil_proposer":
+		// Edge case: nil proposer (should not happen in production but test robustness)
+		proposer = nil
+		height = f.currentHeight
+		timestamp = f.baseTimestamp.Add(time.Duration(f.currentHeight) * time.Second).Unix()
+
+	default:
+		// Default to normal block
+		proposer = f.validators[f.currentLeaderIdx]
+		height = f.currentHeight
+		timestamp = f.baseTimestamp.Add(time.Duration(f.currentHeight) * time.Second).Unix()
+	}
+
+	// Increment height for next call
+	f.currentHeight++
+
+	return &common.BlockContext{
+		Height:    height,
+		Timestamp: timestamp,
+		Proposer:  proposer,
+		ChainContext: &common.ChainContext{
+			ChainID: "test-chain",
+			NetworkParameters: &types.NetworkParameters{
+				MaxBlockSize: 1024 * 1024, // 1MB
+			},
+		},
+	}
+}
+
+// CreateTxContext creates a transaction context with realistic production-aligned data
+func (f *ProductionAlignedBlockContextFactory) CreateTxContext(blockCtx *common.BlockContext, authenticator string, signerBytes []byte) *common.TxContext {
+	caller := ""
+	if signerBytes != nil {
+		if ident, err := extauth.GetIdentifier(authenticator, signerBytes); err == nil {
+			caller = ident
+		}
+	}
+
+	txID := "test_tx_nil"
+	if len(signerBytes) > 0 {
+		txID = "test_tx_" + hex.EncodeToString(signerBytes)[:8]
+	}
+
+	return &common.TxContext{
+		Ctx:           context.Background(),
+		BlockContext:  blockCtx,
+		Signer:        signerBytes,
+		Caller:        caller,
+		TxID:          txID,
+		Authenticator: authenticator,
+	}
+}
+
+// CreateExecutionContext creates a full execution context for testing
+func (f *ProductionAlignedBlockContextFactory) CreateExecutionContext(blockCtx *common.BlockContext, txCtx *common.TxContext) *executionContext {
+	engineCtx := &common.EngineContext{
+		TxContext: txCtx,
+	}
+
+	return &executionContext{
+		engineCtx: engineCtx,
+		scope:     newScope("test_namespace"),
+	}
+}
+
 // TestLeaderSenderContextualVariable tests the @leader_sender variable
 func TestLeaderSenderContextualVariable(t *testing.T) {
 	t.Parallel()
@@ -561,4 +694,213 @@ func getSignerBytesForAuth(key crypto.PublicKey, authType string) []byte {
 		}
 	}
 	return nil
+}
+
+// TestProductionAlignedLeaderSenderScenarios tests @leader_sender in scenarios that match production
+// This test is designed to catch mismatches that might not be caught by simpler unit tests
+func TestProductionAlignedLeaderSenderScenarios(t *testing.T) {
+	t.Parallel()
+
+	factory := NewProductionAlignedBlockContextFactory()
+
+	tests := []struct {
+		name                     string
+		scenario                 string
+		authenticator            string
+		expectedLeaderSenderNull bool
+		description              string
+	}{
+		{
+			name:                     "normal_block_secp256k1_auth",
+			scenario:                 "normal_block",
+			authenticator:            coreauth.Secp256k1Auth,
+			expectedLeaderSenderNull: false,
+			description:              "Normal block with secp256k1 proposer and matching auth",
+		},
+		{
+			name:                     "leader_rotation_ed25519_auth",
+			scenario:                 "leader_rotation",
+			authenticator:            coreauth.Ed25519Auth,
+			expectedLeaderSenderNull: true,
+			description:              "Leader rotation to next validator with Ed25519 auth",
+		},
+		{
+			name:                     "genesis_block_eth_personal_auth",
+			scenario:                 "genesis_block",
+			authenticator:            coreauth.EthPersonalSignAuth,
+			expectedLeaderSenderNull: false,
+			description:              "Genesis block with secp256k1 proposer and eth personal auth",
+		},
+		{
+			name:                     "normal_block_ed25519_mismatch",
+			scenario:                 "normal_block",
+			authenticator:            coreauth.Ed25519Auth,
+			expectedLeaderSenderNull: true,
+			description:              "Normal block with secp256k1 proposer but Ed25519 auth (mismatch)",
+		},
+		{
+			name:                     "leader_rotation_secp256k1_auth",
+			scenario:                 "leader_rotation",
+			authenticator:            coreauth.Secp256k1Auth,
+			expectedLeaderSenderNull: true,
+			description:              "Leader rotation to next validator with secp256k1 auth",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create production-aligned block context
+			blockCtx := factory.CreateBlockContext(tt.scenario, nil)
+
+			// Create signer bytes based on the block proposer and auth type
+			var signerBytes []byte
+			if blockCtx.Proposer != nil {
+				signerBytes = getSignerBytesForAuth(blockCtx.Proposer, tt.authenticator)
+			}
+
+			// Create transaction context
+			txCtx := factory.CreateTxContext(blockCtx, tt.authenticator, signerBytes)
+
+			// Create execution context
+			execCtx := factory.CreateExecutionContext(blockCtx, txCtx)
+
+			// Test @leader_sender variable
+			leaderSenderResult, err := execCtx.getVariable("@leader_sender")
+			require.NoError(t, err)
+			require.IsType(t, (*blobValue)(nil), leaderSenderResult)
+
+			leaderSenderBlob := leaderSenderResult.(*blobValue)
+
+			// Verify expectation matches actual result
+			if tt.expectedLeaderSenderNull {
+				assert.True(t, leaderSenderBlob.Null(),
+					"@leader_sender should be NULL for %s", tt.description)
+			} else {
+				assert.False(t, leaderSenderBlob.Null(),
+					"@leader_sender should NOT be NULL for %s", tt.description)
+
+				// For non-null cases, verify leader_sender equals signer (when they match)
+				if signerBytes != nil && !leaderSenderBlob.Null() {
+					assert.Equal(t, signerBytes, leaderSenderBlob.bts,
+						"@leader_sender should equal signer for %s", tt.description)
+				}
+			}
+
+			// Log debug information for troubleshooting
+			t.Logf("Scenario: %s", tt.description)
+			t.Logf("  Block Height: %d", blockCtx.Height)
+			t.Logf("  Proposer: %T (%p)", blockCtx.Proposer, blockCtx.Proposer)
+			t.Logf("  Authenticator: %s", tt.authenticator)
+			t.Logf("  Leader Sender NULL: %v", leaderSenderBlob.Null())
+			if !leaderSenderBlob.Null() {
+				t.Logf("  Leader Sender: %x", leaderSenderBlob.bts)
+			}
+			if signerBytes != nil {
+				t.Logf("  Signer: %x", signerBytes)
+			}
+		})
+	}
+}
+
+// TestProductionAlignedLeaderElectionScenarios tests leader election scenarios
+// This test simulates production leader changes and verifies contextual variables behave correctly
+func TestProductionAlignedLeaderElectionScenarios(t *testing.T) {
+	t.Parallel()
+
+	factory := NewProductionAlignedBlockContextFactory()
+
+	// Simulate a sequence of blocks with leader changes
+	scenarios := []struct {
+		blockNum      int
+		scenario      string
+		authenticator string
+		description   string
+	}{
+		{1, "genesis_block", coreauth.EthPersonalSignAuth, "Genesis block with validator 0"},
+		{2, "normal_block", coreauth.Secp256k1Auth, "Normal block with validator 0"},
+		{3, "leader_rotation", coreauth.Ed25519Auth, "Leader rotation to validator 1"},
+		{4, "normal_block", coreauth.Ed25519Auth, "Normal block with validator 1"},
+		{5, "leader_rotation", coreauth.EthPersonalSignAuth, "Leader rotation to validator 2"},
+		{6, "normal_block", coreauth.Secp256k1Auth, "Normal block with validator 2"},
+	}
+
+	var previousProposer crypto.PublicKey
+
+	for _, scenario := range scenarios {
+		t.Run(fmt.Sprintf("block_%d_%s", scenario.blockNum, scenario.scenario), func(t *testing.T) {
+			// Create production-aligned block context
+			blockCtx := factory.CreateBlockContext(scenario.scenario, nil)
+
+			// Verify height progression
+			assert.Equal(t, int64(scenario.blockNum), blockCtx.Height,
+				"Block height should match scenario block number")
+
+			// Create signer bytes based on the block proposer
+			var signerBytes []byte
+			if blockCtx.Proposer != nil {
+				signerBytes = getSignerBytesForAuth(blockCtx.Proposer, scenario.authenticator)
+			}
+
+			// Create transaction context
+			txCtx := factory.CreateTxContext(blockCtx, scenario.authenticator, signerBytes)
+
+			// Create execution context
+			execCtx := factory.CreateExecutionContext(blockCtx, txCtx)
+
+			// Test @leader variable
+			leaderResult, err := execCtx.getVariable("@leader")
+			require.NoError(t, err)
+			require.IsType(t, (*textValue)(nil), leaderResult)
+			leaderText := leaderResult.(*textValue).String
+
+			// Verify @leader matches proposer
+			if blockCtx.Proposer != nil {
+				expectedLeaderHex := hexFromKey(blockCtx.Proposer)
+				assert.Equal(t, expectedLeaderHex, leaderText,
+					"@leader should match proposer hex encoding")
+			} else {
+				assert.Equal(t, "", leaderText, "@leader should be empty for nil proposer")
+			}
+
+			// Test @leader_sender variable
+			leaderSenderResult, err := execCtx.getVariable("@leader_sender")
+			require.NoError(t, err)
+			require.IsType(t, (*blobValue)(nil), leaderSenderResult)
+			leaderSenderBlob := leaderSenderResult.(*blobValue)
+
+			// For leader election scenarios, leader_sender should be non-null when auth matches proposer type
+			expectedNull := signerBytes == nil
+			if expectedNull {
+				assert.True(t, leaderSenderBlob.Null(),
+					"@leader_sender should be NULL when signer bytes are nil")
+			} else {
+				assert.False(t, leaderSenderBlob.Null(),
+					"@leader_sender should NOT be NULL when signer bytes exist")
+				assert.Equal(t, signerBytes, leaderSenderBlob.bts,
+					"@leader_sender should equal signer bytes")
+			}
+
+			// Verify leader change detection
+			if previousProposer != nil && blockCtx.Proposer != nil {
+				leaderChanged := !bytes.Equal(previousProposer.Bytes(), blockCtx.Proposer.Bytes())
+				if leaderChanged {
+					t.Logf("Leader change detected at block %d", scenario.blockNum)
+					t.Logf("  Previous: %x", previousProposer.Bytes())
+					t.Logf("  Current:  %x", blockCtx.Proposer.Bytes())
+				}
+			}
+
+			// Update previous proposer for next iteration
+			previousProposer = blockCtx.Proposer
+
+			// Log scenario details for debugging
+			t.Logf("Block %d: %s", scenario.blockNum, scenario.description)
+			t.Logf("  Height: %d", blockCtx.Height)
+			t.Logf("  Timestamp: %d", blockCtx.Timestamp)
+			t.Logf("  Leader: %s", leaderText)
+			t.Logf("  Leader Sender NULL: %v", leaderSenderBlob.Null())
+		})
+	}
 }

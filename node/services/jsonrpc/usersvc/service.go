@@ -830,15 +830,22 @@ func (svc *Service) txCtx(ctx context.Context, sender []byte, authtype string) (
 		stamp = -1
 	}
 
+	// Get network parameters for proposer information
+	networkParams := svc.chainClient.ConsensusParams()
+
 	return &common.TxContext{
 		Ctx:           ctx,
 		Signer:        signer,
 		Caller:        caller,
 		Authenticator: authtype,
 		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: networkParams,
+			},
 			Height:    height,
 			Timestamp: stamp,
 			Hash:      hash,
+			Proposer:  networkParams.Leader, // Add configured leader for consistency with mempool validation
 		},
 	}, nil
 }
