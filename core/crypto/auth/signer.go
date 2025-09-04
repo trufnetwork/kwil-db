@@ -199,7 +199,7 @@ func GetNodeIdentifier(pub crypto.PublicKey) (string, error) {
 	switch pub := pub.(type) {
 	case *crypto.Secp256k1PublicKey:
 		compactID := secp256k1CompactID(pub) // NOT EthSecp256k1CompactID!
-		return EthSecp256k1Authenticator{}.Identifier(compactID)
+		return Secp25k1Authenticator{}.Identifier(compactID)
 	case *crypto.Ed25519PublicKey:
 		compactID := ed25519CompactID(pub)
 		return Ed25519Authenticator{}.Identifier(compactID)
