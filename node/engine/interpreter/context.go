@@ -10,7 +10,6 @@ import (
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/types"
-	extauth "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
@@ -18,6 +17,41 @@ import (
 	"github.com/trufnetwork/kwil-db/node/engine/planner/logical"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
+
+// leaderCompactIDForAuth converts the proposer public key into the same "CompactID"
+// byte shape that the current tx's authenticator uses for tx.Sender.
+func leaderCompactIDForAuth(proposer crypto.PublicKey, authType string) ([]byte, error) {
+	if proposer == nil {
+		return nil, nil
+	}
+	switch strings.ToLower(authType) {
+	case coreauth.Ed25519Auth:
+		// tx signer is an ed25519 pubkey (32B) → proposer must be ed25519
+		pk, ok := proposer.(*crypto.Ed25519PublicKey)
+		if !ok {
+			// cannot represent leader in this scheme
+			return nil, nil
+		}
+		return pk.Bytes(), nil
+	case coreauth.Secp256k1Auth:
+		// tx signer is a compressed secp256k1 pubkey (33B)
+		pk, ok := proposer.(*crypto.Secp256k1PublicKey)
+		if !ok {
+			return nil, nil
+		}
+		return pk.Bytes(), nil // compressed
+	case coreauth.EthPersonalSignAuth:
+		// tx signer is a 20B Ethereum address derived from secp256k1 pubkey
+		pk, ok := proposer.(*crypto.Secp256k1PublicKey)
+		if !ok {
+			return nil, nil
+		}
+		// Use the same derivation as the Eth authenticator: Keccak(uncompressed pubkey)[12:]
+		return crypto.EthereumAddressFromPubKey(pk), nil
+	default:
+		return nil, fmt.Errorf("unsupported authenticator: %s", authType)
+	}
+}
 
 // executionContext is the context of the entire execution.
 type executionContext struct {
@@ -566,34 +600,23 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			}
 			leaderBytes := e.engineCtx.TxContext.BlockContext.Proposer.Bytes()
 			return makeText(hex.EncodeToString(leaderBytes)), nil
-		case "leader_id":
+		case "leader_sender":
+			// type: BYTEA (blob)
 			if e.engineCtx.InvalidTxCtx {
 				return nil, engine.ErrInvalidTxCtx
 			}
-			prop := e.engineCtx.TxContext.BlockContext.Proposer
-			if prop == nil {
-				return makeText(""), nil
+			bc := e.engineCtx.TxContext.BlockContext
+			if bc == nil || bc.Proposer == nil {
+				// No proposer in context → return NULL BYTEA
+				return makeBlob(nil), nil
 			}
-			// Derive a canonical, user-facing identifier based on the leader's key type,
-			// independent of the current transaction's authenticator.
-			var identBytes []byte
-			var authType string
-			switch pk := prop.(type) {
-			case *crypto.Secp256k1PublicKey:
-				identBytes = crypto.EthereumAddressFromPubKey(pk)
-				authType = coreauth.EthPersonalSignAuth
-			case *crypto.Ed25519PublicKey:
-				identBytes = pk.Bytes()
-				authType = coreauth.Ed25519Auth
-			default:
-				return makeText(""), nil
-			}
-
-			id, err := extauth.GetIdentifier(authType, identBytes)
+			authType := e.engineCtx.TxContext.Authenticator
+			b, err := leaderCompactIDForAuth(bc.Proposer, authType)
 			if err != nil {
-				return makeText(""), nil
+				return nil, err
 			}
-			return makeText(id), nil
+			// If b == nil, it means "not representable in this scheme" → NULL
+			return makeBlob(b), nil
 		default:
 			return nil, fmt.Errorf("%w: %s", engine.ErrInvalidVariable, name)
 		}

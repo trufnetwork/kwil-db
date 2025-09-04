@@ -9,9 +9,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"bytes"
+
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
+	extauth "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/node/engine"
 )
 
@@ -200,112 +203,6 @@ func mustCreateSecp256k1Key(t *testing.T) crypto.PublicKey {
 	return pubKey
 }
 
-// TestLeaderIDContextualVariable tests the @leader_id contextual variable
-func TestLeaderIDContextualVariable(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name           string
-		proposer       crypto.PublicKey
-		authenticator  string
-		invalidTxCtx   bool
-		expectedResult string
-		expectError    bool
-	}{
-		{
-			name:           "valid ed25519 proposer key",
-			proposer:       mustCreateEd25519Key(t),
-			authenticator:  "ed25519_sha256",
-			invalidTxCtx:   false,
-			expectedResult: "", // Will be set dynamically based on actual key
-			expectError:    false,
-		},
-		{
-			name:           "valid secp256k1 proposer key",
-			proposer:       mustCreateSecp256k1Key(t),
-			authenticator:  "secp256k1",
-			invalidTxCtx:   false,
-			expectedResult: "", // Will be set dynamically based on actual key
-			expectError:    false,
-		},
-		{
-			name:           "nil proposer key",
-			proposer:       nil,
-			authenticator:  "ed25519_sha256",
-			invalidTxCtx:   false,
-			expectedResult: "",
-			expectError:    false,
-		},
-		{
-			name:           "invalid transaction context",
-			proposer:       mustCreateEd25519Key(t),
-			authenticator:  "ed25519_sha256",
-			invalidTxCtx:   true,
-			expectedResult: "",
-			expectError:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			// Create execution context
-			blockCtx := &common.BlockContext{
-				Height:    100,
-				Timestamp: 1640995200, // 2022-01-01 00:00:00 UTC
-				Proposer:  tt.proposer,
-			}
-
-			txCtx := &common.TxContext{
-				Ctx:           context.Background(),
-				BlockContext:  blockCtx,
-				Caller:        "test_caller",
-				TxID:          "test_tx_id",
-				Authenticator: tt.authenticator,
-			}
-
-			engineCtx := &common.EngineContext{
-				TxContext:    txCtx,
-				InvalidTxCtx: tt.invalidTxCtx,
-			}
-
-			execCtx := &executionContext{
-				engineCtx: engineCtx,
-				scope:     newScope("test"),
-			}
-
-			// Test @leader_id variable
-			result, err := execCtx.getVariable("@leader_id")
-
-			if tt.expectError {
-				require.Error(t, err)
-				assert.Equal(t, engine.ErrInvalidTxCtx, err)
-				return
-			}
-
-			require.NoError(t, err)
-			require.NotNil(t, result)
-
-			// Convert result to string with type-safe assertion
-			require.IsType(t, (*textValue)(nil), result)
-			actualResult := result.(*textValue).String
-
-			// For dynamic key tests, calculate expected result from the key using helper
-			if tt.expectedResult == "" && tt.proposer != nil {
-				expectedID := identifierFromKey(t, tt.proposer)
-				assert.Equal(t, expectedID, actualResult)
-			} else {
-				assert.Equal(t, tt.expectedResult, actualResult)
-			}
-
-			// Verify the result is deterministic (same input should give same output)
-			result2, err2 := execCtx.getVariable("@leader_id")
-			require.NoError(t, err2)
-			require.IsType(t, (*textValue)(nil), result2)
-			assert.Equal(t, actualResult, result2.(*textValue).String, "Leader ID variable should be deterministic")
-		})
-	}
-}
-
 // TestLeaderAuthorizationScenarios demonstrates how @leader is used in practice
 // for authorization in multi-validator scenarios
 func TestLeaderAuthorizationScenarios(t *testing.T) {
@@ -394,6 +291,10 @@ func TestLeaderAuthorizationScenarios(t *testing.T) {
 			// to match @leader's raw pubkey hex. In production, @caller is
 			// derived via the Authenticator (e.g. Ethereum 0x… address)
 			// and will not equal the raw public key hex string.
+			normalizeHex := func(hexStr string) string {
+				normalized := strings.ToLower(hexStr)
+				return strings.TrimPrefix(normalized, "0x")
+			}
 			isAuthorized := normalizeHex(callerText) == normalizeHex(leaderText)
 
 			// Verify the authorization result matches expectation
@@ -470,24 +371,194 @@ func hexFromKey(key crypto.PublicKey) string {
 	return hex.EncodeToString(key.Bytes())
 }
 
-// Helper function to get identifier from crypto.PublicKey using core auth (matches @leader_id implementation)
-func identifierFromKey(t *testing.T, key crypto.PublicKey) string {
-	t.Helper()
-	if key == nil {
-		return ""
+// TestLeaderSenderContextualVariable tests the @leader_sender variable
+func TestLeaderSenderContextualVariable(t *testing.T) {
+	t.Parallel()
+
+	// Test cases for different auth types and proposer scenarios
+	tests := []struct {
+		name           string
+		proposer       crypto.PublicKey
+		authenticator  string
+		invalidTxCtx   bool
+		expectedSender interface{} // nil for NULL, or expected bytes
+	}{
+		{
+			name:           "secp256k1 proposer with eth personal auth",
+			proposer:       mustCreateSecp256k1Key(t),
+			authenticator:  coreauth.EthPersonalSignAuth,
+			invalidTxCtx:   false,
+			expectedSender: []byte{}, // Not NULL - contains Ethereum address bytes
+		},
+		{
+			name:           "secp256k1 proposer with secp256k1 auth",
+			proposer:       mustCreateSecp256k1Key(t),
+			authenticator:  coreauth.Secp256k1Auth,
+			invalidTxCtx:   false,
+			expectedSender: []byte{}, // Not NULL - contains compressed pubkey bytes
+		},
+		{
+			name:           "ed25519 proposer with ed25519 auth",
+			proposer:       mustCreateEd25519Key(t),
+			authenticator:  coreauth.Ed25519Auth,
+			invalidTxCtx:   false,
+			expectedSender: []byte{}, // Not NULL - contains pubkey bytes
+		},
+		{
+			name:           "ed25519 proposer with eth personal auth (mismatch)",
+			proposer:       mustCreateEd25519Key(t),
+			authenticator:  coreauth.EthPersonalSignAuth,
+			invalidTxCtx:   false,
+			expectedSender: nil, // Should be NULL due to mismatch
+		},
+		{
+			name:           "nil proposer",
+			proposer:       nil,
+			authenticator:  coreauth.EthPersonalSignAuth,
+			invalidTxCtx:   false,
+			expectedSender: nil, // Should be NULL
+		},
+		{
+			name:           "invalid transaction context",
+			proposer:       mustCreateSecp256k1Key(t),
+			authenticator:  coreauth.EthPersonalSignAuth,
+			invalidTxCtx:   true,
+			expectedSender: nil,
+		},
 	}
-	// This matches the actual implementation in context.go
-	id, err := coreauth.GetNodeIdentifier(key)
-	if err != nil {
-		// Return empty string on error (matches implementation behavior)
-		return ""
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create test transaction context
+			blockCtx := &common.BlockContext{
+				Height:    100,
+				Timestamp: 1640995200,
+				Proposer:  tt.proposer,
+			}
+
+			// Create a signer for this test - we'll use the proposer as the signer
+			// to test the case where they match (leader scenario)
+			var signerBytes []byte
+			var caller string
+			if tt.proposer != nil {
+				// For matching cases, create signer bytes that will match leader_sender
+				// For mismatch cases, create valid signer bytes that won't match NULL leader_sender
+				if getSignerBytesForAuth(tt.proposer, tt.authenticator) != nil {
+					// Auth type is compatible with proposer key - use the auth format
+					signerBytes = getSignerBytesForAuth(tt.proposer, tt.authenticator)
+				} else {
+					// Auth type is incompatible - use the key's native format
+					signerBytes = getSignerBytesForKeyType(tt.proposer)
+				}
+				// Get caller string representation using the transaction's auth type
+				if ident, err := extauth.GetIdentifier(tt.authenticator, signerBytes); err == nil {
+					caller = ident
+				}
+			}
+
+			txCtx := &common.TxContext{
+				Ctx:           context.Background(),
+				BlockContext:  blockCtx,
+				Signer:        signerBytes,
+				Caller:        caller,
+				TxID:          "test_tx",
+				Authenticator: tt.authenticator,
+			}
+
+			engineCtx := &common.EngineContext{
+				TxContext: txCtx,
+			}
+
+			if tt.invalidTxCtx {
+				engineCtx.InvalidTxCtx = true
+			}
+
+			execCtx := &executionContext{
+				engineCtx: engineCtx,
+				scope:     newScope("test"),
+			}
+
+			// Test @leader_sender variable
+			leaderSenderResult, err := execCtx.getVariable("@leader_sender")
+			if tt.invalidTxCtx {
+				require.Error(t, err)
+				assert.Equal(t, engine.ErrInvalidTxCtx, err)
+				return
+			}
+			require.NoError(t, err)
+			require.IsType(t, (*blobValue)(nil), leaderSenderResult)
+			leaderSenderBlob := leaderSenderResult.(*blobValue)
+
+			// Validate results
+			if tt.expectedSender == nil {
+				// Should be NULL when proposer is nil or auth type mismatch
+				assert.True(t, leaderSenderBlob.Null(), "@leader_sender should be NULL")
+			} else {
+				assert.False(t, leaderSenderBlob.Null(), "@leader_sender should not be NULL")
+				// In our test setup, leader_sender should equal signer for valid cases
+				if tt.proposer != nil {
+					expectedBytes := getSignerBytesForAuth(tt.proposer, tt.authenticator)
+					if expectedBytes != nil {
+						assert.Equal(t, expectedBytes, leaderSenderBlob.bts,
+							"@leader_sender should match expected signer bytes")
+					}
+				}
+			}
+
+			// Direct sender comparison for is-leader expectation with explicit expected/computed match
+			expectedBytes := getSignerBytesForAuth(tt.proposer, tt.authenticator)
+			expectedIsLeader := expectedBytes != nil && txCtx.Signer != nil && bytes.Equal(expectedBytes, txCtx.Signer)
+			computedIsLeader := !leaderSenderBlob.Null() && txCtx.Signer != nil && bytes.Equal(leaderSenderBlob.bts, txCtx.Signer)
+			assert.Equal(t, expectedIsLeader, computedIsLeader, "computed is-leader should match expected signer vs leader_sender equality")
+
+			t.Logf("Test: %s", tt.name)
+			t.Logf("  Authenticator: %s", tt.authenticator)
+			t.Logf("  Leader Sender NULL: %v", leaderSenderBlob.Null())
+		})
 	}
-	return id
 }
 
-// Helper function to normalize hex strings for comparison (handles 0x prefix and case differences)
-func normalizeHex(hexStr string) string {
-	// Remove 0x prefix if present and convert to lowercase
-	normalized := strings.ToLower(hexStr)
-	return strings.TrimPrefix(normalized, "0x")
+// getSignerBytesForKeyType returns signer bytes in the format based on the key type
+func getSignerBytesForKeyType(key crypto.PublicKey) []byte {
+	if key == nil {
+		return nil
+	}
+	switch key.Type() {
+	case crypto.KeyTypeSecp256k1:
+		// For secp256k1 keys, always return the Ethereum address format
+		// (this is what the EthPersonalSigner does)
+		if pk, ok := key.(*crypto.Secp256k1PublicKey); ok {
+			return crypto.EthereumAddressFromPubKey(pk)
+		}
+	case crypto.KeyTypeEd25519:
+		// For Ed25519 keys, return the public key bytes
+		if pk, ok := key.(*crypto.Ed25519PublicKey); ok {
+			return pk.Bytes()
+		}
+	}
+	return nil
+}
+
+// getSignerBytesForAuth returns signer bytes in the format expected by the given auth type
+func getSignerBytesForAuth(key crypto.PublicKey, authType string) []byte {
+	if key == nil {
+		return nil
+	}
+	switch authType {
+	case coreauth.EthPersonalSignAuth:
+		if pk, ok := key.(*crypto.Secp256k1PublicKey); ok {
+			return crypto.EthereumAddressFromPubKey(pk)
+		}
+	case coreauth.Secp256k1Auth:
+		if pk, ok := key.(*crypto.Secp256k1PublicKey); ok {
+			return pk.Bytes()
+		}
+	case coreauth.Ed25519Auth:
+		if pk, ok := key.(*crypto.Ed25519PublicKey); ok {
+			return pk.Bytes()
+		}
+	}
+	return nil
 }
