@@ -574,30 +574,22 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			if prop == nil {
 				return makeText(""), nil
 			}
-			// Determine the identity bytes expected by the current tx authenticator
+			// Derive a canonical, user-facing identifier based on the leader's key type,
+			// independent of the current transaction's authenticator.
 			var identBytes []byte
-			switch e.engineCtx.TxContext.Authenticator {
-			case coreauth.EthPersonalSignAuth: // expects 20-byte Ethereum address
-				pubBytes := prop.Bytes()
-				pk, err := crypto.UnmarshalSecp256k1PublicKey(pubBytes)
-				if err != nil {
-					return makeText(""), nil
-				}
+			var authType string
+			switch pk := prop.(type) {
+			case *crypto.Secp256k1PublicKey:
 				identBytes = crypto.EthereumAddressFromPubKey(pk)
-			case coreauth.Secp256k1Auth: // expects compressed secp256k1 pubkey bytes
-				if _, ok := prop.(*crypto.Secp256k1PublicKey); ok {
-					identBytes = prop.Bytes()
-				} else {
-					return makeText(""), nil
-				}
-			case coreauth.Ed25519Auth:
-				identBytes = prop.Bytes()
+				authType = coreauth.EthPersonalSignAuth
+			case *crypto.Ed25519PublicKey:
+				identBytes = pk.Bytes()
+				authType = coreauth.Ed25519Auth
 			default:
-				// Attempt generic identifier using the registered authenticator
-				identBytes = prop.Bytes()
+				return makeText(""), nil
 			}
 
-			id, err := extauth.GetIdentifier(e.engineCtx.TxContext.Authenticator, identBytes)
+			id, err := extauth.GetIdentifier(authType, identBytes)
 			if err != nil {
 				return makeText(""), nil
 			}
