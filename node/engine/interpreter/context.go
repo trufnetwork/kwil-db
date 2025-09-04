@@ -578,11 +578,12 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			var identBytes []byte
 			switch e.engineCtx.TxContext.Authenticator {
 			case coreauth.EthPersonalSignAuth: // expects 20-byte Ethereum address
-				if pk, ok := prop.(*crypto.Secp256k1PublicKey); ok {
-					identBytes = crypto.EthereumAddressFromPubKey(pk)
-				} else {
+				pubBytes := prop.Bytes()
+				pk, err := crypto.UnmarshalSecp256k1PublicKey(pubBytes)
+				if err != nil {
 					return makeText(""), nil
 				}
+				identBytes = crypto.EthereumAddressFromPubKey(pk)
 			case coreauth.Secp256k1Auth: // expects compressed secp256k1 pubkey bytes
 				if _, ok := prop.(*crypto.Secp256k1PublicKey); ok {
 					identBytes = prop.Bytes()
