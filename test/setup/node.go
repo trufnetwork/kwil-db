@@ -129,8 +129,8 @@ type NodeConfig struct {
 	Validator bool
 
 	// OPTIONAL: PrivateKey is the private key to use for the node.
-	// If not set, a random key will be generated.
-	PrivateKey *crypto.Secp256k1PrivateKey
+	// If not set, a random secp256k1 key will be generated.
+	PrivateKey crypto.PrivateKey
 
 	// OPTIONAL: Configure is a function that alter's the node's configuration
 	Configure func(*config.Config)
@@ -145,7 +145,7 @@ func DefaultNodeConfig() *NodeConfig {
 	return &NodeConfig{
 		DockerImage: "kwild:latest",
 		Validator:   true,
-		PrivateKey:  pk.(*crypto.Secp256k1PrivateKey),
+		PrivateKey:  pk,
 		Configure:   func(*config.Config) {},
 	}
 }
@@ -154,6 +154,26 @@ func DefaultNodeConfig() *NodeConfig {
 func CustomNodeConfig(f func(*NodeConfig)) *NodeConfig {
 	cfg := DefaultNodeConfig()
 	f(cfg)
+	return cfg
+}
+
+// CustomEd25519NodeConfig creates a node configuration with an Ed25519 private key
+func CustomEd25519NodeConfig(f func(*NodeConfig)) *NodeConfig {
+	// Generate an Ed25519 private key
+	edPriv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+
+	cfg := &NodeConfig{
+		DockerImage: "kwild:latest",
+		Validator:   true,
+		PrivateKey:  edPriv,
+		Configure:   func(*config.Config) {},
+	}
+	if f != nil {
+		f(cfg)
+	}
 	return cfg
 }
 
@@ -563,6 +583,15 @@ func (c *NodeConfig) makeNode(generated *generatedNodeInfo, isFirstNode bool, fi
 
 	c.Configure(conf)
 
+	// If no private key was provided, generate a default secp256k1 key.
+	if c.PrivateKey == nil {
+		pk, _, err := crypto.GenerateSecp256k1Key(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate default secp256k1 key: %w", err)
+		}
+		c.PrivateKey = pk
+	}
+
 	// there are some configurations that the user cannot set, as they will screw up the test.
 	// These are:
 	// --admin.listen
@@ -669,12 +698,12 @@ type EthNode struct {
 	Deployers []*ethdeployer.Deployer
 }
 
-func (k *kwilNode) PrivateKey() *crypto.Secp256k1PrivateKey {
+func (k *kwilNode) PrivateKey() crypto.PrivateKey {
 	return k.nodeTestConfig.PrivateKey
 }
 
-func (k *kwilNode) PublicKey() *crypto.Secp256k1PublicKey {
-	return k.nodeTestConfig.PrivateKey.Public().(*crypto.Secp256k1PublicKey)
+func (k *kwilNode) PublicKey() crypto.PublicKey {
+	return k.nodeTestConfig.PrivateKey.Public()
 }
 
 func (k *kwilNode) IsValidator() bool {
@@ -741,8 +770,8 @@ func (k *kwilNode) PostgresEndpoint(t *testing.T, ctx context.Context, name stri
 }
 
 type KwilNode interface {
-	PrivateKey() *crypto.Secp256k1PrivateKey
-	PublicKey() *crypto.Secp256k1PublicKey
+	PrivateKey() crypto.PrivateKey
+	PublicKey() crypto.PublicKey
 	IsValidator() bool
 	Config() *config.Config
 	JSONRPCEndpoint(t *testing.T, ctx context.Context) (exposed string, unexposed string, err error)

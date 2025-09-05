@@ -243,7 +243,7 @@ type NodeGenConfig struct {
 	DBPort     uint16 // leave zero for default plus any offset
 	IP         string
 	NoPEX      bool
-	NodeKey    *crypto.Secp256k1PrivateKey
+	NodeKey    crypto.PrivateKey
 	Genesis    *config.GenesisConfig
 
 	BootNodes       []string
@@ -291,7 +291,7 @@ type TestnetNodeConfig struct {
 	// the full path of the node is "testnet/node0".
 	DirName string
 	// PrivateKey is the private key of the node.
-	PrivateKey *crypto.Secp256k1PrivateKey
+	PrivateKey crypto.PrivateKey
 }
 
 // GenerateTestnetDir generates a testnet configuration for multiple nodes.
@@ -315,7 +315,7 @@ func GenerateTestnetDir(testnetDir string, genesis *config.GenesisConfig, nodes 
 // GenerateNodeDir generates a node configuration directory.
 // It is a minimal function that takes a full configuration.
 // Most users should use GenerateNodeRoot instead.
-func GenerateNodeDir(rootDir string, genesis *config.GenesisConfig, node *config.Config, privateKey *crypto.Secp256k1PrivateKey, snapshot string) error {
+func GenerateNodeDir(rootDir string, genesis *config.GenesisConfig, node *config.Config, privateKey crypto.PrivateKey, snapshot string) error {
 	if err := os.MkdirAll(rootDir, 0755); err != nil {
 		return err
 	}

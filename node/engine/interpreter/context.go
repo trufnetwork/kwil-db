@@ -7,6 +7,8 @@ import (
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/crypto"
+	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
@@ -15,6 +17,47 @@ import (
 	"github.com/trufnetwork/kwil-db/node/engine/planner/logical"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
+
+// leaderCompactIDForAuth converts the proposer public key into the same "CompactID"
+// byte shape that the current tx's authenticator uses for tx.Sender.
+func leaderCompactIDForAuth(proposer crypto.PublicKey, authType string) ([]byte, error) {
+	if proposer == nil {
+		return nil, nil
+	}
+	switch strings.ToLower(authType) {
+	case coreauth.Ed25519Auth:
+		// tx signer is an ed25519 pubkey (32B) → proposer must be ed25519
+		if proposer.Type() != crypto.KeyTypeEd25519 {
+			// cannot represent leader in this scheme
+			return nil, nil
+		}
+		return proposer.Bytes(), nil
+	case coreauth.Secp256k1Auth:
+		// tx signer is a compressed secp256k1 pubkey (33B)
+		if proposer.Type() != crypto.KeyTypeSecp256k1 {
+			return nil, nil
+		}
+		return proposer.Bytes(), nil // compressed
+	case coreauth.EthPersonalSignAuth:
+		// tx signer is a 20B Ethereum address derived from secp256k1 pubkey
+		if proposer.Type() != crypto.KeyTypeSecp256k1 {
+			return nil, nil
+		}
+		// Reconstruct concrete secp256k1 public key from compressed bytes
+		pubKey, err := crypto.UnmarshalPublicKey(proposer.Bytes(), crypto.KeyTypeSecp256k1)
+		if err != nil {
+			return nil, err
+		}
+		secpPub, ok := pubKey.(*crypto.Secp256k1PublicKey)
+		if !ok {
+			return nil, nil
+		}
+		// Use the same derivation as the Eth authenticator: Keccak(uncompressed pubkey)[12:]
+		return crypto.EthereumAddressFromPubKey(secpPub), nil
+	default:
+		return nil, fmt.Errorf("unsupported authenticator: %s", authType)
+	}
+}
 
 // executionContext is the context of the entire execution.
 type executionContext struct {
@@ -563,6 +606,23 @@ func (e *executionContext) getVariable(name string) (Value, error) {
 			}
 			leaderBytes := e.engineCtx.TxContext.BlockContext.Proposer.Bytes()
 			return makeText(hex.EncodeToString(leaderBytes)), nil
+		case "leader_sender":
+			// type: BYTEA (blob)
+			if e.engineCtx.InvalidTxCtx {
+				return nil, engine.ErrInvalidTxCtx
+			}
+			bc := e.engineCtx.TxContext.BlockContext
+			if bc == nil || bc.Proposer == nil {
+				// No proposer in context → return NULL BYTEA
+				return makeBlob(nil), nil
+			}
+			authType := e.engineCtx.TxContext.Authenticator
+			b, err := leaderCompactIDForAuth(bc.Proposer, authType)
+			if err != nil {
+				return nil, err
+			}
+			// If b == nil, it means "not representable in this scheme" → NULL
+			return makeBlob(b), nil
 		default:
 			return nil, fmt.Errorf("%w: %s", engine.ErrInvalidVariable, name)
 		}

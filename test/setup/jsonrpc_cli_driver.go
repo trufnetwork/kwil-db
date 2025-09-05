@@ -28,7 +28,7 @@ import (
 
 type jsonRPCCLIDriver struct {
 	provider     string
-	privateKey   crypto.PrivateKey
+	privateKey   crypto.PrivateKey // CLI driver currently only supports secp256k1
 	chainID      string
 	usingGateway bool
 	logFunc      logFunc
@@ -41,9 +41,15 @@ func newKwilCI(ctx context.Context, endpoint string, l logFunc, testCtx *testing
 	}
 	opts.ensureDefaults()
 
+	// CLI driver currently only supports secp256k1 keys
+	secpKey, ok := opts.PrivateKey.(*crypto.Secp256k1PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("CLI driver only supports secp256k1 private keys, got %T", opts.PrivateKey)
+	}
+
 	return &jsonRPCCLIDriver{
 		provider:     endpoint,
-		privateKey:   opts.PrivateKey.(*crypto.Secp256k1PrivateKey),
+		privateKey:   secpKey,
 		chainID:      opts.ChainID,
 		usingGateway: opts.UsingKGW,
 		logFunc:      l,
