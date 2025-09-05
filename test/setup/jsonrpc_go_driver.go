@@ -27,10 +27,18 @@ func newClient(ctx context.Context, endpoint string, l logFunc, _ *testingContex
 	}
 	opts.ensureDefaults()
 
+	var signer auth.Signer
+	switch pk := opts.PrivateKey.(type) {
+	case *crypto.Secp256k1PrivateKey:
+		signer = &auth.EthPersonalSigner{Key: *pk}
+	case *crypto.Ed25519PrivateKey:
+		signer = &auth.Ed25519Signer{Ed25519PrivateKey: *pk}
+	default:
+		return nil, fmt.Errorf("unsupported private key type: %T", opts.PrivateKey)
+	}
+
 	clOpts := &cTypes.Options{
-		Signer: &auth.EthPersonalSigner{
-			Key: *opts.PrivateKey.(*crypto.Secp256k1PrivateKey),
-		},
+		Signer: signer,
 	}
 
 	var cl cTypes.Client
@@ -81,7 +89,7 @@ func (c *jsonrpcGoDriver) TxSuccess(ctx context.Context, txHash types.Hash) erro
 }
 
 func (c *jsonrpcGoDriver) Identifier() string {
-	ident, err := auth.Secp25k1Authenticator{}.Identifier(c.privateKey.Public().Bytes())
+	ident, err := auth.GetUserIdentifier(c.privateKey.Public())
 	if err != nil {
 		panic(err)
 	}
