@@ -831,6 +831,8 @@ func (svc *Service) txCtx(ctx context.Context, sender []byte, authtype string) (
 	}
 
 	// Get network parameters for proposer information
+	// This is safe because tx context at json rpc service only affects read-only (views) calls.
+	// The context for write operations are derived from block processor.
 	networkParams := svc.chainClient.ConsensusParams()
 
 	return &common.TxContext{
