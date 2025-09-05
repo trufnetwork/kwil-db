@@ -583,6 +583,15 @@ func (c *NodeConfig) makeNode(generated *generatedNodeInfo, isFirstNode bool, fi
 
 	c.Configure(conf)
 
+	// If no private key was provided, generate a default secp256k1 key.
+	if c.PrivateKey == nil {
+		pk, _, err := crypto.GenerateSecp256k1Key(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate default secp256k1 key: %w", err)
+		}
+		c.PrivateKey = pk
+	}
+
 	// there are some configurations that the user cannot set, as they will screw up the test.
 	// These are:
 	// --admin.listen

@@ -28,6 +28,9 @@ func newClient(ctx context.Context, endpoint string, l logFunc, _ *testingContex
 	opts.ensureDefaults()
 
 	var signer auth.Signer
+	if opts.PrivateKey == nil {
+		return nil, fmt.Errorf("missing PrivateKey in ClientOptions")
+	}
 	switch pk := opts.PrivateKey.(type) {
 	case *crypto.Secp256k1PrivateKey:
 		signer = &auth.EthPersonalSigner{Key: *pk}
