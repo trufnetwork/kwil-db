@@ -4,13 +4,16 @@ package erc20
 
 import (
 	"context"
+	"fmt"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
+	evmsync "github.com/trufnetwork/kwil-db/node/exts/evm-sync"
 	chains "github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
+	kwilTesting "github.com/trufnetwork/kwil-db/testing"
 )
 
 // ForTestingTransferListenerTopic returns the transfer listener unique topic name for a given instance id.
@@ -20,7 +23,8 @@ func ForTestingTransferListenerTopic(id types.UUID) string {
 
 // ForTestingForceSyncInstance ensures the instance exists in DB (reward_instances + first epoch),
 // registers the ordered-sync topic, and marks the instance as synced with ERC20 info (DB-only, idempotent).
-func ForTestingForceSyncInstance(ctx context.Context, app *common.App, chainName, escrowAddr string, erc20Addr string, decimals int64) (*types.UUID, error) {
+func ForTestingForceSyncInstance(ctx context.Context, platform *kwilTesting.Platform, chainName, escrowAddr string, erc20Addr string, decimals int64) (*types.UUID, error) {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	// Ensure kwil_erc20_meta namespace and schema exist
 	probeErr := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `{kwil_erc20_meta}SELECT 1 FROM meta`, nil, nil)
 	if probeErr != nil {
@@ -37,7 +41,7 @@ func ForTestingForceSyncInstance(ctx context.Context, app *common.App, chainName
 	id := &idVal
 
 	topic := transferListenerUniqueName(*id)
-	_ = orderedsync.ForTestingEnsureTopic(ctx, app, topic, transferEventResolutionName)
+	_ = orderedsync.ForTestingEnsureTopic(ctx, platform, topic, transferEventResolutionName)
 
 	// derive chain info
 	c := chains.Chain(chainName)
@@ -103,7 +107,8 @@ func ForTestingCreditBalance(ctx context.Context, app *common.App, id *types.UUI
 
 // ForTestingInitializeExtension ensures the extension is properly initialized.
 // This simulates calling the extension's OnStart method to load instances from DB.
-func ForTestingInitializeExtension(ctx context.Context, app *common.App) error {
+func ForTestingInitializeExtension(ctx context.Context, platform *kwilTesting.Platform) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	// Load all stored reward instances from DB and put them in singleton
 	instances, err := getStoredRewardInstances(ctx, app)
 	if err != nil {
@@ -128,7 +133,8 @@ func ForTestingInitializeExtension(ctx context.Context, app *common.App) error {
 
 // ForTestingEnsureExtensionRegistered ensures the extension is properly registered
 // and its methods are available for calling.
-func ForTestingEnsureExtensionRegistered(ctx context.Context, app *common.App) error {
+func ForTestingEnsureExtensionRegistered(ctx context.Context, platform *kwilTesting.Platform) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	// Try to call a simple extension method to ensure it's registered
 	_, err := app.Engine.CallWithoutEngineCtx(ctx, app.DB, "kwil_erc20_meta", "list", []any{}, func(row *common.Row) error {
 		return nil
@@ -154,20 +160,68 @@ func ForTestingResetSingletonForEscrow(escrowAddr string) {
 	_SINGLETON.instances.Delete(id)
 }
 
-// ForTestingActivateAndInitialize ensures an instance exists, sets distribution period (activates),
-// and hydrates the singleton so it's active+synced in-memory for tests.
-// This is a convenience wrapper to avoid state drift between DB and singleton.
-func ForTestingActivateAndInitialize(ctx context.Context, app *common.App, chainName, escrowAddr string, erc20Addr string, decimals int64, distributionPeriodSeconds int64) error {
-	// Ensure instance exists and is marked synced in DB (idempotent)
-	if _, err := ForTestingForceSyncInstance(ctx, app, chainName, escrowAddr, erc20Addr, decimals); err != nil {
+// ===== Additional test-only helpers to minimize coupling and avoid runtime collisions =====
+
+// ForTestingUnregisterRuntimeFor unregisters state poller and transfer listener for the given chain/escrow.
+func ForTestingUnregisterRuntimeFor(chain, escrow string) {
+	id := uuidForChainAndEscrow(chain, escrow)
+	_ = evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(id))
+	_ = evmsync.EventSyncer.UnregisterListener(transferListenerUniqueName(id))
+}
+
+// ForTestingSeedAndActivateInstance enables an instance by creating the alias, setting period/active and rehydrating, after unregistering runtimes.
+// This includes creating an extension alias for convenient testing.
+func ForTestingSeedAndActivateInstance(ctx context.Context, platform *kwilTesting.Platform, chain, escrow, erc20 string, decimals int64, periodSeconds int64, alias string) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
+	if err := forTestingCreateExtensionAlias(ctx, platform, chain, escrow, alias); err != nil {
 		return err
 	}
-
-	// Set period and activate in DB (idempotent)
-	if err := ForTestingSetDistributionPeriod(ctx, app, chainName, escrowAddr, distributionPeriodSeconds); err != nil {
+	if _, err := ForTestingForceSyncInstance(ctx, platform, chain, escrow, erc20, decimals); err != nil {
 		return err
 	}
+	if err := ForTestingSetDistributionPeriod(ctx, app, chain, escrow, periodSeconds); err != nil {
+		return err
+	}
+	return ForTestingInitializeExtension(ctx, platform)
+}
 
-	// Hydrate singleton to reflect DB state
-	return ForTestingInitializeExtension(ctx, app)
+// ForTestingDisableInstance disables an instance and tears down all runtimes deterministically.
+// This includes unusing the extension alias for complete cleanup.
+func ForTestingDisableInstance(ctx context.Context, platform *kwilTesting.Platform, chain, escrow, alias string) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
+	// Unuse the extension alias first
+	unuseSQL := fmt.Sprintf("UNUSE %s", alias)
+	_ = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, unuseSQL, nil, nil) // ignore errors for idempotent behavior
+
+	id := ForTestingGetInstanceID(chain, escrow)
+	_, err := app.Engine.CallWithoutEngineCtx(ctx, app.DB, RewardMetaExtensionName, "disable", []any{id}, nil)
+	if err != nil {
+		// allow idempotent behavior in tests
+		_ = err
+	}
+	ForTestingUnregisterRuntimeFor(chain, escrow)
+	ForTestingResetSingleton()
+	return ForTestingInitializeExtension(ctx, platform)
+}
+
+// forTestingCreateExtensionAlias creates an extension alias using the USE erc20 syntax.
+// This executes the SQL command that creates the extension with the specified alias.
+// The instance must already exist and be synced for this to work.
+func forTestingCreateExtensionAlias(ctx context.Context, platform *kwilTesting.Platform, chain, escrow, alias string) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
+	// Construct the USE erc20 SQL command
+	sql := fmt.Sprintf("USE erc20 { chain: '%s', escrow: '%s' } AS %s", chain, escrow, alias)
+
+	// Execute the SQL command
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, sql, nil, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create extension alias %s: %w", alias, err)
+	}
+
+	return nil
+}
+
+// ForTestingClearAllInstances performs a comprehensive cleanup of ALL ERC20 runtime components.
+func ForTestingClearAllInstances(ctx context.Context, platform *kwilTesting.Platform) error {
+	return evmsync.ForTestingClearAllInstances(ctx, platform)
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
+	kwilTesting "github.com/trufnetwork/kwil-db/testing"
 )
 
 // ForTestingGetInstanceID returns the deterministic reward instance ID for a chain and escrow.
@@ -105,8 +106,9 @@ func ForTestingConfirmAllFinalizedEpochs(ctx context.Context, app *common.App, c
 
 // ForTestingFinalizeAndConfirmCurrentEpoch finalizes the current epoch (if it has rewards)
 // and then confirms all finalized epochs. This is a convenience wrapper for tests.
-func ForTestingFinalizeAndConfirmCurrentEpoch(ctx context.Context, app *common.App, chain, escrow string, endHeight int64, endHash [32]byte) error {
+func ForTestingFinalizeAndConfirmCurrentEpoch(ctx context.Context, platform *kwilTesting.Platform, chain, escrow string, endHeight int64, endHash [32]byte) error {
 	// Pre-check: ensure the current epoch has rewards; if not, provide actionable error
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	id := ForTestingGetInstanceID(chain, escrow)
 	infos, err := getStoredRewardInstances(ctx, app)
 	if err != nil {
@@ -139,7 +141,7 @@ func ForTestingFinalizeAndConfirmCurrentEpoch(ctx context.Context, app *common.A
 
 	// Post-check: ensure at least one epoch is confirmed for this instance
 	confirmed := 0
-	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	err = platform.Engine.ExecuteWithoutEngineCtx(ctx, platform.DB, `
 	{kwil_erc20_meta}SELECT count(*) FROM epochs WHERE instance_id=$id AND confirmed IS TRUE`, map[string]any{"id": id}, func(r *common.Row) error {
 		if len(r.Values) != 1 {
 			return nil
@@ -158,9 +160,10 @@ func ForTestingFinalizeAndConfirmCurrentEpoch(ctx context.Context, app *common.A
 
 // ForTestingLockAndIssueDirect locks from a user and issues into the current epoch, atomically.
 // It bypasses SYSTEM calls and directly updates DB state like the production atomic path.
-func ForTestingLockAndIssueDirect(ctx context.Context, app *common.App, chain, escrow, from string, amountText string) error {
+func ForTestingLockAndIssueDirect(ctx context.Context, platform *kwilTesting.Platform, chain, escrow, from string, amountText string) error {
 	id := ForTestingGetInstanceID(chain, escrow)
 
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	// get current epoch
 	infos, err := getStoredRewardInstances(ctx, app)
 	if err != nil {

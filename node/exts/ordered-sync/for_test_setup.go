@@ -9,18 +9,21 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/node/engine"
+	kwilTesting "github.com/trufnetwork/kwil-db/testing"
 )
 
 // ForTestingEnsureNamespace creates the ordered-sync namespace and sets its version.
-func ForTestingEnsureNamespace(ctx context.Context, app *common.App) error {
-	if err := createNamespace(ctx, app.DB, app.Engine); err != nil {
+func ForTestingEnsureNamespace(ctx context.Context, platform *kwilTesting.Platform) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
+	if err := createNamespace(ctx, platform.DB, platform.Engine); err != nil {
 		// ignore if already exists
 	}
 	return setVersionToCurrent(ctx, app)
 }
 
 // ForTestingEnsureTopic ensures a topic is present in DB and in the in-memory cache without causing duplicate insert errors.
-func ForTestingEnsureTopic(ctx context.Context, app *common.App, topic string, resolveFunc string) error {
+func ForTestingEnsureTopic(ctx context.Context, platform *kwilTesting.Platform, topic string, resolveFunc string) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	Synchronizer.mu.Lock()
 	defer Synchronizer.mu.Unlock()
 
@@ -33,7 +36,7 @@ func ForTestingEnsureTopic(ctx context.Context, app *common.App, topic string, r
 
 	// Check if topic exists in DB, creating namespace/version if needed
 	exists := false
-	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB,
+	err := platform.Engine.ExecuteWithoutEngineCtx(ctx, platform.DB,
 		fmt.Sprintf(`{%s}SELECT 1 FROM topics WHERE name = $name`, ExtensionName),
 		map[string]any{"name": topic},
 		func(r *common.Row) error {
@@ -42,14 +45,14 @@ func ForTestingEnsureTopic(ctx context.Context, app *common.App, topic string, r
 		},
 	)
 	if errors.Is(err, engine.ErrNamespaceNotFound) {
-		if err2 := createNamespace(ctx, app.DB, app.Engine); err2 != nil {
+		if err2 := createNamespace(ctx, platform.DB, platform.Engine); err2 != nil {
 			return err2
 		}
 		if err2 := setVersionToCurrent(ctx, app); err2 != nil {
 			return err2
 		}
 		// retry existence check once
-		err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB,
+		err = platform.Engine.ExecuteWithoutEngineCtx(ctx, platform.DB,
 			fmt.Sprintf(`{%s}SELECT 1 FROM topics WHERE name = $name`, ExtensionName),
 			map[string]any{"name": topic},
 			func(r *common.Row) error {
@@ -63,7 +66,7 @@ func ForTestingEnsureTopic(ctx context.Context, app *common.App, topic string, r
 	}
 
 	if !exists {
-		if err := registerTopic(ctx, app.DB, app.Engine, topic, resolveFunc); err != nil {
+		if err := registerTopic(ctx, platform.DB, platform.Engine, topic, resolveFunc); err != nil {
 			return err
 		}
 	}
