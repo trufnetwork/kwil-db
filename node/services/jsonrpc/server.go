@@ -651,7 +651,7 @@ func (s *Server) handlerJSONRPCV1(w http.ResponseWriter, r *http.Request) {
 	s.processJSONRPCRequest(r.Context(), w, req)
 }
 
-// processRequest handles the jsonrpc.Request with handleRequest to call the
+// processJSONRPCRequest handles the jsonrpc.Request with handleRequest to call the
 // appropriate function for the method, creates a response message, and writes
 // it to the http.ResponseWriter.
 func (s *Server) processJSONRPCRequest(ctx context.Context, w http.ResponseWriter, req *jsonrpc.Request) {
@@ -677,7 +677,7 @@ func (s *Server) processJSONRPCRequest(ctx context.Context, w http.ResponseWrite
 	s.writeJSON(w, resp, statusCode)
 }
 
-// writeJSONWithStatus marshals the provided interface and writes the bytes to
+// writeJSON marshals the provided interface and writes the bytes to
 // the ResponseWriter with the specified response code.
 func (s *Server) writeJSON(w http.ResponseWriter, thing any, code int) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
