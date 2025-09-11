@@ -45,11 +45,18 @@ func ForTestingForceSyncInstance(ctx context.Context, platform *kwilTesting.Plat
 
 	// derive chain info
 	c := chains.Chain(chainName)
-	_ = c.Valid()
-	cinfo, ok := chains.GetChainInfo(c)
-	if !ok {
-		if ci, ok2 := chains.GetChainInfoByID(chainName); ok2 {
+	var cinfo chains.ChainInfo
+	if err := c.Valid(); err != nil {
+		if ci, ok := chains.GetChainInfoByID(chainName); ok {
 			cinfo = ci
+		} else {
+			return nil, fmt.Errorf("unknown chain: %s", chainName)
+		}
+	} else {
+		var ok bool
+		cinfo, ok = chains.GetChainInfo(c)
+		if !ok {
+			return nil, fmt.Errorf("missing chain info for: %s", chainName)
 		}
 	}
 
@@ -185,10 +192,7 @@ func ForTestingUnregisterRuntimeFor(chain, escrow string) {
 // This includes creating an extension alias for convenient testing.
 func ForTestingSeedAndActivateInstance(ctx context.Context, platform *kwilTesting.Platform, chain, escrow, erc20 string, decimals int64, periodSeconds int64, alias string) error {
 	app := &common.App{DB: platform.DB, Engine: platform.Engine}
-	// check address is valid
-	if !ethcommon.IsHexAddress(alias) {
-		return fmt.Errorf("invalid address: %s", alias)
-	}
+
 	if err := forTestingCreateExtensionAlias(ctx, platform, chain, escrow, alias); err != nil {
 		return err
 	}
