@@ -168,17 +168,6 @@ func ForTestingResetSingleton() {
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
 }
 
-// ForTestingResetSingletonForEscrow resets only the specific instance for the given escrow.
-// This allows multiple tests to run with different escrows without conflicts.
-func ForTestingResetSingletonForEscrow(escrowAddr string) {
-	if _SINGLETON == nil {
-		_SINGLETON = &extensionInfo{instances: newInstanceMap()}
-	}
-	// Generate the same ID that would be created for this escrow
-	id := uuidForChainAndEscrow("sepolia", escrowAddr)
-	_SINGLETON.instances.Delete(id)
-}
-
 // ===== Additional test-only helpers to minimize coupling and avoid runtime collisions =====
 
 // ForTestingUnregisterRuntimeFor unregisters state poller and transfer listener for the given chain/escrow.

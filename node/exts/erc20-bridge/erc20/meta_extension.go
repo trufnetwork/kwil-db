@@ -1583,20 +1583,20 @@ func (e *extensionInfo) getUsableInstance(id *types.UUID) (*rewardExtensionInfo,
 }
 
 // getSingleton returns the appropriate singleton (test or production)
-var singletonInstance *extensionInfo
+var (
+	singletonInstance *extensionInfo
+	singletonInitOnce sync.Once
+)
 
 func getSingleton() *extensionInfo {
-	// In test builds, always prefer the test singleton if it exists
-	if _SINGLETON != nil {
+	if _SINGLETON != nil { // test build override
 		return _SINGLETON
 	}
-
-	// Lazy initialize production singleton
-	if singletonInstance == nil {
-		singletonInstance = &extensionInfo{
-			instances: newInstanceMap(),
+	singletonInitOnce.Do(func() {
+		if singletonInstance == nil {
+			singletonInstance = &extensionInfo{instances: newInstanceMap()}
 		}
-	}
+	})
 	return singletonInstance
 }
 
