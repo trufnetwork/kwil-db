@@ -41,7 +41,10 @@ func ForTestingForceSyncInstance(ctx context.Context, platform *kwilTesting.Plat
 	id := &idVal
 
 	topic := transferListenerUniqueName(*id)
-	_ = orderedsync.ForTestingEnsureTopic(ctx, platform, topic, transferEventResolutionName)
+	err := orderedsync.ForTestingEnsureTopic(ctx, platform, topic, transferEventResolutionName)
+	if err != nil {
+		return nil, err
+	}
 
 	// derive chain info
 	c := chains.Chain(chainName)
