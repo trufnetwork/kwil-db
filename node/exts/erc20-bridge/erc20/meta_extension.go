@@ -74,6 +74,8 @@ var (
 	logTypeConfirmedEpoch = []byte("cnfepch")
 
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
+
+	_SINGLETON *extensionInfo
 )
 
 // generates a deterministic UUID for the chain and escrow
@@ -191,9 +193,7 @@ func init() {
 		that it was more clear to track where it was used by defining it here.
 	*/
 
-	SINGLETON := &extensionInfo{
-		instances: newInstanceMap(),
-	}
+	// Initialize singleton in init function - will be replaced by getSingleton() logic
 
 	evmsync.RegisterEventResolution(transferEventResolutionName, func(ctx context.Context, app *common.App, block *common.BlockContext, uniqueName string, logs []*evmsync.EthLog) error {
 		id, err := idFromTransferListenerUniqueName(uniqueName)
@@ -226,7 +226,7 @@ func init() {
 			return err
 		}
 
-		info, ok := SINGLETON.instances.Get(*id)
+		info, ok := getSingleton().instances.Get(*id)
 		if !ok {
 			return fmt.Errorf("reward extension with id %s not found", id)
 		}
@@ -283,7 +283,7 @@ func init() {
 	err := precompiles.RegisterInitializer(RewardMetaExtensionName,
 		func(ctx context.Context, service *common.Service, db sql.DB, alias string, metadata map[string]any) (precompiles.Precompile, error) {
 			return precompiles.Precompile{
-				Cache: SINGLETON,
+				Cache: getSingleton(),
 				OnUse: func(ctx *common.EngineContext, app *common.App) error {
 					return createSchema(ctx.TxContext.Ctx, app)
 				},
@@ -321,7 +321,7 @@ func init() {
 							}
 						}
 
-						SINGLETON.instances.Set(*instance.ID, instance)
+						getSingleton().instances.Set(*instance.ID, instance)
 					}
 
 					return nil
@@ -378,7 +378,7 @@ func init() {
 								return fmt.Errorf("chain with name %s not found", chain)
 							}
 
-							info, ok := SINGLETON.instances.Get(id)
+							info, ok := getSingleton().instances.Get(id)
 							// if the instance already exists, it can be in two states:
 							// 1. active: we should return an error
 							// 2. inactive
@@ -469,7 +469,7 @@ func init() {
 							// we wait until here to add it in case there is an error
 							// in RegisterPoll. This only matters if it is new, otherwise
 							// we are just setting the same info in the map again
-							SINGLETON.instances.Set(id, info)
+							getSingleton().instances.Set(id, info)
 
 							return resultFn([]any{id})
 						},
@@ -484,7 +484,7 @@ func init() {
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
 							id := inputs[0].(*types.UUID)
 
-							info, ok := SINGLETON.instances.Get(*id)
+							info, ok := getSingleton().instances.Get(*id)
 							if !ok {
 								return fmt.Errorf("reward extension with id %s not found", id)
 							}
@@ -539,7 +539,7 @@ func init() {
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
 							id := inputs[0].(*types.UUID)
 
-							info, ok := SINGLETON.instances.Get(*id)
+							info, ok := getSingleton().instances.Get(*id)
 							if !ok {
 								return fmt.Errorf("reward extension with id %s not found", id)
 							}
@@ -610,7 +610,7 @@ func init() {
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
-							return SINGLETON.ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
+							return getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
 								return resultFn([]any{id, info.userProvidedData.ChainInfo.Name.String(), info.userProvidedData.EscrowAddress.Hex()})
 							})
 						},
@@ -629,7 +629,7 @@ func init() {
 							user := inputs[1].(string)
 							amount := inputs[2].(*types.Decimal)
 
-							return SINGLETON.issueTokens(ctx.TxContext.Ctx, app, id, user, amount)
+							return getSingleton().issueTokens(ctx.TxContext.Ctx, app, id, user, amount)
 						},
 					},
 					{
@@ -683,7 +683,7 @@ func init() {
 								return fmt.Errorf("amount cannot be negative")
 							}
 
-							return SINGLETON.lockTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, amount)
+							return getSingleton().lockTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, amount)
 						},
 					},
 					{
@@ -705,7 +705,7 @@ func init() {
 								return fmt.Errorf("amount cannot be negative")
 							}
 
-							return SINGLETON.lockTokens(ctx.TxContext.Ctx, app, id, user, amount)
+							return getSingleton().lockTokens(ctx.TxContext.Ctx, app, id, user, amount)
 						},
 					},
 					{
@@ -733,7 +733,7 @@ func init() {
 								return err
 							}
 
-							info, err := SINGLETON.getUsableInstance(id)
+							info, err := getSingleton().getUsableInstance(id)
 							if err != nil {
 								return err
 							}
@@ -829,7 +829,7 @@ func init() {
 								amount = inputs[1].(*types.Decimal)
 							}
 
-							return SINGLETON.lockAndIssueTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, amount)
+							return getSingleton().lockAndIssueTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, amount)
 						},
 					},
 					{
@@ -846,7 +846,7 @@ func init() {
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
 							id := inputs[0].(*types.UUID)
 
-							info, err := SINGLETON.getUsableInstance(id)
+							info, err := getSingleton().getUsableInstance(id)
 							if err != nil {
 								return err
 							}
@@ -874,7 +874,7 @@ func init() {
 							id := inputs[0].(*types.UUID)
 							amount := inputs[1].(*types.Decimal)
 
-							info, err := SINGLETON.getUsableInstance(id)
+							info, err := getSingleton().getUsableInstance(id)
 							if err != nil {
 								return err
 							}
@@ -907,7 +907,7 @@ func init() {
 							id := inputs[0].(*types.UUID)
 							amount := inputs[1].(string)
 
-							info, err := SINGLETON.getUsableInstance(id)
+							info, err := getSingleton().getUsableInstance(id)
 							if err != nil {
 								return err
 							}
@@ -1111,7 +1111,7 @@ func init() {
 
 							pending := inputs[2].(bool)
 
-							info, err := SINGLETON.getUsableInstance(id)
+							info, err := getSingleton().getUsableInstance(id)
 							if err != nil {
 								return err
 							}
@@ -1223,7 +1223,7 @@ func init() {
 		// which instances need to be updated. After we are done, we will update the singleton.
 		newEpochs := make(map[types.UUID]*PendingEpoch)
 
-		err := SINGLETON.ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
+		err := getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			defer info.mu.RUnlock()
 			// If the block is greater than or equal to the start time + distribution period: Otherwise, we should do nothing.
@@ -1291,7 +1291,7 @@ func init() {
 		}
 
 		// now that we are done with recursive calls, we can update the singleton
-		return SINGLETON.ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
+		return getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
 			newEpoch, ok := newEpochs[*id]
 			if ok {
 				info.mu.Lock()
@@ -1580,6 +1580,24 @@ func (e *extensionInfo) getUsableInstance(id *types.UUID) (*rewardExtensionInfo,
 	}
 
 	return info, nil
+}
+
+// getSingleton returns the appropriate singleton (test or production)
+var (
+	singletonInstance *extensionInfo
+	singletonInitOnce sync.Once
+)
+
+func getSingleton() *extensionInfo {
+	if _SINGLETON != nil { // test build override
+		return _SINGLETON
+	}
+	singletonInitOnce.Do(func() {
+		if singletonInstance == nil {
+			singletonInstance = &extensionInfo{instances: newInstanceMap()}
+		}
+	})
+	return singletonInstance
 }
 
 func ethAddressFromHex(s string) (ethcommon.Address, error) {

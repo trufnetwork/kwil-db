@@ -195,7 +195,7 @@ func init() {
 				{
 					Name: "scale_down",
 					Parameters: []precompiles.PrecompileValue{
-						{Name: "amount", Type: types.TextType},
+						{Name: "amount", Type: uint256Numeric},
 					},
 					Returns: &precompiles.MethodReturn{
 						Fields: []precompiles.PrecompileValue{
