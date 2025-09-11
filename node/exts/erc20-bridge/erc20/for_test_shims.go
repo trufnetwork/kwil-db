@@ -53,6 +53,14 @@ func ForTestingForceSyncInstance(ctx context.Context, platform *kwilTesting.Plat
 		}
 	}
 
+	// check address is valid
+	if !ethcommon.IsHexAddress(escrowAddr) {
+		return nil, fmt.Errorf("invalid address: %s", escrowAddr)
+	}
+	if !ethcommon.IsHexAddress(erc20Addr) {
+		return nil, fmt.Errorf("invalid address: %s", erc20Addr)
+	}
+
 	// idempotently create reward instance if missing
 	exists := false
 	_ = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
@@ -101,6 +109,10 @@ func ForTestingForceSyncInstance(ctx context.Context, platform *kwilTesting.Plat
 
 // ForTestingCreditBalance credits a user's balance for the given instance using existing creditBalance.
 func ForTestingCreditBalance(ctx context.Context, app *common.App, id *types.UUID, user string, amount *types.Decimal) error {
+	// check address is valid
+	if !ethcommon.IsHexAddress(user) {
+		return fmt.Errorf("invalid address: %s", user)
+	}
 	addr := ethcommon.HexToAddress(user)
 	return creditBalance(ctx, app, id, addr, amount)
 }
@@ -173,11 +185,23 @@ func ForTestingUnregisterRuntimeFor(chain, escrow string) {
 // This includes creating an extension alias for convenient testing.
 func ForTestingSeedAndActivateInstance(ctx context.Context, platform *kwilTesting.Platform, chain, escrow, erc20 string, decimals int64, periodSeconds int64, alias string) error {
 	app := &common.App{DB: platform.DB, Engine: platform.Engine}
+	// check address is valid
+	if !ethcommon.IsHexAddress(alias) {
+		return fmt.Errorf("invalid address: %s", alias)
+	}
 	if err := forTestingCreateExtensionAlias(ctx, platform, chain, escrow, alias); err != nil {
 		return err
 	}
+	// check address is valid
+	if !ethcommon.IsHexAddress(erc20) {
+		return fmt.Errorf("invalid address: %s", erc20)
+	}
 	if _, err := ForTestingForceSyncInstance(ctx, platform, chain, escrow, erc20, decimals); err != nil {
 		return err
+	}
+	// check period is valid
+	if periodSeconds <= 0 {
+		return fmt.Errorf("invalid period: %d", periodSeconds)
 	}
 	if err := ForTestingSetDistributionPeriod(ctx, app, chain, escrow, periodSeconds); err != nil {
 		return err
