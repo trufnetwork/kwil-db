@@ -75,14 +75,85 @@ func ForTestingFinalizeCurrentEpoch(ctx context.Context, app *common.App, chain,
 // ForTestingConfirmAllFinalizedEpochs confirms all finalized (ended_at != null) epochs for an instance.
 func ForTestingConfirmAllFinalizedEpochs(ctx context.Context, app *common.App, chain, escrow string) error {
 	id := ForTestingGetInstanceID(chain, escrow)
-
-	// fetch all epochs (after=0, large limit)
-	return getEpochs(ctx, app, id, 0, 1_000_000, func(e *Epoch) error {
-		if e.EndHeight != nil && !e.Confirmed && e.Root != nil {
-			return confirmEpoch(ctx, app, e.Root)
+	var roots [][]byte
+	// First pass: collect reward roots within the test transaction
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT reward_root FROM epochs WHERE instance_id=$id AND ended_at IS NOT NULL AND confirmed IS NOT TRUE`,
+		map[string]any{"id": id}, func(r *common.Row) error {
+			if len(r.Values) != 1 {
+				return nil
+			}
+			if r.Values[0] != nil {
+				roots = append(roots, r.Values[0].([]byte))
+			}
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	// Second pass: confirm each root outside of the row-callback to avoid nested engine calls during iteration
+	for _, root := range roots {
+		if len(root) == 0 {
+			continue
 		}
+		if err := confirmEpoch(ctx, app, root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ForTestingFinalizeAndConfirmCurrentEpoch finalizes the current epoch (if it has rewards)
+// and then confirms all finalized epochs. This is a convenience wrapper for tests.
+func ForTestingFinalizeAndConfirmCurrentEpoch(ctx context.Context, app *common.App, chain, escrow string, endHeight int64, endHash [32]byte) error {
+	// Pre-check: ensure the current epoch has rewards; if not, provide actionable error
+	id := ForTestingGetInstanceID(chain, escrow)
+	infos, err := getStoredRewardInstances(ctx, app)
+	if err != nil {
+		return err
+	}
+	var info *rewardExtensionInfo
+	for _, r := range infos {
+		if r.ID.String() == id.String() {
+			info = r
+			break
+		}
+	}
+	if info == nil || info.currentEpoch == nil {
+		return fmt.Errorf("instance or current epoch not found")
+	}
+	leafs, _, _, _, err := genMerkleTreeForEpoch(ctx, app, info.currentEpoch.ID, info.EscrowAddress.Hex(), endHash)
+	if err != nil {
+		return err
+	}
+	if leafs == 0 {
+		return fmt.Errorf("no rewards in current epoch; cannot finalize")
+	}
+
+	if err := ForTestingFinalizeCurrentEpoch(ctx, app, chain, escrow, endHeight, endHash); err != nil {
+		return err
+	}
+	if err := ForTestingConfirmAllFinalizedEpochs(ctx, app, chain, escrow); err != nil {
+		return err
+	}
+
+	// Post-check: ensure at least one epoch is confirmed for this instance
+	confirmed := 0
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT count(*) FROM epochs WHERE instance_id=$id AND confirmed IS TRUE`, map[string]any{"id": id}, func(r *common.Row) error {
+		if len(r.Values) != 1 {
+			return nil
+		}
+		confirmed = int(r.Values[0].(int64))
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if confirmed == 0 {
+		return fmt.Errorf("finalize pipeline failed: no confirmed epochs for instance %s", id.String())
+	}
+	return nil
 }
 
 // ForTestingLockAndIssueDirect locks from a user and issues into the current epoch, atomically.
