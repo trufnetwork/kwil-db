@@ -618,17 +618,30 @@ func waitForLogs(ctx context.Context, containerName string, logs ...string) erro
 	scanner := bufio.NewScanner(stdout)
 	logCh := make(chan string)
 	errCh := make(chan error, 1)
-	defer close(errCh)
 	defer stdout.Close()
+	// done is closed when returning to signal the scanner goroutine to stop sending
+	done := make(chan struct{})
+	defer close(done)
 
 	// Goroutine to scan logs
 	go func() {
 		defer close(logCh)
 		for scanner.Scan() {
-			logCh <- scanner.Text()
+			line := scanner.Text()
+			select {
+			case logCh <- line:
+				// delivered
+			case <-done:
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
-			errCh <- fmt.Errorf("error reading logs: %w", err)
+			select {
+			case <-done:
+				return
+			case errCh <- fmt.Errorf("error reading logs: %w", err):
+			default:
+			}
 		}
 	}()
 
