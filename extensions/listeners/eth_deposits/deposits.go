@@ -1,5 +1,11 @@
 // package ethdeposits implements an listener that listens to Ethereum events
 // and triggers the creation of deposit events in Kwil.
+//
+// DEPRECATED: This eth_deposits listener system is deprecated.
+// It has been superseded by the modern ERC20 bridge extension which provides
+// better token-specific features, proper balance tracking, epochs, and merkle proof generation.
+// New deployments should use the ERC20 bridge extension instead.
+// For more information, see: https://github.com/trufnetwork/kwil-db/issues/1600
 package ethdeposits
 
 import (
@@ -35,6 +41,9 @@ func init() {
 // "Credit(address,uint256)" and create a deposit event in Kwil when it sees a matching event. It uses the
 // "credit_account" resolution, defined in extensions/resolutions/credit/credit.go, to create the deposit event.
 // It will search for a local extension configuration named "eth_deposit".
+//
+// DEPRECATED: This function and the eth_deposits listener are deprecated.
+// Use the ERC20 bridge extension instead for new integrations.
 func Start(ctx context.Context, service *common.Service, eventStore listeners.EventStore) error {
 	config := &EthDepositConfig{}
 	listenerConfig, ok := service.LocalConfig.Extensions[ListenerName]

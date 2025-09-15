@@ -1,3 +1,5 @@
+// DEPRECATED: This file is part of the deprecated eth_deposits listener system.
+// Use the ERC20 bridge extension instead for new integrations.
 package ethdeposits
 
 import (
