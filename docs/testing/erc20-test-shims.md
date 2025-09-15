@@ -558,20 +558,20 @@ require.NoError(t, err)
 
 The ERC20 test shims are designed to work seamlessly with the kwilTesting framework:
 
-```go
 import (
-    "github.com/trufnetwork/kwil-db/testing"
+    "testing" // standard library
+    kwilTesting "github.com/trufnetwork/kwil-db/testing"
 )
 
 func TestWithKwilTesting(t *testing.T) {
-    options := &testing.Options{
+    options := &kwilTesting.Options{
         UseTestContainer: true,
     }
 
-    testing.RunSchemaTest(t, testing.SchemaTest{
+    kwilTesting.RunSchemaTest(t, kwilTesting.SchemaTest{
         Name: "ERC20 Integration Test",
-        FunctionTests: []testing.TestFunc{
-            func(ctx context.Context, platform *testing.Platform) error {
+        FunctionTests: []kwilTesting.TestFunc{
+            func(ctx context.Context, platform *kwilTesting.Platform) error {
                 erc20.ForTestingResetSingleton()
 
                 // Your ERC20 test logic using the shims
