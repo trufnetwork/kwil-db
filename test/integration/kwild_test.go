@@ -17,6 +17,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/types"
 	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
+	ethdeposits "github.com/trufnetwork/kwil-db/extensions/listeners/eth_deposits"
 	"github.com/trufnetwork/kwil-db/test/setup"
 	"github.com/trufnetwork/kwil-db/test/specifications"
 )
