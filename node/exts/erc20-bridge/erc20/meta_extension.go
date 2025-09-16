@@ -662,6 +662,25 @@ func init() {
 								return err
 							}
 
+							// Check sufficient balance before transfer
+							currentBalance, err := balanceOf(ctx.TxContext.Ctx, app, id, from)
+							if err != nil {
+								return err
+							}
+
+							// If user has no balance record, treat as zero balance
+							if currentBalance == nil {
+								return fmt.Errorf("insufficient balance: have 0, need %s", amount)
+							}
+
+							cmp, err := currentBalance.Cmp(amount)
+							if err != nil {
+								return err
+							}
+							if cmp < 0 {
+								return fmt.Errorf("insufficient balance: have %s, need %s", currentBalance, amount)
+							}
+
 							return transferTokens(ctx.TxContext.Ctx, app, id, from, toAddr, amount)
 						},
 					},
