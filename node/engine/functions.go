@@ -967,6 +967,63 @@ var (
 			},
 			PGFormatFunc: defaultFormat("row_number"),
 		},
+		// PostgreSQL database size functions
+		"pg_database_size": &ScalarFunctionDefinition{
+			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+				if len(args) != 1 {
+					return nil, wrapErrArgumentNumber(1, len(args))
+				}
+
+				if !args[0].Equals(types.TextType) {
+					return nil, wrapErrArgumentType(types.TextType, args[0])
+				}
+
+				return types.IntType, nil
+			},
+			PGFormatFunc: defaultFormat("pg_database_size"),
+		},
+		"pg_total_relation_size": &ScalarFunctionDefinition{
+			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+				if len(args) != 1 {
+					return nil, wrapErrArgumentNumber(1, len(args))
+				}
+
+				if !args[0].Equals(types.TextType) {
+					return nil, wrapErrArgumentType(types.TextType, args[0])
+				}
+
+				return types.IntType, nil
+			},
+			PGFormatFunc: defaultFormat("pg_total_relation_size"),
+		},
+		"pg_relation_size": &ScalarFunctionDefinition{
+			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+				if len(args) != 1 {
+					return nil, wrapErrArgumentNumber(1, len(args))
+				}
+
+				if !args[0].Equals(types.TextType) {
+					return nil, wrapErrArgumentType(types.TextType, args[0])
+				}
+
+				return types.IntType, nil
+			},
+			PGFormatFunc: defaultFormat("pg_relation_size"),
+		},
+		"pg_size_pretty": &ScalarFunctionDefinition{
+			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+				if len(args) != 1 {
+					return nil, wrapErrArgumentNumber(1, len(args))
+				}
+
+				if !args[0].Equals(types.IntType) {
+					return nil, wrapErrArgumentType(types.IntType, args[0])
+				}
+
+				return types.TextType, nil
+			},
+			PGFormatFunc: defaultFormat("pg_size_pretty"),
+		},
 		// Table-valued functions
 		"unnest": &TableValuedFunctionDefinition{
 			ValidateArgsFunc: func(args []*types.DataType) ([]*NamedType, error) {
