@@ -750,7 +750,7 @@ type hostConfig struct {
 	port            uint64
 	privKey         crypto.PrivateKey
 	chainID         string
-	connGater       connmgr.ConnectionGater
+	connGater       *connmgr.ConnectionGater // pointer to check for nil
 	logger          log.Logger
 	externalAddress string // host:port
 }
@@ -823,7 +823,7 @@ func newHost(cfg *hostConfig) (host.Host, error) {
 
 	sec, secID := sec.NewScopedNoiseTransport(cfg.chainID, cfg.logger.New("SEC")) // noise.New plus chain ID check in handshake
 
-	h, err := libp2p.New(
+	opts := []libp2p.Option{
 		libp2p.AddrsFactory(func(m []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 			if externalMultiAddr != nil {
 				// Perhaps we should return *only* the external address if it is set?
@@ -844,9 +844,15 @@ func newHost(cfg *hostConfig) (host.Host, error) {
 		libp2p.ListenAddrs(sourceMultiAddr),
 		// listenAddrs,
 		libp2p.Identity(privKeyP2P),
-		libp2p.ConnectionGater(cfg.connGater),
 		// libp2p.ConnectionManager(cm),
-	) // libp2p.RandomIdentity, in-mem peer store, ...
+	}
+
+	// Only add ConnectionGater if it's not nil
+	if cfg.connGater != nil && *cfg.connGater != nil {
+		opts = append(opts, libp2p.ConnectionGater(*cfg.connGater))
+	}
+
+	h, err := libp2p.New(opts...) // libp2p.RandomIdentity, in-mem peer store, ...
 	if err != nil {
 		return nil, err
 	}

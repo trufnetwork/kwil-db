@@ -10,6 +10,7 @@ import (
 
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/discovery"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -73,7 +74,11 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 	} else {
 		logger.Debugf("P2P gating disabled: no private mode or blacklist; all connections allowed")
 	}
-	cg := peers.ChainConnectionGaters(wcg)
+
+	var cg connmgr.ConnectionGater
+	if wcg != nil {
+		cg = peers.ChainConnectionGaters(wcg)
+	}
 
 	if host == nil {
 		ip, portStr, err := net.SplitHostPort(cfg.KwilCfg.P2P.ListenAddress)
@@ -94,7 +99,7 @@ func NewP2PService(ctx context.Context, cfg *P2PServiceConfig, host host.Host) (
 			port:            port,
 			privKey:         cfg.PrivKey,
 			chainID:         cfg.ChainID,
-			connGater:       cg,
+			connGater:       &cg, // Pass pointer to check for nil
 			logger:          logger,
 			externalAddress: cfg.KwilCfg.P2P.ExternalAddress,
 		}
