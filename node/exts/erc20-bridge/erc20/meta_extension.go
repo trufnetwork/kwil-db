@@ -822,19 +822,24 @@ func init() {
 						},
 					},
 					{
-						// bridge will 'issue' token to the caller, from its own balance
+						// bridge issues tokens from the caller's balance and optionally directs them to a specified recipient
 						Name: "bridge",
 						Parameters: []precompiles.PrecompileValue{
 							{Name: "id", Type: types.UUIDType},
+							{Name: "recipient", Type: types.TextType},
 							{Name: "amount", Type: uint256Numeric, Nullable: true},
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
 							id := inputs[0].(*types.UUID)
+							recipient := inputs[1].(string)
+							if recipient == "" {
+								return fmt.Errorf("recipient must be provided")
+							}
 
 							var amount *types.Decimal
 							// if 'amount' is omitted, withdraw all balance
-							if inputs[1] == nil {
+							if inputs[2] == nil {
 								callerAddr, err := ethAddressFromHex(ctx.TxContext.Caller)
 								if err != nil {
 									return err
@@ -845,10 +850,10 @@ func init() {
 									return err
 								}
 							} else {
-								amount = inputs[1].(*types.Decimal)
+								amount = inputs[2].(*types.Decimal)
 							}
 
-							return getSingleton().lockAndIssueTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, amount)
+							return getSingleton().lockAndIssueTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, recipient, amount)
 						},
 					},
 					{
@@ -1509,10 +1514,18 @@ func (e *extensionInfo) issueTokens(ctx context.Context, app *common.App, id *ty
 	return nil
 }
 
-// lockAndIssueTokens locks tokens and issues them as a reward. It is defined as a separate function
-// in order to ensure it is atomic.
-func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App, id *types.UUID, from string, amount *types.Decimal) error {
+// lockAndIssueTokens locks tokens from the sender and issues them to the desired recipient within the current epoch.
+func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App, id *types.UUID, from string, recipient string, amount *types.Decimal) error {
+	if amount == nil {
+		return fmt.Errorf("amount needs to be positive")
+	}
+
 	fromAddr, err := ethAddressFromHex(from)
+	if err != nil {
+		return err
+	}
+
+	recipientAddr, err := ethAddressFromHex(recipient)
 	if err != nil {
 		return err
 	}
@@ -1524,6 +1537,10 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 	bal, err := balanceOf(ctx, app, id, fromAddr)
 	if err != nil {
 		return err
+	}
+
+	if bal == nil {
+		return fmt.Errorf("insufficient balance")
 	}
 
 	cmp, err := bal.Cmp(amount)
@@ -1549,7 +1566,7 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 
 	// we dont need to update the cached data here since we are directly converting
 	// a user balance (which is never cached) into a reward (which is also never cached)
-	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, amount)
+	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
 	if err != nil {
 		return err
 	}

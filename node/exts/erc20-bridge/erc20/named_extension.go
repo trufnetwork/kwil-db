@@ -177,6 +177,7 @@ func init() {
 				{
 					Name: "bridge",
 					Parameters: []precompiles.PrecompileValue{
+						{Name: "recipient", Type: types.TextType},
 						{Name: "amount", Type: uint256Numeric},
 					},
 					AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC},
