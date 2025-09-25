@@ -2,7 +2,7 @@ package peers
 
 import (
 	"context"
-	"slices"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -496,11 +496,25 @@ type chainedConnectionGater struct {
 }
 
 func ChainConnectionGaters(gaters ...connmgr.ConnectionGater) connmgr.ConnectionGater {
-	return &chainedConnectionGater{
-		gaters: slices.DeleteFunc(gaters, func(g connmgr.ConnectionGater) bool {
-			return g == nil
-		}),
+	filtered := make([]connmgr.ConnectionGater, 0, len(gaters))
+	for _, g := range gaters {
+		// Filter out both nil interfaces and typed-nil values
+		if g == nil {
+			continue
+		}
+		v := reflect.ValueOf(g)
+		switch v.Kind() {
+		case reflect.Interface, reflect.Ptr, reflect.Slice, reflect.Func, reflect.Map, reflect.Chan:
+			if v.IsNil() {
+				continue
+			}
+		}
+		filtered = append(filtered, g)
 	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return &chainedConnectionGater{gaters: filtered}
 }
 
 var _ connmgr.ConnectionGater = (*chainedConnectionGater)(nil)

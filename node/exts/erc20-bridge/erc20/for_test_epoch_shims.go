@@ -197,5 +197,5 @@ func ForTestingLockAndIssueDirect(ctx context.Context, platform *kwilTesting.Pla
 		return fmt.Errorf("invalid address: %s", from)
 	}
 	addr := ethcommon.HexToAddress(from)
-	return lockAndIssue(ctx, app, id, epochID, addr, dec)
+	return lockAndIssue(ctx, app, id, epochID, addr, addr, dec)
 }
