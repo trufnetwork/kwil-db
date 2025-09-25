@@ -502,11 +502,17 @@ func ChainConnectionGaters(gaters ...connmgr.ConnectionGater) connmgr.Connection
 		if g == nil {
 			continue
 		}
-		// Check for typed-nil (non-nil interface with nil underlying value)
-		if reflect.ValueOf(g).IsNil() {
-			continue
+		v := reflect.ValueOf(g)
+		switch v.Kind() {
+		case reflect.Interface, reflect.Ptr, reflect.Slice, reflect.Func, reflect.Map, reflect.Chan:
+			if v.IsNil() {
+				continue
+			}
 		}
 		filtered = append(filtered, g)
+	}
+	if len(filtered) == 0 {
+		return nil
 	}
 	return &chainedConnectionGater{gaters: filtered}
 }
