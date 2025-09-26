@@ -30,18 +30,19 @@ func (r SnapshotChunkReq) MarshalBinary() ([]byte, error) {
 	buf := make([]byte, 8+4+4+types.HashLen)
 	binary.LittleEndian.PutUint64(buf[:8], r.Height)
 	binary.LittleEndian.PutUint32(buf[8:12], r.Format)
-	binary.LittleEndian.PutUint32(buf[8:12], r.Index)
-	copy(buf[12:], r.Hash[:])
+	binary.LittleEndian.PutUint32(buf[12:16], r.Index)
+	copy(buf[16:], r.Hash[:])
 	return buf, nil
 }
 
 func (r *SnapshotChunkReq) UnmarshalBinary(data []byte) error {
-	if len(data) != 8+4+types.HashLen {
+	if len(data) != 8+4+4+types.HashLen {
 		return errors.New("unexpected data length")
 	}
 	r.Height = binary.LittleEndian.Uint64(data[:8])
-	r.Index = binary.LittleEndian.Uint32(data[8:12])
-	copy(r.Hash[:], data[12:])
+	r.Format = binary.LittleEndian.Uint32(data[8:12])
+	r.Index = binary.LittleEndian.Uint32(data[12:16])
+	copy(r.Hash[:], data[16:])
 	return nil
 }
 
@@ -61,6 +62,11 @@ func (r *SnapshotChunkReq) ReadFrom(rd io.Reader) (int64, error) {
 		return 0, err
 	}
 	nr += 8
+
+	if err := binary.Read(rd, binary.LittleEndian, &r.Format); err != nil {
+		return int64(nr), err
+	}
+	nr += 4
 
 	if err := binary.Read(rd, binary.LittleEndian, &r.Index); err != nil {
 		return int64(nr), err

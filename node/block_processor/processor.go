@@ -745,8 +745,7 @@ var (
 )
 
 func (bp *BlockProcessor) snapshotDB(ctx context.Context, height int64) error {
-	snapshotsDue := bp.snapshotter.Enabled() &&
-		(bp.snapshotter.IsSnapshotDue(uint64(height)) || len(bp.snapshotter.ListSnapshots()) == 0)
+	snapshotsDue := bp.snapshotter.Enabled() && bp.snapshotter.IsSnapshotDue(uint64(height))
 	// snapshotsDue = snapshotsDue && height > max(1, a.cfg.InitialHeight)
 
 	if snapshotsDue {

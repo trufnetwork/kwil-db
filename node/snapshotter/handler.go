@@ -26,7 +26,7 @@ const (
 	snapshotGetTimeout      = 45 * time.Second
 
 	ProtocolIDSnapshotCatalog protocol.ID = "/kwil/snapcat/1.0.0"
-	ProtocolIDSnapshotChunk   protocol.ID = "/kwil/snapchunk/1.0.0"
+	ProtocolIDSnapshotChunk   protocol.ID = "/kwil/snapchunk/1.1.0"
 	ProtocolIDSnapshotRange   protocol.ID = "/kwil/snaprange/1.0.0"
 	ProtocolIDSnapshotMeta    protocol.ID = "/kwil/snapmeta/1.0.0"
 
@@ -63,14 +63,8 @@ func (s *SnapshotStore) snapshotCatalogRequestHandler(stream network.Stream) {
 	stream.SetReadDeadline(time.Now().Add(time.Second))
 
 	req := make([]byte, len(DiscoverSnapshotsMsg))
-	n, err := stream.Read(req)
-	if err != nil {
+	if _, err := io.ReadFull(stream, req); err != nil {
 		s.log.Warn("failed to read discover snapshots request", "error", err)
-		return
-	}
-
-	if n == 0 {
-		// no request, hung up
 		return
 	}
 

@@ -3,6 +3,7 @@ package snapshotter
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"os"
 	"testing"
 
@@ -246,4 +247,72 @@ func TestLoadSnapshotChunk(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, data)
 
+}
+
+func TestIsSnapshotDueCatchup(t *testing.T) {
+	dir := t.TempDir()
+	logger := log.DiscardLogger
+
+	cfg := &SnapshotConfig{
+		Enable:          true,
+		RecurringHeight: 10,
+		SnapshotDir:     dir,
+		MaxSnapshots:    5,
+	}
+	store, err := NewMockSnapshotStore(dir, cfg, logger)
+	require.NoError(t, err)
+
+	// No snapshots yet: always due so the first snapshot is created
+	require.True(t, store.IsSnapshotDue(1))
+
+	// Register a snapshot at height 15
+	require.NoError(t, store.RegisterSnapshot(&Snapshot{Height: 15, Format: 0}))
+
+	// Heights within the recurrence window should not trigger
+	require.False(t, store.IsSnapshotDue(20))
+	require.False(t, store.IsSnapshotDue(24))
+
+	// Once outside the window, snapshot should be due even if we missed the exact interval
+	require.True(t, store.IsSnapshotDue(26))
+	// After another snapshot is registered, the window resets
+	require.NoError(t, store.RegisterSnapshot(&Snapshot{Height: 26, Format: 0}))
+	require.False(t, store.IsSnapshotDue(30))
+	require.True(t, store.IsSnapshotDue(37))
+}
+
+func TestSnapshotCatchupIntegration(t *testing.T) {
+	dir := t.TempDir()
+	logger := log.DiscardLogger
+
+	cfg := &SnapshotConfig{
+		Enable:          true,
+		RecurringHeight: 10,
+		SnapshotDir:     dir,
+		MaxSnapshots:    5,
+	}
+	store, err := NewMockSnapshotStore(dir, cfg, logger)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Seed the store with a snapshot taken in the past.
+	seed := &Snapshot{Height: 5, Format: 0}
+	require.NoError(t, store.RegisterSnapshot(seed))
+
+	heights := []uint64{12, 18, 22, 29, 35}
+	produced := make([]uint64, 0)
+
+	for idx, h := range heights {
+		if store.IsSnapshotDue(h) {
+			snapshotID := fmt.Sprintf("catchup-%d", idx)
+			require.NoError(t, store.CreateSnapshot(ctx, h, snapshotID, nil, nil, nil))
+			produced = append(produced, h)
+		}
+	}
+
+	// We should have produced snapshots at the heights that exceeded the recurrence window.
+	require.Equal(t, []uint64{18, 29}, produced)
+
+	heightsOnStore := store.snapshotHeights
+	require.Equal(t, []uint64{5, 18, 29}, heightsOnStore)
 }

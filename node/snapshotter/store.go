@@ -114,7 +114,19 @@ func (s *SnapshotStore) IsSnapshotDue(height uint64) bool {
 		return false
 	}
 
-	return (height % s.cfg.RecurringHeight) == 0
+	s.snapshotsMtx.RLock()
+	defer s.snapshotsMtx.RUnlock()
+
+	if len(s.snapshotHeights) == 0 {
+		return true
+	}
+
+	lastHeight := s.snapshotHeights[len(s.snapshotHeights)-1]
+	if height <= lastHeight {
+		return false
+	}
+
+	return height-lastHeight >= s.cfg.RecurringHeight
 }
 
 // List snapshots lists all the registered snapshots in the snapshot store.
