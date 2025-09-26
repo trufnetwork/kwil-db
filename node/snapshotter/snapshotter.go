@@ -366,7 +366,7 @@ func (s *Snapshotter) splitStreamIntoChunks(ctx context.Context, height uint64, 
 		}
 
 		if copyErr != nil {
-			if copyErr != io.EOF {
+			if copyErr != io.EOF && copyErr != io.ErrUnexpectedEOF {
 				os.Remove(chunkFileName)
 				return nil, fmt.Errorf("failed to write chunk to file: %w", copyErr)
 			}
@@ -386,7 +386,7 @@ func (s *Snapshotter) splitStreamIntoChunks(ctx context.Context, height uint64, 
 		indexLogged := chunkIndex - 1
 		s.log.Info("Chunk created", "index", indexLogged, "chunkfile", chunkFileName, "size", written)
 
-		if copyErr == io.EOF || written < chunkSize {
+		if copyErr == io.EOF || copyErr == io.ErrUnexpectedEOF || written < chunkSize {
 			break
 		}
 	}
@@ -765,20 +765,4 @@ func (h *mergeHeap) Pop() any {
 	item := old[n-1]
 	*h = old[:n-1]
 	return item
-}
-
-func hashFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-
-	if _, err := io.Copy(hash, file); err != nil {
-		return nil, err
-	}
-
-	return hash.Sum(nil), nil
 }

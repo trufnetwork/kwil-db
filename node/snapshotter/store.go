@@ -333,7 +333,7 @@ func (s *SnapshotStore) loadSnapshots() error {
 		}
 
 		// Ensure that the chunk files exist
-		for i := uint32(0); i < header.ChunkCount; i++ {
+		for i := range header.ChunkCount {
 			chunkFile := snapshotChunkFile(s.cfg.SnapshotDir, heightInt, DefaultSnapshotFormat, i)
 			if _, err := os.Stat(chunkFile); err != nil { // chunk file doesn't exist
 				s.log.Warn("Invalid snapshot chunk file, ignoring the snapshot", "chunk_file", chunkFile, "err", err)
