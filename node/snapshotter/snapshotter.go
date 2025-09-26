@@ -68,10 +68,11 @@ func (cr *contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := cr.Reader.Read(p)
-	if err == nil {
-		if errCtx := cr.ctx.Err(); errCtx != nil {
-			return 0, errCtx
+	if errCtx := cr.ctx.Err(); errCtx != nil {
+		if n > 0 {
+			return n, errCtx
 		}
+		return 0, errCtx
 	}
 	return n, err
 }
