@@ -16,9 +16,15 @@ import (
 	kwilTesting "github.com/trufnetwork/kwil-db/testing"
 )
 
-// ForTestingTransferListenerTopic returns the transfer listener unique topic name for a given instance id.
+// ForTestingDepositListenerTopic returns the deposit listener unique topic name for a given instance id.
+func ForTestingDepositListenerTopic(id types.UUID) string {
+	return depositListenerUniqueName(id)
+}
+
+// ForTestingTransferListenerTopic is retained for backward compatibility.
+// Deprecated: use ForTestingDepositListenerTopic instead.
 func ForTestingTransferListenerTopic(id types.UUID) string {
-	return transferListenerUniqueName(id)
+	return ForTestingDepositListenerTopic(id)
 }
 
 // ForTestingForceSyncInstance ensures the instance exists in DB (reward_instances + first epoch),
@@ -40,8 +46,8 @@ func ForTestingForceSyncInstance(ctx context.Context, platform *kwilTesting.Plat
 	idVal := uuidForChainAndEscrow(chainName, escrowAddr)
 	id := &idVal
 
-	topic := transferListenerUniqueName(*id)
-	err := orderedsync.ForTestingEnsureTopic(ctx, platform, topic, transferEventResolutionName)
+	topic := depositListenerUniqueName(*id)
+	err := orderedsync.ForTestingEnsureTopic(ctx, platform, topic, depositEventResolutionName)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +183,7 @@ func ForTestingResetSingleton() {
 func ForTestingUnregisterRuntimeFor(chain, escrow string) {
 	id := uuidForChainAndEscrow(chain, escrow)
 	_ = evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(id))
-	_ = evmsync.EventSyncer.UnregisterListener(transferListenerUniqueName(id))
+	_ = evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(id))
 }
 
 // ForTestingSeedAndActivateInstance enables an instance by creating the alias, setting period/active and rehydrating, after unregistering runtimes.
