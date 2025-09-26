@@ -142,7 +142,7 @@ tasks:
     cmds:
       - defer: { task: pg:clean }
       - |
-        docker run -p :5432 -v {{ .NAME }}:/var/lib/postgresql/data \
+        docker run -p {{ .PORT }}:5432 -v {{ .NAME }}:/var/lib/postgresql/data \
             --shm-size 512m -e "POSTGRES_HOST_AUTH_METHOD=trust" \
             --name {{ .NAME }} kwildb/postgres:16.8-1
 

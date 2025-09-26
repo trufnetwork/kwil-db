@@ -8,8 +8,8 @@
 // Once synced, the extension is no longer "pending", but instead ready.
 // At this point, users can access the extension's namespace to distribute rewards.
 // Internally, the node will start another event listener which is responsible for tracking
-// the erc20's Transfer event. When a transfer event is detected, the node will update the
-// reward balance of the recipient.
+// the escrow contract's Deposit event. When a deposit event is detected, the node will update the
+// reward balance of the intended recipient.
 package erc20
 
 import (
@@ -70,7 +70,7 @@ var (
 
 	// the below are used to identify different types of logs from ethereum
 	// so that we know how to decode them
-	logTypeTransfer       = []byte("e20trsnfr")
+	logTypeDeposit        = []byte("rcpdepst")
 	logTypeConfirmedEpoch = []byte("cnfepch")
 
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
@@ -98,24 +98,24 @@ func idFromStatePollerUniqueName(name string) (*types.UUID, error) {
 }
 
 const (
-	statePollerPrefix           = "erc20_state_poll_"
-	transferListenerPrefix      = "erc20_transfer_listener_"
-	transferEventResolutionName = "erc20_transfer_sync"
-	statePollResolutionName     = "erc20_state_poll_sync"
+	statePollerPrefix          = "erc20_state_poll_"
+	depositListenerPrefix      = "erc20_transfer_listener_" // retain prefix for stored topics
+	depositEventResolutionName = "erc20_transfer_sync"
+	statePollResolutionName    = "erc20_state_poll_sync"
 )
 
-// transferListenerUniqueName generates a unique name for the transfer listener
-func transferListenerUniqueName(id types.UUID) string {
-	return transferListenerPrefix + id.String()
+// depositListenerUniqueName generates a unique name for the deposit listener
+func depositListenerUniqueName(id types.UUID) string {
+	return depositListenerPrefix + id.String()
 }
 
-// idFromTransferListenerUniqueName extracts the id from the unique name
-func idFromTransferListenerUniqueName(name string) (*types.UUID, error) {
-	if !strings.HasPrefix(name, transferListenerPrefix) {
-		return nil, fmt.Errorf("invalid transfer listener name %s", name)
+// idFromDepositListenerUniqueName extracts the id from the unique name
+func idFromDepositListenerUniqueName(name string) (*types.UUID, error) {
+	if !strings.HasPrefix(name, depositListenerPrefix) {
+		return nil, fmt.Errorf("invalid deposit listener name %s", name)
 	}
 
-	return types.ParseUUID(strings.TrimPrefix(name, transferListenerPrefix))
+	return types.ParseUUID(strings.TrimPrefix(name, depositListenerPrefix))
 }
 
 // generateEpochID generates a deterministic UUID for an epoch
@@ -130,8 +130,8 @@ func generateEpochID(instanceID *types.UUID, startheight int64) *types.UUID {
 This extension is quite complex, because it manages a number of lifetimes and sub extensions.
 It is interacted with using "top-level" extensions (e.g. USE erc20 {...} AS alias).
 It also interacts with two different event listeners: one for polling state of on-chain contracts
-(e.g. the configured erc20 and multisig for an escrow), and one for listening to Transfer events
-to reward users with incoming tokens.
+(e.g. the configured erc20 and multisig for an escrow), and one for listening to RewardDistributor
+Deposit events to reward users with incoming tokens.
 
 Therefore, we break down the extension into "Instances". Instances are defined by a Chain ID and an
 escrow address, which is then hashed to create a UUID. This UUID is used to track the extension in the
@@ -163,7 +163,7 @@ depending on the state:
 Upon successful synchronization, the extension is considered "ready".
 In other words, ready = synced && activated.
 Once an extensiuon is ready, it can be used to distribute rewards to users.
-It will also start a listener for Transfer events on the erc20 contract, to update user balances.
+It will also start a listener for Deposit events on the reward distributor, to update user balances.
 */
 
 func init() {
@@ -195,15 +195,15 @@ func init() {
 
 	// Initialize singleton in init function - will be replaced by getSingleton() logic
 
-	evmsync.RegisterEventResolution(transferEventResolutionName, func(ctx context.Context, app *common.App, block *common.BlockContext, uniqueName string, logs []*evmsync.EthLog) error {
-		id, err := idFromTransferListenerUniqueName(uniqueName)
+	evmsync.RegisterEventResolution(depositEventResolutionName, func(ctx context.Context, app *common.App, block *common.BlockContext, uniqueName string, logs []*evmsync.EthLog) error {
+		id, err := idFromDepositListenerUniqueName(uniqueName)
 		if err != nil {
 			return err
 		}
 
 		for _, log := range logs {
-			if bytes.Equal(log.Metadata, logTypeTransfer) {
-				err := applyTransferLog(ctx, app, id, *log.Log)
+			if bytes.Equal(log.Metadata, logTypeDeposit) {
+				err := applyDepositLog(ctx, app, id, *log.Log)
 				if err != nil {
 					return err
 				}
@@ -266,13 +266,13 @@ func init() {
 			return err
 		}
 
-		// if active, we should start the transfer listener
+		// if active, we should start the deposit listener
 		// Otherwise, we will just wait until it is activated
 		if info.active {
 			// we need to unlock before we call start because it
 			// will acquire the write lock
 			info.mu.Unlock()
-			return info.startTransferListener()
+			return info.startDepositListener()
 		}
 
 		info.mu.Unlock()
@@ -306,10 +306,10 @@ func init() {
 					for _, instance := range instances {
 						// if instance is active, we should start one of its
 						// two listeners. If it is synced, we should start the
-						// transfer listener. Otherwise, we should start the state poller
+						// deposit listener. Otherwise, we should start the state poller
 						if instance.active {
 							if instance.synced {
-								err = instance.startTransferListener()
+								err = instance.startDepositListener()
 								if err != nil {
 									return err
 								}
@@ -383,7 +383,7 @@ func init() {
 							// 1. active: we should return an error
 							// 2. inactive
 							// If inactive, we should check if it is synced. If it is, we should
-							// start the transfer listener. Otherwise, we should get it synced by
+							// start the deposit listener. Otherwise, we should get it synced by
 							// starting the state poller.
 							if ok {
 								info.mu.RLock()
@@ -411,10 +411,10 @@ func init() {
 									info.mu.RLock()
 									defer info.mu.RUnlock()
 
-									// an error from startTransferListener is a critical error
+									// an error from startDepositListener is a critical error
 									// in the code, not a user error. Therefore, not too concerned with
 									// rolling back the above changes
-									err = info.startTransferListener()
+									err = info.startDepositListener()
 									if err != nil {
 										return err
 									}
@@ -425,7 +425,7 @@ func init() {
 								}
 								// do nothing, we will proceed below to start the state poller
 							} else {
-								err = evmsync.EventSyncer.RegisterNewTopic(ctx.TxContext.Ctx, db, app.Engine, transferListenerUniqueName(id), transferEventResolutionName)
+								err = evmsync.EventSyncer.RegisterNewTopic(ctx.TxContext.Ctx, db, app.Engine, depositListenerUniqueName(id), depositEventResolutionName)
 								if err != nil {
 									return err
 								}
@@ -1880,56 +1880,50 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 	})
 }
 
-// startTransferListener starts an event listener that listens for Transfer events
-func (r *rewardExtensionInfo) startTransferListener() error {
+// startDepositListener starts an event listener that listens for Deposit events on the RewardDistributor escrow
+func (r *rewardExtensionInfo) startDepositListener() error {
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
 	escrowCopy := r.EscrowAddress
-	erc20Copy := r.Erc20Address
-	evmMaxRetries := int64(10) // retry on evm RPC request is curicial
+	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
-	// we now register synchronization of the Transfer event
+	// we now register synchronization of the Deposit event
 	return evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
-		UniqueName: transferListenerUniqueName(*r.ID),
+		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
-			filt, err := abigen.NewErc20Filterer(erc20Copy, client)
+			escrowFilt, err := abigen.NewRewardDistributorFilterer(escrowCopy, client)
 			if err != nil {
-				return nil, fmt.Errorf("failed to bind to ERC20 filterer: %w", err)
+				return nil, fmt.Errorf("failed to bind to RewardDistributor filterer: %w", err)
 			}
 
-			var transferIter *abigen.Erc20TransferIterator
+			var logs []*evmsync.EthLog
+
+			var depositIter *abigen.RewardDistributorDepositIterator
 			err = utils.Retry(ctx, evmMaxRetries, func() error {
-				transferIter, err = filt.FilterTransfer(&bind.FilterOpts{
+				depositIter, err = escrowFilt.FilterDeposit(&bind.FilterOpts{
 					Start:   startBlock,
 					End:     &endBlock,
 					Context: ctx,
-				}, nil, []ethcommon.Address{escrowCopy})
+				})
 				if err != nil {
-					return fmt.Errorf("failed to get transfer logs: %w", err)
+					return fmt.Errorf("failed to get deposit logs: %w", err)
 				}
 				return nil
 			})
 			if err != nil {
 				return nil, err
 			}
-			defer transferIter.Close()
+			defer depositIter.Close()
 
-			var logs []*evmsync.EthLog
-			for transferIter.Next() {
+			for depositIter.Next() {
 				logs = append(logs, &evmsync.EthLog{
-					Metadata: logTypeTransfer,
-					Log:      &transferIter.Event.Raw,
+					Metadata: logTypeDeposit,
+					Log:      &depositIter.Event.Raw,
 				})
 			}
-			if err := transferIter.Error(); err != nil {
-				return nil, fmt.Errorf("failed to get transfer logs: %w", err)
-			}
-
-			// get RewardPosted logs
-			escrowFilt, err := abigen.NewRewardDistributorFilterer(escrowCopy, client)
-			if err != nil {
-				return nil, fmt.Errorf("failed to bind to RewardDistributor filterer: %w", err)
+			if err := depositIter.Error(); err != nil {
+				return nil, fmt.Errorf("failed to get deposit logs: %w", err)
 			}
 
 			var postIter *abigen.RewardDistributorRewardPostedIterator
@@ -1965,14 +1959,14 @@ func (r *rewardExtensionInfo) startTransferListener() error {
 }
 
 // stopAllListeners stops all event listeners for the reward extension.
-// If it is synced, this means it must have an active Transfer listener.
+// If it is synced, this means it must have an active Deposit listener.
 // If it is not synced, it must have an active state poller.
 // NOTE: UnregisterListener doesn't unregister the topic because the reward
 // instance will not be deleted when `unuse`/`disable`, we need to keep the
 // topics to make sure we don't lose events.
 func (r *rewardExtensionInfo) stopAllListeners() error {
 	if r.synced {
-		return evmsync.EventSyncer.UnregisterListener(transferListenerUniqueName(*r.ID))
+		return evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID))
 	}
 	return evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
 }
@@ -1990,19 +1984,19 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 	return nil, fmt.Errorf("subscribe filter logs was not expected to be called")
 }
 
-// applyTransferLog applies a Transfer log to the reward extension.
-func applyTransferLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
-	data, err := erc20LogParser.ParseTransfer(log)
+// applyDepositLog applies a Deposit log to the reward extension.
+func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
+	data, err := rewardLogParser.ParseDeposit(log)
 	if err != nil {
-		return fmt.Errorf("failed to parse Transfer event: %w", err)
+		return fmt.Errorf("failed to parse Deposit event: %w", err)
 	}
 
-	val, err := erc20ValueFromBigInt(data.Value)
+	val, err := erc20ValueFromBigInt(data.Amount)
 	if err != nil {
 		return fmt.Errorf("failed to convert big.Int to decimal.Decimal: %w", err)
 	}
 
-	return creditBalance(ctx, app, id, data.From, val)
+	return creditBalance(ctx, app, id, data.Recipient, val)
 }
 
 // applyConfirmedEpochLog applies a ConfirmedEpoch log to the reward extension.
@@ -2026,19 +2020,7 @@ func erc20ValueFromBigInt(b *big.Int) (*types.Decimal, error) {
 }
 
 var (
-	// erc20LogParser is a pre-bound ERC20 filterer for parsing Transfer events.
-	// It should only be used for parsing, since it will not work for reading
-	// logs from the EVM chain.
-	erc20LogParser = func() ierc20LogParser {
-		filt, err := abigen.NewErc20Filterer(ethcommon.Address{}, nilEthFilterer{})
-		if err != nil {
-			panic(fmt.Sprintf("failed to bind to ERC20 filterer: %v", err))
-		}
-
-		return filt
-	}()
-
-	// rewardLogParser is a pre-bound RewardDistributor filterer for parsing RewardPosted events.
+	// rewardLogParser is a pre-bound RewardDistributor filterer for parsing Deposit and RewardPosted events.
 	rewardLogParser = func() irewardLogParser {
 		filt, err := abigen.NewRewardDistributorFilterer(ethcommon.Address{}, nilEthFilterer{})
 		if err != nil {
@@ -2049,15 +2031,9 @@ var (
 	}()
 )
 
-// ierc20LogParser is an interface for parsing ERC20 logs.
-// It is only defined to make it clear that the implementation
-// should not use other methods of the abigen erc20 type.
-type ierc20LogParser interface {
-	ParseTransfer(log ethtypes.Log) (*abigen.Erc20Transfer, error)
-}
-
 // irewardLogParser is an interface for parsing RewardDistributor logs.
 type irewardLogParser interface {
+	ParseDeposit(log ethtypes.Log) (*abigen.RewardDistributorDeposit, error)
 	ParseRewardPosted(log ethtypes.Log) (*abigen.RewardDistributorRewardPosted, error)
 }
 
