@@ -60,7 +60,7 @@ var (
 				return err
 			}
 			if bts == nil { // to match the exception in Encode
-				// set what v points to to the zero value
+				// set what v points to the zero value
 				v := reflect.ValueOf(val)
 				// v.CanSet() // ?
 				v.Elem().Set(reflect.Zero(v.Elem().Type()))
