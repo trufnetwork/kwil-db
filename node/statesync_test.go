@@ -32,7 +32,7 @@ var (
 
 	snap1 = &snapshotMetadata{
 		Height:      1,
-		Format:      1,
+		Format:      snapshotter.DefaultSnapshotFormat,
 		Chunks:      1,
 		Hash:        data[:],
 		Size:        100,
@@ -41,7 +41,7 @@ var (
 
 	snap2 = &snapshotMetadata{
 		Height:      2,
-		Format:      1,
+		Format:      snapshotter.DefaultSnapshotFormat,
 		Chunks:      1,
 		Hash:        []byte("snap2"),
 		Size:        100,
@@ -258,6 +258,9 @@ func (s *snapshotStore) LoadSnapshotChunk(height uint64, format uint32, index ui
 	snapshot, ok := s.snapshots[height]
 	if !ok {
 		return nil, errors.New("snapshot not found")
+	}
+	if format != snapshotter.DefaultSnapshotFormat {
+		return nil, errors.New("unsupported format")
 	}
 
 	if index >= snapshot.Chunks {
