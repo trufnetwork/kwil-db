@@ -40,3 +40,11 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/kwil-postgres:${{ inputs.tag }}
           platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.run_started_at }}
+          provenance: true
+          sbom: true
