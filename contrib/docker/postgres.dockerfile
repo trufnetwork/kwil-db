@@ -1,5 +1,10 @@
 FROM postgres:16.8
 
+# Install pg_repack so tn_vacuum can create the extension inside the server.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends postgresql-16-repack \
+	&& rm -rf /var/lib/apt/lists/*
+
 # Inject the init script that makes the kwild superuser and a kwild database
 # owned by that kwild user, as well as a kwil_test_db database for tests.
 COPY ./pginit.sql /docker-entrypoint-initdb.d/init.sql
