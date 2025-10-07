@@ -97,6 +97,9 @@ func buildServer(ctx context.Context, d *coreDependencies) *server {
 	// BlockProcessor
 	bp := buildBlockProcessor(ctx, d, db, txApp, accounts, vs, snapshotStore, es, migrator, bs, mp)
 
+	// Update TxApp's service with NodeStatus from BlockProcessor
+	txApp.UpdateNodeStatus(bp.NodeStatus())
+
 	// Consensus
 	ce := buildConsensusEngine(ctx, d, db, mp, bs, bp)
 

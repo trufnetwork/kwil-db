@@ -79,6 +79,13 @@ func NewTxApp(ctx context.Context, db sql.Executor, engine common.Engine, signer
 	return t, nil
 }
 
+// UpdateNodeStatus updates the service's NodeStatus provider.
+// This should be called after the BlockProcessor is created to wire up
+// the node status for extensions to use.
+func (r *TxApp) UpdateNodeStatus(nodeStatus common.NodeStatusProvider) {
+	r.service.NodeStatus = nodeStatus
+}
+
 // GenesisInit initializes the TxApp. It must be called outside of a session,
 // and before any session is started.
 // It can assign the initial validator set and initial account balances.
