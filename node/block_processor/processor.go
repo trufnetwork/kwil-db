@@ -392,6 +392,7 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 		ChainContext: bp.chainCtx,
 		Proposer:     req.Proposer,
 		Hash:         req.BlockID,
+		InCatchup:    syncing,
 	}
 
 	// Begin executing transactions. The chain context may be updated during the block execution.

@@ -44,6 +44,11 @@ type BlockContext struct {
 	Timestamp int64
 	// Proposer gets the proposer public key of the current block.
 	Proposer crypto.PublicKey
+	// InCatchup indicates whether the node is currently catching up
+	// with the network (i.e., in block sync mode). Extensions can use
+	// this to skip heavy operations during catch-up to reduce resource
+	// contention.
+	InCatchup bool
 }
 
 // MigrationContext provides context for all migration operations.
