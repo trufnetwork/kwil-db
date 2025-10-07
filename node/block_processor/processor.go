@@ -52,6 +52,9 @@ type BlockProcessor struct {
 	status   *blockExecStatus
 	statusMu sync.RWMutex // very granular mutex to protect access to the block execution status
 
+	// nodeStatus tracks runtime node state for extensions
+	nodeStatus *nodeStatus
+
 	// consensus TX
 	consensusTx sql.PreparedTx
 
@@ -79,6 +82,12 @@ type BlockProcessor struct {
 
 type BroadcastTxFn func(ctx context.Context, tx *ktypes.Transaction, sync uint8) (ktypes.Hash, *ktypes.TxResult, error)
 
+// NodeStatus returns the NodeStatusProvider for this block processor.
+// Extensions can use this to query runtime node state.
+func (bp *BlockProcessor) NodeStatus() common.NodeStatusProvider {
+	return bp.nodeStatus
+}
+
 func NewBlockProcessor(ctx context.Context, db DB, txapp TxApp, accounts Accounts, vs ValidatorModule,
 	sp SnapshotModule, es EventStore, migrator MigratorModule, bs BlockStore, mp Mempool,
 	genesisCfg *config.GenesisConfig, signer auth.Signer, logger log.Logger) (*BlockProcessor, error) {
@@ -94,6 +103,7 @@ func NewBlockProcessor(ctx context.Context, db DB, txapp TxApp, accounts Account
 		mempool:     mp,
 		migrator:    migrator,
 		log:         logger,
+		nodeStatus:  newNodeStatus(),
 	}
 
 	bp.genesisParams = genesisCfg
@@ -352,6 +362,9 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	bp.mtx.Lock()
 	defer bp.mtx.Unlock()
 
+	// Update node syncing status for extensions
+	bp.nodeStatus.setSyncing(syncing)
+
 	// TODO: TxApp.Begin is a no-op for now, un-comment when needed
 	// Begin the block execution session
 	// if err = bp.txapp.Begin(ctx, req.Height); err != nil {
@@ -392,7 +405,6 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 		ChainContext: bp.chainCtx,
 		Proposer:     req.Proposer,
 		Hash:         req.BlockID,
-		InCatchup:    syncing,
 	}
 
 	// Begin executing transactions. The chain context may be updated during the block execution.

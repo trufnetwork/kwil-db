@@ -3,6 +3,7 @@ package blockprocessor
 import (
 	"maps"
 	"slices"
+	"sync"
 	"time"
 
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
@@ -13,6 +14,30 @@ type blockExecStatus struct {
 	height             int64
 	txIDs              []ktypes.Hash
 	txStatus           map[ktypes.Hash]bool
+}
+
+// nodeStatus implements common.NodeStatusProvider and tracks the node's
+// runtime state (syncing, role, etc.) for use by extensions.
+type nodeStatus struct {
+	mu      sync.RWMutex
+	syncing bool
+}
+
+func newNodeStatus() *nodeStatus {
+	return &nodeStatus{}
+}
+
+// IsSyncing returns true if the node is currently synchronizing with the network.
+func (s *nodeStatus) IsSyncing() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.syncing
+}
+
+func (s *nodeStatus) setSyncing(syncing bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.syncing = syncing
 }
 
 // Used by the rpc server to get the execution status of the block being processed.

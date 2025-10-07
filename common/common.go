@@ -13,6 +13,16 @@ import (
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
+// NodeStatusProvider provides runtime status information about the node.
+// Extensions can use this to query node state and adapt their behavior
+// accordingly (e.g., skip heavy operations during synchronization).
+type NodeStatusProvider interface {
+	// IsSyncing returns true if the node is currently synchronizing with
+	// the network (i.e., catching up with blocks). This includes initial
+	// sync, block sync after restart, and snapshot restoration.
+	IsSyncing() bool
+}
+
 // Service provides access to general application information to
 // extensions.
 type Service struct {
@@ -27,6 +37,10 @@ type Service struct {
 
 	// Identity is the node/validator identity (pubkey).
 	Identity []byte // maybe this actuall needs to be crypto.PubKey???
+
+	// NodeStatus provides runtime status information about the node.
+	// Extensions can query this to adapt behavior based on node state.
+	NodeStatus NodeStatusProvider
 }
 
 // NameLogger returns a new Service with the logger named.
@@ -37,6 +51,7 @@ func (s *Service) NamedLogger(name string) *Service {
 		GenesisConfig: s.GenesisConfig,
 		LocalConfig:   s.LocalConfig,
 		Identity:      s.Identity,
+		NodeStatus:    s.NodeStatus,
 	}
 }
 
