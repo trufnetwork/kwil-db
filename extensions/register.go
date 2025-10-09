@@ -9,4 +9,8 @@ import (
 	// This import is kept for backward compatibility with production deployments
 	// that still depend on the eth_deposits system.
 	_ "github.com/trufnetwork/kwil-db/extensions/listeners/eth_deposits"
+
+	// Attestation precompile for TRUF.NETWORK data attestation system
+	// Provides queue_for_signing() method for notifying leader of pending attestations
+	_ "github.com/trufnetwork/kwil-db/extensions/precompiles"
 )
