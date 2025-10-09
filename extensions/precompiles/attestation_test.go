@@ -339,3 +339,249 @@ func TestQueueForSigningPrecompile(t *testing.T) {
 		assert.Equal(t, 1, queue.Len())
 	})
 }
+
+func TestValidatorSigner(t *testing.T) {
+	t.Run("NewValidatorSigner_Success", func(t *testing.T) {
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		signer, err := NewValidatorSigner(privKey)
+		require.NoError(t, err)
+		assert.NotNil(t, signer)
+		assert.NotNil(t, signer.privateKey)
+	})
+
+	t.Run("NewValidatorSigner_WrongKeyType", func(t *testing.T) {
+		// Try with Ed25519 key (should fail)
+		privKey, _, err := crypto.GenerateEd25519Key(nil)
+		require.NoError(t, err)
+
+		signer, err := NewValidatorSigner(privKey)
+		assert.Error(t, err)
+		assert.Nil(t, signer)
+		assert.Contains(t, err.Error(), "must be secp256k1")
+	})
+
+	t.Run("SignKeccak256_Success", func(t *testing.T) {
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		signer, err := NewValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		payload := []byte("test attestation payload")
+		signature, err := signer.SignKeccak256(payload)
+		require.NoError(t, err)
+
+		// Signature should be 65 bytes [R || S || V]
+		assert.Len(t, signature, 65)
+	})
+
+	t.Run("SignKeccak256_Deterministic", func(t *testing.T) {
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		signer, err := NewValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		payload := []byte("test payload")
+
+		// Sign twice with same payload
+		sig1, err := signer.SignKeccak256(payload)
+		require.NoError(t, err)
+
+		sig2, err := signer.SignKeccak256(payload)
+		require.NoError(t, err)
+
+		// Signatures should be identical for same payload
+		assert.Equal(t, sig1, sig2)
+	})
+
+	t.Run("PublicKeyBytes", func(t *testing.T) {
+		privKey, pubKey, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		signer, err := NewValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		pubKeyBytes := signer.PublicKeyBytes()
+		assert.NotNil(t, pubKeyBytes)
+		// Compressed secp256k1 public key is 33 bytes
+		assert.Len(t, pubKeyBytes, 33)
+		// Should match the original public key
+		assert.Equal(t, pubKey.Bytes(), pubKeyBytes)
+	})
+
+	t.Run("EthereumAddress", func(t *testing.T) {
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		signer, err := NewValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		ethAddr := signer.EthereumAddress()
+		assert.NotNil(t, ethAddr)
+		// Ethereum address is 20 bytes
+		assert.Len(t, ethAddr, 20)
+	})
+}
+
+func TestSetGetValidatorSigner(t *testing.T) {
+	// Reset singleton for test isolation
+	signerMu.Lock()
+	validatorSignerSingleton = nil
+	signerMu.Unlock()
+
+	t.Run("SetAndGet_Success", func(t *testing.T) {
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		err = SetValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		signer := GetValidatorSigner()
+		assert.NotNil(t, signer)
+	})
+
+	t.Run("SetTwice_Fails", func(t *testing.T) {
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		// First set should succeed (already set above)
+		signer := GetValidatorSigner()
+		assert.NotNil(t, signer)
+
+		// Second set should fail
+		err = SetValidatorSigner(privKey)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "already initialized")
+	})
+}
+
+func TestSignWithValidatorKeyPrecompile(t *testing.T) {
+	// Reset signers for test isolation
+	signerMu.Lock()
+	validatorSignerSingleton = nil
+	signerMu.Unlock()
+
+	t.Run("SigningSuccess", func(t *testing.T) {
+		// Setup validator key
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+
+		err = SetValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		// Create context
+		ctx := &common.EngineContext{
+			TxContext: &common.TxContext{
+				Ctx: context.Background(),
+			},
+		}
+
+		app := &common.App{
+			Service: &common.Service{
+				Logger: log.DiscardLogger,
+			},
+		}
+
+		// Initialize precompile
+		initializer := RegisteredPrecompiles()[AttestationPrecompileName]
+		precompile, err := initializer(context.Background(), app.Service, nil, "", nil)
+		require.NoError(t, err)
+
+		// Get sign_with_validator_key handler (second method)
+		handler := precompile.Methods[1].Handler
+
+		// Test payload (simulating attestation format)
+		payload := []byte("version|algo|provider|stream|action|args|result")
+
+		var resultSig []byte
+		err = handler(ctx, app, []any{payload}, func(results []any) error {
+			resultSig = results[0].([]byte)
+			return nil
+		})
+		require.NoError(t, err)
+
+		// Verify signature
+		assert.Len(t, resultSig, 65)
+	})
+
+	t.Run("SignerNotInitialized", func(t *testing.T) {
+		// Reset signer
+		signerMu.Lock()
+		validatorSignerSingleton = nil
+		signerMu.Unlock()
+
+		ctx := &common.EngineContext{
+			TxContext: &common.TxContext{
+				Ctx: context.Background(),
+			},
+		}
+
+		app := &common.App{
+			Service: &common.Service{
+				Logger: log.DiscardLogger,
+			},
+		}
+
+		initializer := RegisteredPrecompiles()[AttestationPrecompileName]
+		precompile, err := initializer(context.Background(), app.Service, nil, "", nil)
+		require.NoError(t, err)
+
+		handler := precompile.Methods[1].Handler
+
+		payload := []byte("test")
+		err = handler(ctx, app, []any{payload}, func([]any) error { return nil })
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not initialized")
+	})
+
+	t.Run("SignatureDeterministic", func(t *testing.T) {
+		// Setup signer
+		signerMu.Lock()
+		validatorSignerSingleton = nil
+		signerMu.Unlock()
+
+		privKey, _, err := crypto.GenerateSecp256k1Key(nil)
+		require.NoError(t, err)
+		err = SetValidatorSigner(privKey)
+		require.NoError(t, err)
+
+		ctx := &common.EngineContext{
+			TxContext: &common.TxContext{
+				Ctx: context.Background(),
+			},
+		}
+
+		app := &common.App{
+			Service: &common.Service{
+				Logger: log.DiscardLogger,
+			},
+		}
+
+		initializer := RegisteredPrecompiles()[AttestationPrecompileName]
+		precompile, err := initializer(context.Background(), app.Service, nil, "", nil)
+		require.NoError(t, err)
+
+		handler := precompile.Methods[1].Handler
+		payload := []byte("deterministic test payload")
+
+		// Sign twice
+		var sig1, sig2 []byte
+		err = handler(ctx, app, []any{payload}, func(results []any) error {
+			sig1 = results[0].([]byte)
+			return nil
+		})
+		require.NoError(t, err)
+
+		err = handler(ctx, app, []any{payload}, func(results []any) error {
+			sig2 = results[0].([]byte)
+			return nil
+		})
+		require.NoError(t, err)
+
+		// Signatures should be identical
+		assert.Equal(t, sig1, sig2)
+	})
+}

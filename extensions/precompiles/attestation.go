@@ -1,9 +1,14 @@
 package precompiles
 
 import (
+	"crypto/ecdsa"
+	"errors"
+	"fmt"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/trufnetwork/kwil-db/common"
+	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/types"
 )
 
@@ -99,6 +104,113 @@ func GetAttestationQueue() *AttestationQueue {
 	return attestationQueueSingleton
 }
 
+// ValidatorSigner wraps the validator's private key for signing attestations.
+// This is only used by authorized extensions (not user actions).
+type ValidatorSigner struct {
+	privateKey *ecdsa.PrivateKey
+	mu         sync.RWMutex
+}
+
+// NewValidatorSigner creates a new validator signer from a secp256k1 private key.
+func NewValidatorSigner(privKey kwilcrypto.PrivateKey) (*ValidatorSigner, error) {
+	secp256k1Key, ok := privKey.(*kwilcrypto.Secp256k1PrivateKey)
+	if !ok {
+		return nil, errors.New("validator key must be secp256k1 for EVM compatibility")
+	}
+
+	// Convert to ecdsa.PrivateKey for Ethereum signing
+	// Use go-ethereum's crypto to convert from raw bytes
+	privKeyBytes := secp256k1Key.Bytes()
+	ecdsaKey, err := crypto.ToECDSA(privKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert secp256k1 key to ECDSA: %w", err)
+	}
+
+	return &ValidatorSigner{
+		privateKey: ecdsaKey,
+	}, nil
+}
+
+// SignKeccak256 signs a keccak256 hash of the payload and returns a 65-byte signature.
+// This is compatible with Ethereum's ecrecover function.
+func (v *ValidatorSigner) SignKeccak256(payload []byte) ([]byte, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	if v.privateKey == nil {
+		return nil, errors.New("validator signer not initialized")
+	}
+
+	// Compute keccak256 hash
+	hash := crypto.Keccak256(payload)
+
+	// Sign the hash (returns 65-byte signature in [R || S || V] format)
+	signature, err := crypto.Sign(hash, v.privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign payload: %w", err)
+	}
+
+	return signature, nil
+}
+
+// PublicKeyBytes returns the validator's public key bytes (compressed secp256k1).
+func (v *ValidatorSigner) PublicKeyBytes() []byte {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	if v.privateKey == nil {
+		return nil
+	}
+
+	return crypto.CompressPubkey(&v.privateKey.PublicKey)
+}
+
+// EthereumAddress returns the Ethereum address derived from the validator's public key.
+func (v *ValidatorSigner) EthereumAddress() []byte {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	if v.privateKey == nil {
+		return nil
+	}
+
+	return crypto.PubkeyToAddress(v.privateKey.PublicKey).Bytes()
+}
+
+// validatorSignerSingleton is the global validator signer.
+// It must be initialized with SetValidatorSigner before use.
+var validatorSignerSingleton *ValidatorSigner
+var signerOnce sync.Once
+var signerMu sync.RWMutex
+
+// SetValidatorSigner sets the global validator signer.
+// This should be called once during node initialization.
+// It returns an error if the signer is already set.
+func SetValidatorSigner(privKey kwilcrypto.PrivateKey) error {
+	signerMu.Lock()
+	defer signerMu.Unlock()
+
+	if validatorSignerSingleton != nil {
+		return errors.New("validator signer already initialized")
+	}
+
+	signer, err := NewValidatorSigner(privKey)
+	if err != nil {
+		return fmt.Errorf("failed to create validator signer: %w", err)
+	}
+
+	validatorSignerSingleton = signer
+	return nil
+}
+
+// GetValidatorSigner returns the global validator signer.
+// Returns nil if not initialized.
+func GetValidatorSigner() *ValidatorSigner {
+	signerMu.RLock()
+	defer signerMu.RUnlock()
+	return validatorSignerSingleton
+}
+
 // attestationCache implements the precompiles.Cache interface.
 // It maintains a snapshot of the queue state for consensus determinism.
 type attestationCache struct {
@@ -155,6 +267,44 @@ func init() {
 					// Always return nil (no return value) for all validators
 					// This maintains determinism while only affecting leader's in-memory state
 					return nil
+				},
+			},
+			{
+				Name: "sign_with_validator_key",
+				Parameters: []PrecompileValue{
+					NewPrecompileValue("payload", types.ByteaType, false),
+				},
+				Returns: &MethodReturn{
+					Fields: []PrecompileValue{
+						NewPrecompileValue("signature", types.ByteaType, false),
+					},
+				},
+				AccessModifiers: []Modifier{SYSTEM},
+				Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+					payload := inputs[0].([]byte)
+
+					// Get the validator signer
+					signer := GetValidatorSigner()
+					if signer == nil {
+						return errors.New("validator signer not initialized")
+					}
+
+					// Sign the payload with keccak256 hash
+					signature, err := signer.SignKeccak256(payload)
+					if err != nil {
+						return fmt.Errorf("failed to sign payload: %w", err)
+					}
+
+					// Verify signature is 65 bytes
+					if len(signature) != 65 {
+						return fmt.Errorf("invalid signature length: expected 65, got %d", len(signature))
+					}
+
+					app.Service.Logger.Debug("Signed attestation payload",
+						"payload_size", len(payload),
+						"signature_size", len(signature))
+
+					return resultFn([]any{signature})
 				},
 			},
 		},
