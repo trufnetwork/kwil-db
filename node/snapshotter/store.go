@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -345,9 +344,7 @@ func (s *SnapshotStore) loadSnapshots() error {
 		s.snapshotHeights = append(s.snapshotHeights, heightInt)
 	}
 
-	sort.Slice(s.snapshotHeights, func(i, j int) bool {
-		return s.snapshotHeights[i] < s.snapshotHeights[j]
-	})
+	slices.Sort(s.snapshotHeights)
 
 	// Check if the number of snapshots exceeds the maximum number of snapshots
 	for len(s.snapshotHeights) > s.cfg.MaxSnapshots {
