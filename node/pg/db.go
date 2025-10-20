@@ -64,6 +64,29 @@ type DB struct {
 	// of the DB and concrete transaction type methods.
 }
 
+func isConnClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, pgx.ErrTxClosed) || strings.Contains(err.Error(), "conn closed")
+}
+
+func (db *DB) failConn(err error) error {
+	// Any write-path "conn closed" means the in-progress block transaction vanished.
+	// To preserve deterministic replay we surface a fatal ErrDBFailure so the node
+	// restarts and replays the block from the last committed height.
+	logger.Errorf("writer transaction connection lost: %v", err)
+	if db.tx != nil {
+		if rel, ok := db.tx.(releaser); ok {
+			rel.Release()
+		}
+	}
+	db.tx = nil
+	db.txid = ""
+	db.seq = -1
+	return errors.Join(sql.ErrDBFailure, err)
+}
+
 // DBConfig is the configuration for the Kwil DB backend, which includes the
 // connection parameters and a schema filter used to selectively include WAL
 // data for certain PostgreSQL schemas in commit ID calculation.
@@ -568,6 +591,9 @@ func (db *DB) precommit(ctx context.Context, changes chan<- any) ([]byte, error)
 	txid := random.String(10)
 	sqlPrepareTx := fmt.Sprintf(`PREPARE TRANSACTION '%s'`, txid)
 	if _, err := db.tx.Exec(ctx, sqlPrepareTx); err != nil {
+		if isConnClosed(err) {
+			return nil, db.failConn(err)
+		}
 		return nil, err
 	}
 	db.txid = txid
@@ -605,7 +631,13 @@ func (db *DB) commit(ctx context.Context) error {
 		err := db.tx.Commit(ctx)
 		db.tx = nil
 		db.seq = -1
-		return err
+		if err != nil {
+			if isConnClosed(err) {
+				return db.failConn(err)
+			}
+			return err
+		}
+		return nil
 	}
 
 	defer func() {
@@ -627,6 +659,9 @@ func (db *DB) commit(ctx context.Context) error {
 
 	sqlCommit := fmt.Sprintf(`COMMIT PREPARED '%s'`, db.txid)
 	if _, err := db.tx.Exec(ctx, sqlCommit); err != nil {
+		if isConnClosed(err) {
+			return db.failConn(fmt.Errorf("commit prepared: %w", err))
+		}
 		return fmt.Errorf("COMMIT PREPARED failed: %w", err)
 	}
 
@@ -662,8 +697,8 @@ func (db *DB) rollback(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, pgx.ErrTxClosed) || strings.Contains(err.Error(), "conn closed") {
-			return nil
+		if isConnClosed(err) {
+			return db.failConn(err)
 		}
 		return err
 	}
@@ -680,8 +715,8 @@ func (db *DB) rollback(ctx context.Context) error {
 	// notice: "WARNING:  there is no transaction in progress".
 	sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.txid)
 	if _, err := db.tx.Exec(ctx, sqlRollback); err != nil {
-		if errors.Is(err, pgx.ErrTxClosed) || strings.Contains(err.Error(), "conn closed") {
-			return nil
+		if isConnClosed(err) {
+			return db.failConn(fmt.Errorf("rollback prepared: %w", err))
 		}
 		return fmt.Errorf("ROLLBACK PREPARED failed: %w", err)
 	}
@@ -724,7 +759,11 @@ func (db *DB) Execute(ctx context.Context, stmt string, args ...any) (*sql.Resul
 		if db.autoCommit {
 			return nil, errors.New("tx already created, cannot use auto commit")
 		}
-		return query(ctx, db.pool.idTypes, db.tx, stmt, args...)
+		res, err := query(ctx, db.pool.idTypes, db.tx, stmt, args...)
+		if err != nil && isConnClosed(err) {
+			return nil, db.failConn(err)
+		}
+		return res, err
 	}
 	if !db.autoCommit {
 		return nil, sql.ErrNoTransaction
