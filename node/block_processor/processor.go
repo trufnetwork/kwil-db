@@ -481,7 +481,8 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	bp.recordBlockExecEndTime()
 
 	// Broadcast any voteID events that have not been broadcasted yet
-	if bp.broadcastTxFn != nil {
+	// Skip broadcasting during catch-up/sync since the node cannot process new transactions
+	if bp.broadcastTxFn != nil && !syncing {
 		if err = bp.BroadcastVoteIDTx(ctx, bp.consensusTx); err != nil {
 			return nil, fmt.Errorf("failed to broadcast the voteID transactions: %w", err)
 		}
