@@ -117,7 +117,7 @@ func typeToSchemaType(t reflect.Type) string {
 	// of the encoding/json package that uses a base64 string rather than a JSON
 	// "array".
 	switch t {
-	case reflect.TypeOf((*big.Int)(nil)), reflect.TypeFor[big.Int]():
+	case reflect.TypeFor[*big.Int](), reflect.TypeFor[big.Int]():
 		// A big.Int field should marshal to/from a string.
 		return "string"
 	case reflect.TypeFor[types.HexBytes]():
