@@ -23,8 +23,8 @@ func TestInventory(t *testing.T) {
 	handlerTypes := map[string]*MethodDefinition{
 		"user.account": {
 			Description:  "get an account's status",
-			RequestType:  reflect.TypeOf(accountRequest{}),
-			ResponseType: reflect.TypeOf(accountResponse{}),
+			RequestType:  reflect.TypeFor[accountRequest](),
+			ResponseType: reflect.TypeFor[accountResponse](),
 			RespTypeDesc: "balance and nonce of an accounts",
 		},
 	}

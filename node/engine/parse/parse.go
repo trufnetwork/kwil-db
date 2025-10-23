@@ -143,7 +143,7 @@ func setupParser(sql string) (parser *gen.KuneiformParser, errList *errorListene
 func RecursivelyVisitPositions(v any, fn func(GetPositioner)) {
 
 	visited := make(map[uintptr]struct{})
-	visitRecursive(reflect.ValueOf(v), reflect.TypeOf((*GetPositioner)(nil)).Elem(), func(v reflect.Value) {
+	visitRecursive(reflect.ValueOf(v), reflect.TypeFor[GetPositioner](), func(v reflect.Value) {
 		if v.CanInterface() {
 			a := v.Interface().(GetPositioner)
 			fn(a)
