@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto"
@@ -174,18 +175,18 @@ type CallResult struct {
 // FormatLogs formats the logs into a string.
 func (c *CallResult) FormatLogs() string {
 	i := 0
-	var str string
+	var str strings.Builder
 	for _, l := range c.Logs {
 		if i > 0 {
-			str += "\n"
+			str.WriteString("\n")
 		}
 		// increment before formatting so that the first log is 1
 		i++
-		str += strconv.Itoa(i) + ". " + l
+		str.WriteString(strconv.Itoa(i) + ". " + l)
 
 	}
 
-	return str
+	return str.String()
 }
 
 // Row contains information about a row in a table.
