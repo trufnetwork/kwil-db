@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -113,6 +114,7 @@ type ConsensusEngine struct {
 	mempool        Mempool
 	blockStore     BlockStore
 	blockProcessor BlockProcessor
+	commitLog      *commitIntentLog
 
 	// protects the mempool access. Block commit and proposal creation, and
 	// QueueTx (external) take this lock to ensure that no new txs are added to
@@ -327,6 +329,11 @@ func New(cfg *Config) (*ConsensusEngine, error) {
 	pubKey := cfg.PrivateKey.Public()
 
 	// rethink how this state is initialized
+	var commitLog *commitIntentLog
+	if cfg.RootDir != "" {
+		commitLog = newCommitIntentLog(config.CommitIntentFilePath(cfg.RootDir))
+	}
+
 	ce := &ConsensusEngine{
 		pubKey:              pubKey,
 		privKey:             cfg.PrivateKey,
@@ -369,6 +376,7 @@ func New(cfg *Config) (*ConsensusEngine, error) {
 		blockProcessor: cfg.BlockProcessor,
 		log:            logger,
 		txSubscribers:  make(map[ktypes.Hash]chan ktypes.TxResult),
+		commitLog:      commitLog,
 	}
 
 	// set it to sentry by default, will be updated in the catchup phase when the engine starts.
@@ -710,12 +718,28 @@ func (ce *ConsensusEngine) initializeState(ctx context.Context) (int64, int64, e
 		return -1, -1, fmt.Errorf("app state is dirty, error in the blockprocessor initialization, height: %d, appHash: %x", appHeight, appHash)
 	}
 
-	ce.log.Info("Initial Node state: ", "appHeight", appHeight, "storeHeight", storeHeight, "appHash", appHash, "storeAppHash", storeAppHash)
+	var intent *commitIntent
+	if ce.commitLog != nil {
+		intent, err = ce.commitLog.Load()
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return -1, -1, fmt.Errorf("error loading commit intent: %w", err)
+		}
+		if intent != nil {
+			ce.log.Debug("Found pending commit intent", "height", intent.Height, "hash", intent.BlockHash)
+		}
+	}
 
 	if appHeight > storeHeight && appHeight != ce.genesisHeight {
-		// This is not possible, App can't be ahead of the store
-		return -1, -1, fmt.Errorf("app height %d is greater than the store height %d (did you forget to reset postgres?)", appHeight, storeHeight)
+		if err := ce.repairAppAheadOfStore(ctx, appHeight, appHash, intent); err != nil {
+			return -1, -1, fmt.Errorf("app height %d is greater than the store height %d (did you forget to reset postgres?): %w", appHeight, storeHeight, err)
+		}
+		storeHeight, _, storeAppHash, _ = ce.blockStore.Best()
+		if storeHeight < appHeight {
+			return -1, -1, fmt.Errorf("blockstore repair failed to reach app height %d (best %d)", appHeight, storeHeight)
+		}
 	}
+
+	ce.log.Info("Initial Node state: ", "appHeight", appHeight, "storeHeight", storeHeight, "appHash", appHash, "storeAppHash", storeAppHash)
 
 	if appHeight == -1 {
 		// This is the first time the node is bootstrapping
@@ -748,7 +772,63 @@ func (ce *ConsensusEngine) initializeState(ctx context.Context) (int64, int64, e
 	// Set the role and validator set based on the initial state of the voters before starting the replay
 	ce.updateValidatorSetAndRole()
 
+	if intent != nil && ce.commitLog != nil {
+		finalStoreHeight, _, _, _ := ce.blockStore.Best()
+		if finalStoreHeight >= intent.Height && appHeight >= intent.Height {
+			if err := ce.commitLog.Clear(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				ce.log.Warn("Failed to clear commit intent after initialization", "error", err)
+			}
+		}
+	}
+
 	return appHeight, storeHeight, nil
+}
+
+func (ce *ConsensusEngine) repairAppAheadOfStore(ctx context.Context, height int64, appHash []byte, intent *commitIntent) error {
+	if ce.blkRequester == nil {
+		return fmt.Errorf("block requester is not configured")
+	}
+
+	ce.log.Warn("App height ahead of blockstore detected, attempting repair", "height", height)
+
+	blkID, rawBlk, ci, _, err := ce.blkRequester(ctx, height)
+	if err != nil {
+		return fmt.Errorf("fetch block %d: %w", height, err)
+	}
+
+	if ci == nil {
+		return fmt.Errorf("missing commit info for block %d", height)
+	}
+
+	if len(appHash) > 0 && !bytes.Equal(ci.AppHash[:], appHash) {
+		return fmt.Errorf("commit info app hash mismatch for block %d: got %x expected %x", height, ci.AppHash[:], appHash)
+	}
+
+	if intent != nil {
+		expectedHash, err := intent.hash()
+		if err != nil {
+			return fmt.Errorf("decode commit intent hash: %w", err)
+		}
+		var zeroHash ktypes.Hash
+		if expectedHash != zeroHash && expectedHash != blkID {
+			return fmt.Errorf("fetched block hash %s does not match commit intent %s at height %d", blkID.String(), expectedHash.String(), height)
+		}
+	}
+
+	blk, err := ktypes.DecodeBlock(rawBlk)
+	if err != nil {
+		return fmt.Errorf("decode block %d: %w", height, err)
+	}
+
+	if err := ce.blockStore.Store(blk, ci); err != nil {
+		return fmt.Errorf("store block %d: %w", height, err)
+	}
+	if err := ce.blockStore.Sync(); err != nil {
+		return fmt.Errorf("sync blockstore %d: %w", height, err)
+	}
+
+	ce.log.Info("Blockstore repaired successfully", "height", height, "hash", blkID.String())
+	return nil
 }
 
 // catchup syncs the node first with the local blockstore and then with the network.

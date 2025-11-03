@@ -33,6 +33,7 @@ type BlockStore interface {
 	BlockResultsStorer
 
 	Best() (height int64, blkHash, appHash Hash, stamp time.Time)
+	Sync() error
 
 	PreFetch(Hash) (bool, func()) // should be app level instead (TODO: remove)
 
