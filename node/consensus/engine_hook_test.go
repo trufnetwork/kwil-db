@@ -35,6 +35,7 @@ func TestCommitInvokesHookBeforeDBCommit(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
+		// commitTestHook is global; keep tests serialized (no t.Parallel).
 		commitTestHook = nil
 		closeBlockStore(t, ce.blockStore)
 	})
@@ -111,72 +112,6 @@ func TestCrashRecoveryRepairsMissingBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, dirty)
 	require.Equal(t, int64(1), height)
-}
-
-func TestCrashRecoveryHelper(t *testing.T) {
-	if os.Getenv("KWIL_CRASH_MODE") != "helper" {
-		return
-	}
-
-	root := os.Getenv("KWIL_CRASH_ROOT")
-	blockPath := os.Getenv("KWIL_CRASH_BLOCK")
-	commitPath := os.Getenv("KWIL_CRASH_COMMIT")
-	require.NotEmpty(t, root)
-	require.NotEmpty(t, blockPath)
-	require.NotEmpty(t, commitPath)
-
-	cfg, db := buildCrashConsensusConfig(t, root, true)
-	defer db.Close()
-
-	ce, err := New(cfg)
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	block := ktypes.NewBlock(1, zeroHash, zeroHash, zeroHash, zeroHash, time.Now(), nil)
-	blockHash := block.Hash()
-
-	req := &ktypes.BlockExecRequest{
-		Height:   1,
-		Block:    block,
-		BlockID:  blockHash,
-		Proposer: cfg.PrivateKey.Public(),
-	}
-
-	res, err := ce.blockProcessor.ExecuteBlock(ctx, req, false)
-	require.NoError(t, err)
-
-	ce.state.blkProp = &blockProposal{
-		height:  1,
-		blkHash: blockHash,
-		blk:     block,
-	}
-	ce.state.blockRes = &blockResult{
-		ack:          true,
-		appHash:      res.AppHash,
-		txResults:    res.TxResults,
-		paramUpdates: res.ParamUpdates,
-		valUpdates:   res.ValidatorUpdates,
-	}
-	commitInfo := &ktypes.CommitInfo{
-		AppHash: res.AppHash,
-	}
-	ce.state.commitInfo = commitInfo
-
-	require.NoError(t, os.WriteFile(blockPath, ktypes.EncodeBlock(block), 0o644))
-	commitBytes, err := commitInfo.MarshalBinary()
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(commitPath, commitBytes, 0o644))
-
-	require.NoError(t, ce.commit(ctx, false))
-
-	require.NotNil(t, ce.commitLog)
-	require.NoError(t, ce.commitLog.Record(1, blockHash))
-
-	intentPath := config.CommitIntentFilePath(root)
-	_, err = os.Stat(intentPath)
-	require.NoError(t, err)
-
-	require.NoError(t, os.RemoveAll(config.BlockstoreDir(root)))
 }
 
 func resetConsensusSchemas(t *testing.T) {

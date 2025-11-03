@@ -823,6 +823,9 @@ func (ce *ConsensusEngine) repairAppAheadOfStore(ctx context.Context, height int
 	if err := ce.blockStore.Store(blk, ci); err != nil {
 		return fmt.Errorf("store block %d: %w", height, err)
 	}
+	if err := ce.blockStore.Sync(); err != nil {
+		return fmt.Errorf("sync blockstore %d: %w", height, err)
+	}
 
 	ce.log.Info("Blockstore repaired successfully", "height", height, "hash", blkID.String())
 	return nil

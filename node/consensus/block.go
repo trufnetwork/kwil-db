@@ -307,6 +307,10 @@ func (ce *ConsensusEngine) commit(ctx context.Context, syncing bool) (err error)
 		return err
 	}
 
+	if err = ce.blockStore.Sync(); err != nil {
+		return err
+	}
+
 	invokeCommitHook("after-blockstore")
 
 	req := &ktypes.CommitRequest{
