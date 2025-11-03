@@ -273,7 +273,7 @@ func (ce *ConsensusEngine) executeBlock(ctx context.Context, blkProp *blockPropo
 
 // Commit method commits the block to the blockstore and postgres database.
 // It also updates the txIndexer and mempool with the transactions in the block.
-func (ce *ConsensusEngine) commit(ctx context.Context, syncing bool) error {
+func (ce *ConsensusEngine) commit(ctx context.Context, syncing bool) (err error) {
 	ce.mempoolMtx.PriorityLock()
 	defer ce.mempoolMtx.Unlock()
 
@@ -284,13 +284,30 @@ func (ce *ConsensusEngine) commit(ctx context.Context, syncing bool) error {
 	blkProp := ce.state.blkProp
 	height, appHash := ce.state.blkProp.height, ce.state.blockRes.appHash
 
-	if err := ce.blockStore.Store(blkProp.blk, ce.state.commitInfo); err != nil {
+	var clearIntent bool
+	if ce.commitLog != nil {
+		if err := ce.commitLog.Record(height, blkProp.blkHash); err != nil {
+			return err
+		}
+		defer func() {
+			if !clearIntent {
+				return
+			}
+			if clearErr := ce.commitLog.Clear(); clearErr != nil {
+				ce.log.Warn("Failed to clear commit intent", "error", clearErr)
+			}
+		}()
+	}
+
+	if err = ce.blockStore.Store(blkProp.blk, ce.state.commitInfo); err != nil {
 		return err
 	}
 
-	if err := ce.blockStore.StoreResults(blkProp.blkHash, ce.state.blockRes.txResults); err != nil {
+	if err = ce.blockStore.StoreResults(blkProp.blkHash, ce.state.blockRes.txResults); err != nil {
 		return err
 	}
+
+	invokeCommitHook("after-blockstore")
 
 	req := &ktypes.CommitRequest{
 		Height:  height,
@@ -298,9 +315,11 @@ func (ce *ConsensusEngine) commit(ctx context.Context, syncing bool) error {
 		// To indicate if the node is syncing, used by the blockprocessor to decide if it should create snapshots.
 		Syncing: ce.inSync.Load(),
 	}
-	if err := ce.blockProcessor.Commit(ctx, req); err != nil { // clears the mempool cache
+	if err = ce.blockProcessor.Commit(ctx, req); err != nil { // clears the mempool cache
 		return err
 	}
+	invokeCommitHook("after-postgres")
+	clearIntent = true
 
 	// remove transactions from the mempool
 	for idx, txn := range blkProp.blk.Txns {

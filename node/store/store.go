@@ -182,6 +182,11 @@ func (bki *BlockStore) Close() error {
 	return bki.db.Close()
 }
 
+// Sync flushes all pending writes to disk to ensure durability.
+func (bki *BlockStore) Sync() error {
+	return bki.db.Sync()
+}
+
 func (bki *BlockStore) Have(hash types.Hash) bool {
 	bki.mtx.RLock()
 	defer bki.mtx.RUnlock()

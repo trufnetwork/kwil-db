@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -174,6 +175,7 @@ func generateTestCEConfig(t *testing.T, nodes int, leaderDB bool) ([]*Config, ma
 			BlockProposalInterval: 1 * time.Second,
 			BlockAnnInterval:      3 * time.Second,
 			BroadcastTxTimeout:    10 * time.Second,
+			RootDir:               nodeDir,
 		}
 
 		closers = append(closers, func() {
@@ -1195,3 +1197,49 @@ func (m *mockMigrator) GetMigrationMetadata(ctx context.Context, status ktypes.M
 
 func mockAddPeer(string) error    { return nil }
 func mockRemovePeer(string) error { return nil }
+
+func TestInitializeStateRepairsWhenAppAheadOfStore(t *testing.T) {
+	ceConfigs, _ := generateTestCEConfig(t, 1, true)
+	cfg := ceConfigs[0]
+
+	ctx := context.Background()
+
+	var appHash ktypes.Hash
+	copy(appHash[:], bytes.Repeat([]byte{0xAB}, len(appHash)))
+
+	tx, err := cfg.DB.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	err = meta.SetChainState(ctx, tx, 1, appHash[:], false)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(ctx))
+
+	ce, err := New(cfg)
+	require.NoError(t, err)
+
+	blk := ktypes.NewBlock(1, ktypes.Hash{}, ktypes.Hash{}, ktypes.Hash{}, ktypes.Hash{}, time.Now(), nil)
+	blkHash := blk.Hash()
+	commitInfo := &ktypes.CommitInfo{
+		AppHash: appHash,
+	}
+
+	ce.blkRequester = func(context.Context, int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+		return blkHash, ktypes.EncodeBlock(blk), commitInfo, 1, nil
+	}
+
+	require.NoError(t, ce.commitLog.Record(1, blkHash))
+
+	appHeight, storeHeight, err := ce.initializeState(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), appHeight)
+	require.Equal(t, int64(1), storeHeight)
+
+	bestHeight, _, _, _ := ce.blockStore.Best()
+	require.Equal(t, int64(1), bestHeight)
+
+	if ce.commitLog != nil {
+		_, err := ce.commitLog.Load()
+		require.ErrorIs(t, err, fs.ErrNotExist)
+	}
+}
