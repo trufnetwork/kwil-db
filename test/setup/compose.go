@@ -158,7 +158,7 @@ type generatedNodeInfo struct {
 	PostgresServiceName string
 }
 
-// serviceTemplate is is used to generate part of a docker-compose.yml file for
+// serviceTemplate is used to generate part of a docker-compose.yml file for
 // any service that is not kwild or postgres.
 type serviceTemplate struct {
 	// Network is the name of the network
