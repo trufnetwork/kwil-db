@@ -428,6 +428,73 @@ if err != nil {
 
 ## Common Testing Patterns
 
+### Schema-Level Test Pattern with Singleton Rehydration
+When using schema-level test frameworks like `kwilTesting.RunSchemaTest`, the test framework provides isolation between test functions by resetting in-memory state while preserving database state. This requires rehydrating the singleton in each test function:
+
+```go
+func TestBridgeOperations(t *testing.T) {
+    kwilTesting.RunSchemaTest(t, kwilTesting.SchemaTest{
+        Name:           "ERC20_BRIDGE_TEST",
+        FunctionTests: []kwilTesting.TestFunc{
+            setupBridgeInstance(t),
+            testBridgeTransfer(t),
+            testBridgeBalance(t),
+        },
+    }, &kwilTesting.Options{UseTestContainer: true})
+}
+
+// Setup: Create instance in DB and initialize singleton
+func setupBridgeInstance(t *testing.T) func(ctx context.Context, platform *kwilTesting.Platform) error {
+    return func(ctx context.Context, platform *kwilTesting.Platform) error {
+        // Create and sync instance in DB
+        _, err := erc20.ForTestingForceSyncInstance(ctx, platform,
+            "ethereum", "0x1234567890123456789012345678901234567890",
+            "0xA0b86a33E6441E47d4a71b34000000000000000", 18)
+        require.NoError(t, err)
+
+        // Load instances into singleton
+        err = erc20.ForTestingInitializeExtension(ctx, platform)
+        require.NoError(t, err)
+        return nil
+    }
+}
+
+// CRITICAL: Each test function MUST reload singleton after isolation boundary
+func testBridgeTransfer(t *testing.T) func(ctx context.Context, platform *kwilTesting.Platform) error {
+    return func(ctx context.Context, platform *kwilTesting.Platform) error {
+        // REQUIRED: Reload singleton from DB after test isolation
+        err := erc20.ForTestingInitializeExtension(ctx, platform)
+        require.NoError(t, err, "failed to re-initialize extension")
+
+        // Now bridge operations work (instance is available in singleton)
+        // ... test logic ...
+        return nil
+    }
+}
+
+func testBridgeBalance(t *testing.T) func(ctx context.Context, platform *kwilTesting.Platform) error {
+    return func(ctx context.Context, platform *kwilTesting.Platform) error {
+        // REQUIRED: Reload singleton in THIS test too
+        err := erc20.ForTestingInitializeExtension(ctx, platform)
+        require.NoError(t, err, "failed to re-initialize extension")
+
+        // ... test logic ...
+        return nil
+    }
+}
+```
+
+**Why This Pattern Is Needed:**
+- Schema-level test frameworks reset in-memory singleton between test functions
+- Database state persists (instances remain in `reward_instances` table)
+- Without rehydration, you get "reward extension with id [...] is not synced" errors
+- Each test function executes in a fresh singleton state, so each must reload
+
+**When to Use This Pattern:**
+- Using `kwilTesting.RunSchemaTest` or similar schema-level frameworks
+- Tests are defined as separate functions in `FunctionTests` array
+- Need isolation between test functions while sharing database state
+
 ### Production-Faithful Test Pattern (Recommended)
 Based on the production test suite, use transaction-based isolation:
 
