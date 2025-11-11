@@ -243,7 +243,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		return err
 	}
 
-	var extraInfo string // debug info
+	var extraInfo strings.Builder // debug info
 
 	// if there are columns specific, we need to check that the columns are valid
 	// and rename the relation fields
@@ -253,7 +253,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		}
 
 		for i, col := range node.Columns {
-			extraInfo += fmt.Sprintf(" [%s.%s -> %s]", rel.Fields[i].Parent, rel.Fields[i].Name, col)
+			extraInfo.WriteString(fmt.Sprintf(" [%s.%s -> %s]", rel.Fields[i].Parent, rel.Fields[i].Name, col))
 
 			rel.Fields[i].Parent = node.Name
 			rel.Fields[i].Name = col
@@ -262,7 +262,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		// otherwise, we need to rename the relation parents
 		// to the CTE's name
 		for _, field := range rel.Fields {
-			extraInfo += fmt.Sprintf(" [%s.%s -> %s]", field.Parent, field.Name, field.Name)
+			extraInfo.WriteString(fmt.Sprintf(" [%s.%s -> %s]", field.Parent, field.Name, field.Name))
 			field.Parent = node.Name
 		}
 	}
@@ -277,7 +277,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		Plan:      plan,
 		ID:        node.Name,
 		Type:      subplanType,
-		extraInfo: extraInfo,
+		extraInfo: extraInfo.String(),
 	})
 
 	return nil
