@@ -1,4 +1,4 @@
-// package url provides url fuctionalities to provide consistent
+// package url provides url functionalities to provide consistent
 // parsing for Kwil clients.
 package url
 

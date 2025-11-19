@@ -423,7 +423,7 @@ func (db *DB) BeginSnapshotTx(ctx context.Context) (sql.Tx, string, error) {
 		return nil, "", err
 	}
 
-	// export snpashot id
+	// export snapshot id
 	res, err := tx.Execute(ctx, "SELECT pg_export_snapshot();")
 	if err != nil {
 		return nil, "", err

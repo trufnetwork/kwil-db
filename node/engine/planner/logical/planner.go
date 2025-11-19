@@ -147,7 +147,7 @@ type scopeContext struct {
 	// preGroupRelation is the relation that is used before grouping.
 	// It is simply used to give more helpful error messages.
 	preGroupRelation *Relation
-	// Correlations are the fields that are corellated to an outer query.
+	// Correlations are the fields that are correlated to an outer query.
 	Correlations []*Field
 	// onWindowFuncExpr is a function that is called when evaluating a window function.
 	onWindowFuncExpr func(*parse.ExpressionWindowFunctionCall, *Relation, map[string]*IdentifiedExpr) (Expression, *Field, error)
@@ -684,7 +684,7 @@ func (s *scopeContext) selectCore(node *parse.SelectCore) (preProjectPlan Plan, 
 
 	// now we plan all window functions
 	windows := make(map[string]*Window)
-	unappliedWindows := []*Window{} // we wait to apply these to the plan until after evluating all, since subsequent windows cannot reference previous ones
+	unappliedWindows := []*Window{} // we wait to apply these to the plan until after evaluating all, since subsequent windows cannot reference previous ones
 	querySection = querySectionWindow
 	for _, window := range node.Windows {
 		_, ok := windows[window.Name]
@@ -2490,7 +2490,7 @@ func (s *scopeContext) buildUpsert(node *parse.OnConflict, table *engine.Table, 
 	case 0:
 		// do nothing
 	case 1:
-		// check the column for a unique or pk contraint, as well as all indexes
+		// check the column for a unique or pk constraint, as well as all indexes
 		col, ok := table.Column(node.ConflictColumns[0])
 		if !ok {
 			return nil, fmt.Errorf(`conflict column "%s" not found in table`, node.ConflictColumns[0])
