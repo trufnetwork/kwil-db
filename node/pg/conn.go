@@ -184,7 +184,7 @@ func NewPool(ctx context.Context, cfg *PoolConfig) (*Pool, error) {
 		} else {
 			logger.Logf(level, "%v [%v]: %v / %v", n.Severity, n.Code, n.Message, n.Detail)
 		}
-		return defaultOnPgError(c, n) // automatically close any fatal errors (default we are overridding)
+		return defaultOnPgError(c, n) // automatically close any fatal errors (default we are overriding)
 	}
 
 	db, err := pgxpool.NewWithConfig(ctx, pCfg)
