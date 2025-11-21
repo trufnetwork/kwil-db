@@ -316,6 +316,14 @@ func (n *Node) startTxAnns(ctx context.Context, reannouncePeriod time.Duration) 
 				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				defer cancel()
 
+				// Check if it's safe to re-announce (not during block execution)
+				// This prevents re-announcing transactions with nonces that will be
+				// invalidated once the currently executing block commits.
+				if !n.ce.CanReannounce() {
+					n.log.Debug("skipping re-announcement: block execution in progress")
+					return
+				}
+
 				const sendN = 200
 				const sendBtsLimit = 8_000_000
 				txns := n.mp.PeekN(sendN, sendBtsLimit)
