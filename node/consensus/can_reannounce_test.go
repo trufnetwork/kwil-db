@@ -57,7 +57,7 @@ func TestCanReannounceThreadSafety(t *testing.T) {
 
 	// Run 100 concurrent CanReannounce calls
 	done := make(chan bool, 100)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		go func() {
 			_ = ce.CanReannounce()
 			done <- true
@@ -65,7 +65,7 @@ func TestCanReannounceThreadSafety(t *testing.T) {
 	}
 
 	// Wait for all goroutines to complete
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		<-done
 	}
 }
