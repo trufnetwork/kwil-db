@@ -24,6 +24,7 @@ const (
 	genesisFileName      = "genesis.json"
 
 	leaderUpdatesFileName = "leader-updates.json"
+	commitIntentFileName  = "commit-intent.json"
 )
 
 // BlockstoreDir returns the blockstore directory in the root directory.
@@ -66,4 +67,8 @@ func NodeKeyFilePath(rootDir string) string {
 
 func LeaderUpdatesFilePath(rootDir string) string {
 	return filepath.Join(rootDir, leaderUpdatesFileName)
+}
+
+func CommitIntentFilePath(rootDir string) string {
+	return filepath.Join(rootDir, commitIntentFileName)
 }

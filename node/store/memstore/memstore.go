@@ -210,6 +210,9 @@ func (bs *MemBS) PreFetch(blkid types.Hash) (bool, func()) {
 
 func (bs *MemBS) Close() error { return nil }
 
+// Sync is a no-op for the in-memory block store.
+func (bs *MemBS) Sync() error { return nil }
+
 func (bs *MemBS) GetTx(txHash types.Hash) (tx *types.Transaction, height int64, hash types.Hash, idx uint32, err error) {
 	bs.mtx.RLock()
 	defer bs.mtx.RUnlock()

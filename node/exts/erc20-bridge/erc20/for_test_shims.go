@@ -133,8 +133,10 @@ func ForTestingCreditBalance(ctx context.Context, app *common.App, id *types.UUI
 	return creditBalance(ctx, app, id, addr, amount)
 }
 
-// ForTestingInitializeExtension ensures the extension is properly initialized.
-// This simulates calling the extension's OnStart method to load instances from DB.
+// ForTestingInitializeExtension ensures the extension singleton is properly initialized
+// by loading all stored instances from the database into the in-memory _SINGLETON cache.
+// This function simulates calling the extension's OnStart method to reload all instances
+// from the database into the singleton cache.
 func ForTestingInitializeExtension(ctx context.Context, platform *kwilTesting.Platform) error {
 	app := &common.App{DB: platform.DB, Engine: platform.Engine}
 	// Load all stored reward instances from DB and put them in singleton

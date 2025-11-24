@@ -110,6 +110,11 @@ func (bki *BlockStore) Close() error {
 	return errors.Join(bki.db.Close(), bki.tdb.Close())
 }
 
+// Sync is a no-op for the deprecated v1 block store implementation.
+func (bki *BlockStore) Sync() error {
+	return nil
+}
+
 func (bki *BlockStore) Have(hash types.Hash) bool {
 	bki.mtx.RLock()
 	defer bki.mtx.RUnlock()

@@ -40,6 +40,7 @@ type BlockStore interface {
 	GetByHeight(height int64) (types.Hash, *ktypes.Block, *ktypes.CommitInfo, error)
 	StoreResults(hash types.Hash, results []ktypes.TxResult) error
 	Results(hash types.Hash) ([]ktypes.TxResult, error)
+	Sync() error
 }
 
 type BlockProcessor interface {

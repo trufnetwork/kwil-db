@@ -851,6 +851,36 @@ var (
 				return fmt.Sprintf("array_agg(%s ORDER BY %s)", inputs[0], inputs[0]), nil
 			},
 		},
+		"string_agg": &AggregateFunctionDefinition{
+			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+				// string_agg(expression, delimiter)
+				if len(args) != 2 {
+					return nil, wrapErrArgumentNumber(2, len(args))
+				}
+
+				// First argument can be text or any type that can be cast to text
+				// For simplicity, we'll accept text for now
+				if !args[0].Equals(types.TextType) {
+					return nil, fmt.Errorf("%w: expected first argument to be text, got %s", ErrType, args[0].String())
+				}
+
+				// Second argument (delimiter) must be text
+				if !args[1].Equals(types.TextType) {
+					return nil, fmt.Errorf("%w: expected second argument (delimiter) to be text, got %s", ErrType, args[1].String())
+				}
+
+				return types.TextType, nil
+			},
+			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
+				if len(inputs) != 2 {
+					return "", fmt.Errorf("string_agg requires exactly 2 arguments, got %d", len(inputs))
+				}
+				if distinct {
+					return fmt.Sprintf("string_agg(DISTINCT %s, %s)", inputs[0], inputs[1]), nil
+				}
+				return fmt.Sprintf("string_agg(%s, %s)", inputs[0], inputs[1]), nil
+			},
+		},
 		"avg": &AggregateFunctionDefinition{
 			ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
 				// Postgres supports any numeric type for average, but we will enforce that it is numeric
