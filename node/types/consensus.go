@@ -69,7 +69,7 @@ func (cr *ConsensusReset) UnmarshalBinary(data []byte) error {
 // including the blk proposal of the height it is at, with the leader's signature.
 // Leader can use this feedback to eventually catch up with the network.
 
-// NackStatus desribes the reason for a nack response.
+// NackStatus describes the reason for a nack response.
 type NackStatus string
 
 const (

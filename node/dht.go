@@ -21,7 +21,7 @@ import (
 //  4. begin retrieving the chunks (ProtocolIDSnapshotChunk)
 //
 // Higher level logic will be needed for the aggregation, and fallback to
-// next-best shapshots in the event that restore of the current best fails.
+// next-best snapshots in the event that restore of the current best fails.
 
 func makeDHT(ctx context.Context, h host.Host, peers []peer.AddrInfo, mode dht.ModeOpt, pex bool) (*dht.IpfsDHT, error) {
 	// Create a DHT
