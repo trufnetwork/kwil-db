@@ -147,7 +147,7 @@ type scopeContext struct {
 	// preGroupRelation is the relation that is used before grouping.
 	// It is simply used to give more helpful error messages.
 	preGroupRelation *Relation
-	// Correlations are the fields that are corellated to an outer query.
+	// Correlations are the fields that are correlated to an outer query.
 	Correlations []*Field
 	// onWindowFuncExpr is a function that is called when evaluating a window function.
 	onWindowFuncExpr func(*parse.ExpressionWindowFunctionCall, *Relation, map[string]*IdentifiedExpr) (Expression, *Field, error)
@@ -243,7 +243,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		return err
 	}
 
-	var extraInfo string // debug info
+	var extraInfo strings.Builder // debug info
 
 	// if there are columns specific, we need to check that the columns are valid
 	// and rename the relation fields
@@ -253,7 +253,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		}
 
 		for i, col := range node.Columns {
-			extraInfo += fmt.Sprintf(" [%s.%s -> %s]", rel.Fields[i].Parent, rel.Fields[i].Name, col)
+			extraInfo.WriteString(fmt.Sprintf(" [%s.%s -> %s]", rel.Fields[i].Parent, rel.Fields[i].Name, col))
 
 			rel.Fields[i].Parent = node.Name
 			rel.Fields[i].Name = col
@@ -262,7 +262,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		// otherwise, we need to rename the relation parents
 		// to the CTE's name
 		for _, field := range rel.Fields {
-			extraInfo += fmt.Sprintf(" [%s.%s -> %s]", field.Parent, field.Name, field.Name)
+			extraInfo.WriteString(fmt.Sprintf(" [%s.%s -> %s]", field.Parent, field.Name, field.Name))
 			field.Parent = node.Name
 		}
 	}
@@ -277,7 +277,7 @@ func (s *scopeContext) cte(node *parse.CommonTableExpression) error {
 		Plan:      plan,
 		ID:        node.Name,
 		Type:      subplanType,
-		extraInfo: extraInfo,
+		extraInfo: extraInfo.String(),
 	})
 
 	return nil
@@ -684,7 +684,7 @@ func (s *scopeContext) selectCore(node *parse.SelectCore) (preProjectPlan Plan, 
 
 	// now we plan all window functions
 	windows := make(map[string]*Window)
-	unappliedWindows := []*Window{} // we wait to apply these to the plan until after evluating all, since subsequent windows cannot reference previous ones
+	unappliedWindows := []*Window{} // we wait to apply these to the plan until after evaluating all, since subsequent windows cannot reference previous ones
 	querySection = querySectionWindow
 	for _, window := range node.Windows {
 		_, ok := windows[window.Name]
@@ -2490,7 +2490,7 @@ func (s *scopeContext) buildUpsert(node *parse.OnConflict, table *engine.Table, 
 	case 0:
 		// do nothing
 	case 1:
-		// check the column for a unique or pk contraint, as well as all indexes
+		// check the column for a unique or pk constraint, as well as all indexes
 		col, ok := table.Column(node.ConflictColumns[0])
 		if !ok {
 			return nil, fmt.Errorf(`conflict column "%s" not found in table`, node.ConflictColumns[0])
