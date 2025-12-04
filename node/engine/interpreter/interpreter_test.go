@@ -1721,16 +1721,19 @@ func Test_Actions(t *testing.T) {
 		{
 			name: "nested query",
 			stmt: []string{
+				`CREATE TABLE nested_test_users (id INT PRIMARY KEY, name TEXT, age INT);`,
 				`CREATE ACTION create_users() public returns table(name text, age int) {
 					for $row in SELECT 'satoshi' as name, 42 as age {
-						INSERT INTO users (id, name, age) VALUES (1, $row.name, $row.age);
+						$name text := $row.name;
+						$age int := $row.age;
+						INSERT INTO nested_test_users (id, name, age) VALUES (1, $name, $age);
 					}
 
-					return SELECT name, age FROM users;
+					return SELECT name, age FROM nested_test_users;
 				}`,
 			},
-			action: "create_users",
-			err:    engine.ErrQueryActive,
+			action:  "create_users",
+			results: [][]any{{"satoshi", int64(42)}},
 		},
 		// case sensitivity
 		{

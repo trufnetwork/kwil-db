@@ -80,6 +80,16 @@ type executionContext struct {
 	// This is used to prevent nested queries, which can cause
 	// a deadlock or unexpected behavior.
 	queryActive bool
+	// queryDepth tracks the nesting level of queries.
+	// 0 = no query active, 1 = top-level query, 2+ = nested queries
+	queryDepth int
+	// bufferedRows stores rows from a paused parent query when nested query is executed.
+	// This allows the connection to be freed for the nested query.
+	bufferedRows []*row
+	// bufferIndex tracks the current position when iterating buffered rows.
+	bufferIndex int
+	// savepointCounter generates unique savepoint names for nested queries.
+	savepointCounter int
 	// inAction is true if the execution is currently in an action.
 	inAction bool
 }
@@ -197,12 +207,22 @@ func (e *executionContext) getVariableType(name string) (*types.DataType, error)
 
 // query executes a query.
 // It will parse the SQL, create a logical plan, and execute the query.
+// Now supports nested queries using PostgreSQL savepoints and row buffering.
 func (e *executionContext) query(sql string, fn func(*row) error) error {
 	if e.queryActive {
-		return engine.ErrQueryActive
+		// Instead of erroring, execute as nested query with savepoint
+		return e.nestedQuery(sql, fn)
 	}
+
 	e.queryActive = true
-	defer func() { e.queryActive = false }()
+	e.queryDepth = 1
+	defer func() {
+		e.queryActive = false
+		e.queryDepth = 0
+		// Clean up any buffered rows from nested queries
+		e.bufferedRows = nil
+		e.bufferIndex = 0
+	}()
 
 	generatedSQL, analyzed, args, err := e.prepareQuery(sql)
 	if err != nil {
@@ -230,9 +250,11 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 		cols[i] = field.Name
 	}
 
-	return query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
+	// Buffer all rows FIRST, then iterate
+	// This frees the connection for nested queries
+	var bufferedRows []*row
+	err = query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
 		if len(scanValues) != len(cols) {
-			// should never happen, but just in case
 			return fmt.Errorf("node bug: scan values and columns are not the same length")
 		}
 
@@ -241,13 +263,141 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 			return err
 		}
 
-		// fn will Cast each of Values, modifying each element in place, so this
-		// should not be scanValues used by queryRowFunc.
-		return fn(&row{
+		// Make a DEEP copy of values since scanValues will be reused by pgx
+		// We need to create new Value objects, not just copy references
+		valsCopy := make([]Value, len(vals))
+		for i, v := range vals {
+			// Create a new Value based on the raw value and type
+			copied, err := copyValue(v)
+			if err != nil {
+				return fmt.Errorf("failed to copy value: %w", err)
+			}
+			valsCopy[i] = copied
+		}
+
+		bufferedRows = append(bufferedRows, &row{
 			columns: cols,
-			Values:  vals,
+			Values:  valsCopy,
 		})
+		return nil
 	}, args)
+
+	if err != nil {
+		return err
+	}
+
+	// Connection is now free! Iterate through buffered rows
+	// Nested queries can now execute without "conn busy" error
+	for _, r := range bufferedRows {
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// nestedQuery executes a query while another query is active, using PostgreSQL savepoints.
+// This allows function calls inside FOR loops since the parent query's rows are already buffered.
+func (e *executionContext) nestedQuery(sql string, fn func(*row) error) error {
+	// Increment query depth
+	e.queryDepth++
+	defer func() { e.queryDepth-- }()
+
+	// Create a unique savepoint name
+	e.savepointCounter++
+	savepointName := fmt.Sprintf("nested_query_%d", e.savepointCounter)
+
+	// Create savepoint for isolation
+	_, err := e.db.Execute(e.engineCtx.TxContext.Ctx, fmt.Sprintf("SAVEPOINT %s", savepointName))
+	if err != nil {
+		return fmt.Errorf("failed to create savepoint: %w", err)
+	}
+
+	// Ensure we release or rollback the savepoint
+	var queryErr error
+	defer func() {
+		if queryErr != nil {
+			// Rollback savepoint on error
+			e.db.Execute(e.engineCtx.TxContext.Ctx, fmt.Sprintf("ROLLBACK TO SAVEPOINT %s", savepointName))
+		}
+		// Always release savepoint (even after rollback)
+		e.db.Execute(e.engineCtx.TxContext.Ctx, fmt.Sprintf("RELEASE SAVEPOINT %s", savepointName))
+	}()
+
+	// Prepare the nested query
+	generatedSQL, analyzed, args, queryErr := e.prepareQuery(sql)
+	if queryErr != nil {
+		return queryErr
+	}
+
+	// Get scan values
+	var scanValues []any
+	for _, field := range analyzed.Plan.Relation().Fields {
+		scalar, err := field.Scalar()
+		if err != nil {
+			queryErr = err
+			return queryErr
+		}
+
+		zVal, err := newZeroValue(scalar)
+		if err != nil {
+			queryErr = err
+			return queryErr
+		}
+
+		scanValues = append(scanValues, zVal)
+	}
+
+	cols := make([]string, len(analyzed.Plan.Relation().Fields))
+	for i, field := range analyzed.Plan.Relation().Fields {
+		cols[i] = field.Name
+	}
+
+	// Buffer all rows from the nested query as well
+	var bufferedRows []*row
+	queryErr = query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
+		if len(scanValues) != len(cols) {
+			return fmt.Errorf("node bug: scan values and columns are not the same length")
+		}
+
+		vals, err := fromScanValues(scanValues)
+		if err != nil {
+			return err
+		}
+
+		// Make a DEEP copy of values since scanValues will be reused by pgx
+		// We need to create new Value objects, not just copy references
+		valsCopy := make([]Value, len(vals))
+		for i, v := range vals {
+			// Create a new Value based on the raw value and type
+			copied, err := copyValue(v)
+			if err != nil {
+				return fmt.Errorf("failed to copy value: %w", err)
+			}
+			valsCopy[i] = copied
+		}
+
+		bufferedRows = append(bufferedRows, &row{
+			columns: cols,
+			Values:  valsCopy,
+		})
+		return nil
+	}, args)
+
+	if queryErr != nil {
+		return queryErr
+	}
+
+	// Iterate through buffered rows
+	for _, r := range bufferedRows {
+		if err := fn(r); err != nil {
+			queryErr = err
+			return queryErr
+		}
+	}
+
+	return nil
 }
 
 func fromScanValues(scanVals []any) ([]Value, error) {
@@ -260,6 +410,193 @@ func fromScanValues(scanVals []any) ([]Value, error) {
 		}
 	}
 	return scanValues, nil
+}
+
+// copyValue creates a deep copy of a Value by reconstructing it from its raw value
+// This is necessary because pgx reuses scan buffers, so we need new Value objects
+func copyValue(v Value) (Value, error) {
+	if v.Null() {
+		return makeNull(v.Type())
+	}
+
+	raw := v.RawValue()
+	typ := v.Type()
+
+	// Handle different types
+	if !typ.IsArray {
+		switch typ.Name {
+		case "int", "int8":
+			return makeInt8(raw.(int64)), nil
+		case "text":
+			return makeText(raw.(string)), nil
+		case "bool":
+			return makeBool(raw.(bool)), nil
+		case "blob", "bytea":
+			// Make a copy of the byte slice
+			orig := raw.([]byte)
+			copied := make([]byte, len(orig))
+			copy(copied, orig)
+			return makeBlob(copied), nil
+		case "uuid":
+			return makeUUID(raw.(*types.UUID)), nil
+		case "decimal", "numeric":
+			return makeDecimal(raw.(*types.Decimal)), nil
+		default:
+			return nil, fmt.Errorf("unsupported type for copying: %s", typ.Name)
+		}
+	}
+
+	// Handle arrays by converting based on the specific array type
+	// For arrays, we need to get the base element type to create proper nulls
+	baseType := typ.Copy()
+	baseType.IsArray = false
+
+	var copiedSlice []scalarValue
+
+	switch typ.Name {
+	case "text":
+		textSlice, ok := raw.([]*string)
+		if !ok {
+			return nil, fmt.Errorf("text array raw value is not []*string: %T", raw)
+		}
+		copiedSlice = make([]scalarValue, len(textSlice))
+		for i, elem := range textSlice {
+			if elem == nil {
+				nullVal, err := makeNull(baseType)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create null text: %w", err)
+				}
+				scalarNull, ok := nullVal.(scalarValue)
+				if !ok {
+					return nil, fmt.Errorf("null value is not scalar")
+				}
+				copiedSlice[i] = scalarNull
+			} else {
+				copiedSlice[i] = makeText(*elem)
+			}
+		}
+
+	case "int", "int8":
+		intSlice, ok := raw.([]*int64)
+		if !ok {
+			return nil, fmt.Errorf("int array raw value is not []*int64: %T", raw)
+		}
+		copiedSlice = make([]scalarValue, len(intSlice))
+		for i, elem := range intSlice {
+			if elem == nil {
+				nullVal, err := makeNull(baseType)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create null int: %w", err)
+				}
+				scalarNull, ok := nullVal.(scalarValue)
+				if !ok {
+					return nil, fmt.Errorf("null value is not scalar")
+				}
+				copiedSlice[i] = scalarNull
+			} else {
+				copiedSlice[i] = makeInt8(*elem)
+			}
+		}
+
+	case "bool":
+		boolSlice, ok := raw.([]*bool)
+		if !ok {
+			return nil, fmt.Errorf("bool array raw value is not []*bool: %T", raw)
+		}
+		copiedSlice = make([]scalarValue, len(boolSlice))
+		for i, elem := range boolSlice {
+			if elem == nil {
+				nullVal, err := makeNull(baseType)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create null bool: %w", err)
+				}
+				scalarNull, ok := nullVal.(scalarValue)
+				if !ok {
+					return nil, fmt.Errorf("null value is not scalar")
+				}
+				copiedSlice[i] = scalarNull
+			} else {
+				copiedSlice[i] = makeBool(*elem)
+			}
+		}
+
+	case "blob", "bytea":
+		blobSlice, ok := raw.([][]byte)
+		if !ok {
+			return nil, fmt.Errorf("blob/bytea array raw value is not [][]byte: %T", raw)
+		}
+		copiedSlice = make([]scalarValue, len(blobSlice))
+		for i, elem := range blobSlice {
+			if elem == nil {
+				nullVal, err := makeNull(baseType)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create null blob: %w", err)
+				}
+				scalarNull, ok := nullVal.(scalarValue)
+				if !ok {
+					return nil, fmt.Errorf("null value is not scalar")
+				}
+				copiedSlice[i] = scalarNull
+			} else {
+				copied := make([]byte, len(elem))
+				copy(copied, elem)
+				copiedSlice[i] = makeBlob(copied)
+			}
+		}
+
+	case "uuid":
+		uuidSlice, ok := raw.([]*types.UUID)
+		if !ok {
+			return nil, fmt.Errorf("uuid array raw value is not []*types.UUID: %T", raw)
+		}
+		copiedSlice = make([]scalarValue, len(uuidSlice))
+		for i, elem := range uuidSlice {
+			if elem == nil {
+				nullVal, err := makeNull(baseType)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create null uuid: %w", err)
+				}
+				scalarNull, ok := nullVal.(scalarValue)
+				if !ok {
+					return nil, fmt.Errorf("null value is not scalar")
+				}
+				copiedSlice[i] = scalarNull
+			} else {
+				copiedSlice[i] = makeUUID(elem)
+			}
+		}
+
+	case "decimal", "numeric":
+		decSlice, ok := raw.([]*types.Decimal)
+		if !ok {
+			return nil, fmt.Errorf("decimal/numeric array raw value is not []*types.Decimal: %T", raw)
+		}
+		copiedSlice = make([]scalarValue, len(decSlice))
+		for i, elem := range decSlice {
+			if elem == nil {
+				nullVal, err := makeNull(baseType)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create null decimal: %w", err)
+				}
+				scalarNull, ok := nullVal.(scalarValue)
+				if !ok {
+					return nil, fmt.Errorf("null value is not scalar")
+				}
+				copiedSlice[i] = scalarNull
+			} else {
+				copiedSlice[i] = makeDecimal(elem)
+			}
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported array type for copying: %s", typ.Name)
+	}
+
+	arrVal, err := makeArray(copiedSlice, typ)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create array: %w", err)
+	}
+	return arrVal, nil
 }
 
 // getValues gets values of the names
