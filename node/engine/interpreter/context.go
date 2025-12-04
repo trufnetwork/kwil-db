@@ -83,11 +83,6 @@ type executionContext struct {
 	// queryDepth tracks the nesting level of queries.
 	// 0 = no query active, 1 = top-level query, 2+ = nested queries
 	queryDepth int
-	// bufferedRows stores rows from a paused parent query when nested query is executed.
-	// This allows the connection to be freed for the nested query.
-	bufferedRows []*row
-	// bufferIndex tracks the current position when iterating buffered rows.
-	bufferIndex int
 	// savepointCounter generates unique savepoint names for nested queries.
 	savepointCounter int
 	// inAction is true if the execution is currently in an action.
@@ -219,9 +214,6 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	defer func() {
 		e.queryActive = false
 		e.queryDepth = 0
-		// Clean up any buffered rows from nested queries
-		e.bufferedRows = nil
-		e.bufferIndex = 0
 	}()
 
 	generatedSQL, analyzed, args, err := e.prepareQuery(sql)
@@ -252,6 +244,9 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 
 	// Buffer all rows FIRST, then iterate
 	// This frees the connection for nested queries
+	// NOTE: This changes memory characteristics - all rows are loaded into memory.
+	// For very large result sets, this could be memory-intensive. Future optimization
+	// could add streaming/limit strategies if needed.
 	var bufferedRows []*row
 	err = query(e.engineCtx.TxContext.Ctx, e.db, generatedSQL, scanValues, func() error {
 		if len(scanValues) != len(cols) {
@@ -319,9 +314,14 @@ func (e *executionContext) nestedQuery(sql string, fn func(*row) error) error {
 	defer func() {
 		if queryErr != nil {
 			// Rollback savepoint on error
+			// Note: Errors from ROLLBACK are intentionally ignored as they would mask
+			// the original queryErr. In pathological cases (connection loss), the
+			// entire transaction will be rolled back by the database anyway.
 			e.db.Execute(e.engineCtx.TxContext.Ctx, fmt.Sprintf("ROLLBACK TO SAVEPOINT %s", savepointName))
 		}
 		// Always release savepoint (even after rollback)
+		// Errors from RELEASE are also ignored for the same reason - the original
+		// error is more important for debugging.
 		e.db.Execute(e.engineCtx.TxContext.Ctx, fmt.Sprintf("RELEASE SAVEPOINT %s", savepointName))
 	}()
 

@@ -180,15 +180,16 @@ func TestNestedQuerySavepoints(t *testing.T) {
 	require.Error(t, callRes.Error, "CallResult.Error should contain PRIMARY KEY conflict error")
 	require.Contains(t, callRes.Error.Error(), "duplicate key", "Error should mention duplicate key")
 
-	// Verify that dest table still has only the original row
-	var rowCount int
-	err = interp.Execute(newEngineCtx("owner"), tx, "SELECT COUNT(*) as count FROM dest;", nil, func(v *common.Row) error {
-		count, ok := v.Values[0].(int64)
-		require.True(t, ok, "Expected int64 type for count")
-		rowCount = int(count)
+	// Verify that dest table still has only the original row with original values
+	var rows [][]any
+	err = interp.Execute(newEngineCtx("owner"), tx, "SELECT id, value FROM dest ORDER BY id;", nil, func(v *common.Row) error {
+		rows = append(rows, v.Values)
 		return nil
 	})
 	require.NoError(t, err)
-	// Should still have just 1 row (the original), transaction rolled back
-	require.Equal(t, 1, rowCount, "Transaction should rollback on error, keeping only original row")
+
+	// Should still have just 1 row (the original) with original values (1, 100)
+	require.Equal(t, 1, len(rows), "Transaction should rollback on error, keeping only original row")
+	require.Equal(t, int64(1), rows[0][0], "Row ID should be unchanged")
+	require.Equal(t, int64(100), rows[0][1], "Row value should be unchanged (not modified by failed INSERT)")
 }
