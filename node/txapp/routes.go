@@ -788,7 +788,7 @@ func (d *validatorVoteIDsRoute) InTx(ctx *common.TxContext, app *common.App, tx 
 	return 0, "", nil
 }
 
-// validatorVoteIDsRoute is a route for approving a set of votes based on their IDs.
+// validatorVoteBodiesRoute is a route for approving a set of votes based on their bodies.
 type validatorVoteBodiesRoute struct {
 	events []*types.VotableEvent
 }
