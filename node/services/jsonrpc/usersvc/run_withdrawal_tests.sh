@@ -30,15 +30,24 @@ TESTS=(
 # Cleanup function
 cleanup_db() {
     echo "🧹 Cleaning up test data..."
-    PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c \
-        "DELETE FROM kwil_erc20_meta.epoch_votes; \
-         DELETE FROM kwil_erc20_meta.epoch_rewards; \
-         DELETE FROM kwil_erc20_meta.epochs; \
-         DELETE FROM kwil_erc20_meta.reward_instances;" \
-        >/dev/null 2>&1 || {
-        echo "❌ Failed to cleanup database. Make sure PostgreSQL is running with 'task pg'"
-        exit 1
-    }
+
+    # Check if schema exists first
+    SCHEMA_EXISTS=$(PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = 'kwil_erc20_meta');" 2>/dev/null)
+
+    if [ "$SCHEMA_EXISTS" = "t" ]; then
+        # Schema exists, clean up the tables
+        PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c \
+            "DELETE FROM kwil_erc20_meta.epoch_votes; \
+             DELETE FROM kwil_erc20_meta.epoch_rewards; \
+             DELETE FROM kwil_erc20_meta.epochs; \
+             DELETE FROM kwil_erc20_meta.reward_instances;" \
+            >/dev/null 2>&1 || {
+            echo "⚠️  Warning: Failed to cleanup some tables (they may not exist yet)"
+        }
+    else
+        echo "ℹ️  Schema doesn't exist yet, skipping cleanup"
+    fi
 }
 
 # Color codes

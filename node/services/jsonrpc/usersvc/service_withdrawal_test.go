@@ -510,7 +510,6 @@ func TestGetWithdrawalProof_PendingEpoch_NotEnded(t *testing.T) {
 	db := getTestDB(t)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
-	defer tx.Rollback(ctx)
 
 	engine, err := interpreter.NewInterpreter(ctx, tx, &common.Service{Logger: log.New()}, nil, nil, nil)
 	require.NoError(t, err)
@@ -601,7 +600,6 @@ func TestGetWithdrawalProof_PendingEpoch_NotConfirmed(t *testing.T) {
 	db := getTestDB(t)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
-	defer tx.Rollback(ctx)
 
 	engine, err := interpreter.NewInterpreter(ctx, tx, &common.Service{Logger: log.New()}, nil, nil, nil)
 	require.NoError(t, err)

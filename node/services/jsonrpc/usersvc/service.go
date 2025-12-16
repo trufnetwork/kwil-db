@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	ethcommon "github.com/ethereum/go-ethereum/common"
+
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
@@ -1086,8 +1088,8 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "invalid epoch_id: "+err.Error(), nil)
 	}
 
-	// Validate recipient address format (must start with 0x and be 42 chars)
-	if len(req.Recipient) != 42 || req.Recipient[:2] != "0x" {
+	// Validate recipient address format using go-ethereum's proper validation
+	if !ethcommon.IsHexAddress(req.Recipient) {
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "invalid recipient: must be Ethereum address (0x...)", nil)
 	}
 
@@ -1139,29 +1141,76 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 			return fmt.Errorf("expected 10 values, got %d", len(row.Values))
 		}
 
+		// Use safe type assertions with ok checks
+		id, ok := row.Values[0].(*types.UUID)
+		if !ok {
+			return fmt.Errorf("unexpected type for id column: got %T", row.Values[0])
+		}
+
+		confirmed, ok := row.Values[3].(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type for confirmed column: got %T", row.Values[3])
+		}
+
+		createdAt, ok := row.Values[4].(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type for created_at column: got %T", row.Values[4])
+		}
+
+		instanceID, ok := row.Values[6].(*types.UUID)
+		if !ok {
+			return fmt.Errorf("unexpected type for instance_id column: got %T", row.Values[6])
+		}
+
+		chainID, ok := row.Values[7].(string)
+		if !ok {
+			return fmt.Errorf("unexpected type for chain_id column: got %T", row.Values[7])
+		}
+
+		escrowAddress, ok := row.Values[8].([]byte)
+		if !ok {
+			return fmt.Errorf("unexpected type for escrow_address column: got %T", row.Values[8])
+		}
+
+		distributionPer, ok := row.Values[9].(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type for distribution_per column: got %T", row.Values[9])
+		}
+
 		epoch = &EpochInfo{
-			ID:              row.Values[0].(*types.UUID),
-			Confirmed:       row.Values[3].(bool),
-			CreatedAtUnix:   row.Values[4].(int64),
-			InstanceID:      row.Values[6].(*types.UUID),
-			ChainID:         row.Values[7].(string),
-			EscrowAddress:   row.Values[8].([]byte),
-			DistributionPer: row.Values[9].(int64),
+			ID:              id,
+			Confirmed:       confirmed,
+			CreatedAtUnix:   createdAt,
+			InstanceID:      instanceID,
+			ChainID:         chainID,
+			EscrowAddress:   escrowAddress,
+			DistributionPer: distributionPer,
 		}
 
 		// Handle nullable reward_root
 		if row.Values[1] != nil {
-			epoch.RewardRoot = row.Values[1].([]byte)
+			rewardRoot, ok := row.Values[1].([]byte)
+			if !ok {
+				return fmt.Errorf("unexpected type for reward_root column: got %T", row.Values[1])
+			}
+			epoch.RewardRoot = rewardRoot
 		}
 
 		// Handle nullable block_hash
 		if row.Values[2] != nil {
-			epoch.BlockHash = row.Values[2].([]byte)
+			blockHash, ok := row.Values[2].([]byte)
+			if !ok {
+				return fmt.Errorf("unexpected type for block_hash column: got %T", row.Values[2])
+			}
+			epoch.BlockHash = blockHash
 		}
 
 		// Handle nullable ended_at
 		if row.Values[5] != nil {
-			endedAt := row.Values[5].(int64)
+			endedAt, ok := row.Values[5].(int64)
+			if !ok {
+				return fmt.Errorf("unexpected type for ended_at column: got %T", row.Values[5])
+			}
 			epoch.EndedAt = &endedAt
 		}
 
@@ -1217,9 +1266,19 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
 		}
 
+		recipient, ok := row.Values[0].([]byte)
+		if !ok {
+			return fmt.Errorf("unexpected type for recipient column: got %T", row.Values[0])
+		}
+
+		amount, ok := row.Values[1].(*types.Decimal)
+		if !ok {
+			return fmt.Errorf("unexpected type for amount column: got %T", row.Values[1])
+		}
+
 		rewards = append(rewards, Reward{
-			Recipient: row.Values[0].([]byte),
-			Amount:    row.Values[1].(*types.Decimal),
+			Recipient: recipient,
+			Amount:    amount,
 		})
 		return nil
 	})
@@ -1258,6 +1317,13 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 
 	// Generate merkle tree using bridge utils
 	escrowAddr := fmt.Sprintf("0x%x", epoch.EscrowAddress)
+
+	// Validate block hash length before copy
+	if len(epoch.BlockHash) != 32 {
+		svc.log.Error("invalid block hash length", "length", len(epoch.BlockHash))
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "invalid epoch block hash", nil)
+	}
+
 	var blockHash [32]byte
 	copy(blockHash[:], epoch.BlockHash)
 
