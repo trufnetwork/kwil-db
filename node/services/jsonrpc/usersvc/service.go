@@ -1373,9 +1373,19 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
 		}
 
+		voter, ok := row.Values[0].([]byte)
+		if !ok {
+			return fmt.Errorf("unexpected type for voter column at index 0: got %T", row.Values[0])
+		}
+
+		signature, ok := row.Values[1].([]byte)
+		if !ok {
+			return fmt.Errorf("unexpected type for signature column at index 1: got %T", row.Values[1])
+		}
+
 		votes = append(votes, VoteSignature{
-			Voter:     row.Values[0].([]byte),
-			Signature: row.Values[1].([]byte),
+			Voter:     voter,
+			Signature: signature,
 		})
 		return nil
 	})
