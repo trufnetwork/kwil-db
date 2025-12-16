@@ -3,6 +3,7 @@ package usersvc
 import (
 	// errors from engine
 
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
 	nodeConsensus "github.com/trufnetwork/kwil-db/node/consensus"
 	"github.com/trufnetwork/kwil-db/node/engine"
+	bridgeUtils "github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 	"github.com/trufnetwork/kwil-db/node/metrics"
 	"github.com/trufnetwork/kwil-db/node/migrations"
 	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
@@ -385,6 +388,12 @@ func (svc *Service) Methods() map[jsonrpc.Method]rpcserver.MethodDef {
 		userjson.MethodHealth: rpcserver.MakeMethodDef(svc.HealthMethod,
 			"check the user service health",
 			"the health status and other relevant of the services health",
+		),
+
+		// Withdrawal proof method
+		userjson.MethodGetWithdrawalProof: rpcserver.MakeMethodDef(svc.GetWithdrawalProof,
+			"get withdrawal proof and validator signatures for an epoch",
+			"merkle proof, validator signatures, and withdrawal status",
 		),
 	}
 }
@@ -1066,5 +1075,301 @@ func (svc *Service) CallChallenge(ctx context.Context, req *userjson.ChallengeRe
 
 	return &userjson.ChallengeResponse{
 		Challenge: challenge[:],
+	}, nil
+}
+
+// GetWithdrawalProof retrieves the merkle proof and validator signatures for a withdrawal.
+func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.WithdrawalProofRequest) (*userjson.WithdrawalProofResponse, *jsonrpc.Error) {
+	// Parse epoch ID
+	epochID, err := types.ParseUUID(req.EpochID)
+	if err != nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "invalid epoch_id: "+err.Error(), nil)
+	}
+
+	// Validate recipient address format (must start with 0x and be 42 chars)
+	if len(req.Recipient) != 42 || req.Recipient[:2] != "0x" {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "invalid recipient: must be Ethereum address (0x...)", nil)
+	}
+
+	// Start read-only transaction
+	readTx := svc.db.BeginDelayedReadTx()
+	defer readTx.Rollback(ctx)
+
+	// Create engine context (similar to Query method)
+	ctxExec, cancel := context.WithTimeout(ctx, svc.readTxTimeout)
+	defer cancel()
+
+	engineCtx := &common.EngineContext{
+		TxContext: &common.TxContext{
+			Ctx: ctxExec,
+			BlockContext: &common.BlockContext{
+				Height: -1, // cannot know the height for read-only queries
+			},
+		},
+	}
+
+	// Query epoch information
+	type EpochInfo struct {
+		ID              *types.UUID
+		RewardRoot      []byte
+		BlockHash       []byte
+		Confirmed       bool
+		CreatedAtUnix   int64
+		InstanceID      *types.UUID
+		ChainID         string
+		EscrowAddress   []byte
+		DistributionPer int64
+		EndedAt         *int64
+	}
+
+	var epoch *EpochInfo
+	epochQuery := `
+		{kwil_erc20_meta}SELECT
+			e.id, e.reward_root, e.block_hash, e.confirmed, e.created_at_unix, e.ended_at,
+			e.instance_id, r.chain_id, r.escrow_address, r.distribution_period
+		FROM epochs e
+		JOIN reward_instances r ON e.instance_id = r.id
+		WHERE e.id = $epoch_id
+	`
+
+	err = svc.engine.Execute(engineCtx, readTx, epochQuery, map[string]any{
+		"epoch_id": epochID,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 10 {
+			return fmt.Errorf("expected 10 values, got %d", len(row.Values))
+		}
+
+		epoch = &EpochInfo{
+			ID:              row.Values[0].(*types.UUID),
+			Confirmed:       row.Values[3].(bool),
+			CreatedAtUnix:   row.Values[4].(int64),
+			InstanceID:      row.Values[6].(*types.UUID),
+			ChainID:         row.Values[7].(string),
+			EscrowAddress:   row.Values[8].([]byte),
+			DistributionPer: row.Values[9].(int64),
+		}
+
+		// Handle nullable reward_root
+		if row.Values[1] != nil {
+			epoch.RewardRoot = row.Values[1].([]byte)
+		}
+
+		// Handle nullable block_hash
+		if row.Values[2] != nil {
+			epoch.BlockHash = row.Values[2].([]byte)
+		}
+
+		// Handle nullable ended_at
+		if row.Values[5] != nil {
+			endedAt := row.Values[5].(int64)
+			epoch.EndedAt = &endedAt
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		svc.log.Error("failed to query epoch", "error", err)
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to query epoch: "+err.Error(), nil)
+	}
+
+	if epoch == nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "epoch not found", nil)
+	}
+
+	// Check if epoch is finalized
+	if epoch.EndedAt == nil {
+		// Epoch is still active - return "pending" status
+		estimatedReady := epoch.CreatedAtUnix + epoch.DistributionPer
+		return &userjson.WithdrawalProofResponse{
+			Recipient:        req.Recipient,
+			Status:           "pending",
+			EstimatedReadyAt: &estimatedReady,
+		}, nil
+	}
+
+	if !epoch.Confirmed {
+		// Epoch ended but not confirmed yet
+		return &userjson.WithdrawalProofResponse{
+			Recipient: req.Recipient,
+			Status:    "pending",
+		}, nil
+	}
+
+	// Epoch is confirmed - query all epoch rewards to build merkle tree
+	type Reward struct {
+		Recipient []byte
+		Amount    *types.Decimal
+	}
+
+	var rewards []Reward
+	rewardsQuery := `
+		{kwil_erc20_meta}SELECT recipient, amount
+		FROM epoch_rewards
+		WHERE epoch_id = $epoch_id
+		ORDER BY recipient
+	`
+
+	err = svc.engine.Execute(engineCtx, readTx, rewardsQuery, map[string]any{
+		"epoch_id": epochID,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 2 {
+			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
+		}
+
+		rewards = append(rewards, Reward{
+			Recipient: row.Values[0].([]byte),
+			Amount:    row.Values[1].(*types.Decimal),
+		})
+		return nil
+	})
+
+	if err != nil {
+		svc.log.Error("failed to query epoch rewards", "error", err)
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to query rewards: "+err.Error(), nil)
+	}
+
+	if len(rewards) == 0 {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "no rewards in epoch", nil)
+	}
+
+	// Find the recipient in rewards and build merkle tree
+	var recipientAmount *types.Decimal
+	recipientFound := false
+	users := make([]string, len(rewards))
+	amounts := make([]*big.Int, len(rewards))
+
+	for i, r := range rewards {
+		recipientAddr := fmt.Sprintf("0x%x", r.Recipient)
+		users[i] = recipientAddr
+
+		amt := r.Amount.BigInt()
+		amounts[i] = amt
+
+		if strings.EqualFold(recipientAddr, req.Recipient) {
+			recipientAmount = r.Amount
+			recipientFound = true
+		}
+	}
+
+	if !recipientFound {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "recipient not found in epoch", nil)
+	}
+
+	// Generate merkle tree using bridge utils
+	escrowAddr := fmt.Sprintf("0x%x", epoch.EscrowAddress)
+	var blockHash [32]byte
+	copy(blockHash[:], epoch.BlockHash)
+
+	jsonTree, root, err := bridgeUtils.GenRewardMerkleTree(users, amounts, escrowAddr, blockHash)
+	if err != nil {
+		svc.log.Error("failed to generate merkle tree", "error", err)
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to generate proof: "+err.Error(), nil)
+	}
+
+	// Verify root matches
+	if !bytes.Equal(root, epoch.RewardRoot) {
+		svc.log.Error("merkle root mismatch", "computed", fmt.Sprintf("%x", root), "stored", fmt.Sprintf("%x", epoch.RewardRoot))
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "merkle root mismatch", nil)
+	}
+
+	// Get proof for recipient using bridge utils
+	mtRoot, proofs, _, bh, _, err := bridgeUtils.GetMTreeProof(jsonTree, req.Recipient)
+	if err != nil {
+		svc.log.Error("failed to get merkle proof", "error", err)
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to get proof: "+err.Error(), nil)
+	}
+
+	// Convert proofs to hex strings
+	merkleProof := make([]string, len(proofs))
+	for i, p := range proofs {
+		merkleProof[i] = "0x" + fmt.Sprintf("%x", p)
+	}
+
+	// Query validator signatures
+	type VoteSignature struct {
+		Voter     []byte
+		Signature []byte
+	}
+
+	var votes []VoteSignature
+	votesQuery := `
+		{kwil_erc20_meta}SELECT voter, signature
+		FROM epoch_votes
+		WHERE epoch_id = $epoch_id
+		ORDER BY voter
+	`
+
+	err = svc.engine.Execute(engineCtx, readTx, votesQuery, map[string]any{
+		"epoch_id": epochID,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 2 {
+			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
+		}
+
+		votes = append(votes, VoteSignature{
+			Voter:     row.Values[0].([]byte),
+			Signature: row.Values[1].([]byte),
+		})
+		return nil
+	})
+
+	if err != nil {
+		svc.log.Error("failed to query votes", "error", err)
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to query signatures: "+err.Error(), nil)
+	}
+
+	// Parse signatures into v/r/s format
+	validatorSigs := make([]userjson.ValidatorSignature, 0, len(votes))
+	for _, vote := range votes {
+		if len(vote.Signature) != 65 {
+			svc.log.Warn("invalid signature length", "length", len(vote.Signature))
+			continue
+		}
+
+		// Signature format is [R || S || V] (65 bytes)
+		// R: bytes 0-31, S: bytes 32-63, V: byte 64
+		r := vote.Signature[0:32]
+		s := vote.Signature[32:64]
+		v := vote.Signature[64]
+
+		validatorSigs = append(validatorSigs, userjson.ValidatorSignature{
+			V: v,
+			R: "0x" + fmt.Sprintf("%x", r),
+			S: "0x" + fmt.Sprintf("%x", s),
+		})
+	}
+
+	if len(validatorSigs) == 0 {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "no valid signatures found", nil)
+	}
+
+	// Check if withdrawal has been completed on Ethereum
+	// This requires querying the ethereum_withdrawals table from the node repo (Issue #5)
+	// For now, we'll just return "ready" status
+	status := "ready"
+	var ethTxHash *string
+
+	// TODO: Once Issue #5 is implemented, query ethereum_withdrawals table:
+	// {kwil_erc20_meta}SELECT eth_tx_hash, status FROM ethereum_withdrawals
+	// WHERE epoch_id = $epoch_id AND recipient = $recipient
+
+	// Parse chain ID
+	var chainID int64 = 1 // Default to Ethereum mainnet
+	if id, err := strconv.ParseInt(epoch.ChainID, 10, 64); err == nil {
+		chainID = id
+	}
+
+	return &userjson.WithdrawalProofResponse{
+		Recipient:           req.Recipient,
+		Amount:              recipientAmount.String(),
+		KwilBlockHash:       "0x" + fmt.Sprintf("%x", bh),
+		MerkleRoot:          "0x" + fmt.Sprintf("%x", mtRoot),
+		MerkleProof:         merkleProof,
+		ValidatorSignatures: validatorSigs,
+		ContractAddress:     escrowAddr,
+		ChainID:             chainID,
+		Status:              status,
+		EthTxHash:           ethTxHash,
 	}, nil
 }

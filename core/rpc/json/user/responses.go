@@ -94,3 +94,25 @@ type ListPendingConsensusUpdatesResponse struct {
 type ChallengeResponse struct {
 	Challenge types.HexBytes `json:"challenge"`
 }
+
+// ValidatorSignature contains an ECDSA signature from a validator.
+type ValidatorSignature struct {
+	V uint8  `json:"v"` // Recovery ID (27/28 for regular ECDSA, 31/32 for Gnosis Safe)
+	R string `json:"r"` // R component (hex string)
+	S string `json:"s"` // S component (hex string)
+}
+
+// WithdrawalProofResponse contains the response object for MethodGetWithdrawalProof.
+type WithdrawalProofResponse struct {
+	Recipient           string               `json:"recipient"`                    // Ethereum address (0x...)
+	Amount              string               `json:"amount"`                       // Withdrawal amount (uint256 string)
+	KwilBlockHash       string               `json:"kwil_block_hash"`              // Kwil block hash (0x...)
+	MerkleRoot          string               `json:"merkle_root"`                  // Merkle root (0x...)
+	MerkleProof         []string             `json:"merkle_proof"`                 // Merkle proof (array of 0x... hashes)
+	ValidatorSignatures []ValidatorSignature `json:"validator_signatures"`         // Validator ECDSA signatures
+	ContractAddress     string               `json:"contract_address"`             // Bridge contract address (0x...)
+	ChainID             int64                `json:"chain_id"`                     // Ethereum chain ID
+	Status              string               `json:"status"`                       // pending, ready, or completed
+	EstimatedReadyAt    *int64               `json:"estimated_ready_at,omitempty"` // Unix timestamp (seconds), null if not pending
+	EthTxHash           *string              `json:"eth_tx_hash,omitempty"`        // Ethereum TX hash if completed (0x...)
+}
