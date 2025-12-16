@@ -107,6 +107,21 @@ jobs:
         run: |
           task test:unit
 
+      # withdrawal proof tests (require individual runs with cleanup)
+      - name: Run withdrawal proof tests
+        run: |
+          # Create test database if it doesn't exist
+          psql -h localhost -p 5432 -U postgres -c "CREATE DATABASE kwil_test_db;" || true
+
+          # Run the test suite
+          ./node/services/jsonrpc/usersvc/run_withdrawal_tests.sh
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: postgres
+          DB_PASS: ""
+          DB_NAME: kwil_test_db
+
       # acceptance test
       - name: manual git tag
         run: |
