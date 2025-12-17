@@ -82,3 +82,23 @@ CREATE TABLE epoch_votes (
     signature BYTEA NOT NULL,
     PRIMARY KEY (epoch_id, voter, nonce)
 );
+
+-- withdrawals tracks withdrawal claims on the blockchain (multi-chain support)
+-- Chain information is determined through: withdrawals -> epochs -> reward_instances -> chain_id
+-- This allows GetWithdrawalProof to return accurate status information
+CREATE TABLE withdrawals (
+    epoch_id UUID NOT NULL,
+    recipient BYTEA NOT NULL,
+    tx_hash BYTEA,               -- Blockchain transaction hash (NULL until claimed)
+    block_number INT8,           -- Blockchain block number
+    created_at INT8 NOT NULL,    -- Unix timestamp when record was created (Kwil block time)
+    claimed_at INT8,             -- Unix timestamp when claimed on external blockchain
+    updated_at INT8,             -- Last update timestamp (Kwil block time)
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'claimed')),
+    PRIMARY KEY (epoch_id, recipient),
+    FOREIGN KEY (epoch_id) REFERENCES epochs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_withdrawals_status ON withdrawals(status);
+CREATE INDEX idx_withdrawals_tx_hash ON withdrawals(tx_hash);
+CREATE INDEX idx_withdrawals_recipient ON withdrawals(recipient);
