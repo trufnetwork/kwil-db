@@ -484,6 +484,37 @@
         "description": "service info including semver and kwild version"
       },
       "paramStructure": "by-name"
+    },
+    {
+      "name": "user.get_withdrawal_proof",
+      "description": "retrieve merkle proof and validator signatures for an ERC20 bridge withdrawal",
+      "params": [
+        {
+          "name": "epoch_id",
+          "schema": {
+            "type": "string"
+          },
+          "required": true,
+          "description": "epoch ID (UUID format)"
+        },
+        {
+          "name": "recipient",
+          "schema": {
+            "type": "string"
+          },
+          "required": true,
+          "description": "recipient Ethereum address (0x-prefixed hex)"
+        }
+      ],
+      "result": {
+        "name": "withdrawalProofResponse",
+        "schema": {
+          "type": "object",
+          "$ref": "#/components/schemas/withdrawalProofResponse"
+        },
+        "description": "merkle proof, validator signatures, and withdrawal status for claiming on external blockchain"
+      },
+      "paramStructure": "by-name"
     }
   ],
   "components": {
@@ -1088,6 +1119,81 @@
             "type": "string"
           }
         }
+      },
+      "validatorSignature": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "description": "Recovery ID (27/28 for regular ECDSA, 31/32 for Gnosis Safe)"
+          },
+          "r": {
+            "type": "string",
+            "description": "R component (0x-prefixed hex string)"
+          },
+          "s": {
+            "type": "string",
+            "description": "S component (0x-prefixed hex string)"
+          }
+        }
+      },
+      "withdrawalProofResponse": {
+        "type": "object",
+        "properties": {
+          "recipient": {
+            "type": "string",
+            "description": "Ethereum address (0x-prefixed hex)"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Withdrawal amount (uint256 as decimal string)"
+          },
+          "kwil_block_hash": {
+            "type": "string",
+            "description": "Kwil block hash (0x-prefixed hex)"
+          },
+          "merkle_root": {
+            "type": "string",
+            "description": "Merkle root (0x-prefixed hex)"
+          },
+          "merkle_proof": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Merkle proof path (array of 0x-prefixed hex hashes)"
+          },
+          "validator_signatures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "$ref": "#/components/schemas/validatorSignature"
+            },
+            "description": "Validator ECDSA signatures"
+          },
+          "contract_address": {
+            "type": "string",
+            "description": "Bridge contract address (0x-prefixed hex)"
+          },
+          "chain_id": {
+            "type": "integer",
+            "description": "Ethereum-compatible chain ID"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "ready", "claimed"],
+            "description": "Withdrawal status: pending (epoch not finalized), ready (can claim), claimed (already claimed)"
+          },
+          "estimated_ready_at": {
+            "type": "integer",
+            "description": "Unix timestamp (seconds) when withdrawal will be ready, null if not pending"
+          },
+          "eth_tx_hash": {
+            "type": "string",
+            "description": "Ethereum transaction hash if claimed (0x-prefixed hex), null otherwise"
+          }
+        },
+        "required": ["recipient", "amount", "kwil_block_hash", "merkle_root", "merkle_proof", "validator_signatures", "contract_address", "chain_id", "status"]
       }
     }
   }

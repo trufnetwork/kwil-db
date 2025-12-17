@@ -24,6 +24,7 @@ import (
 	bridgeUtils "github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
 	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 var (
@@ -48,6 +49,19 @@ func resetTestSingletons() {
 	orderedsync.ForTestingReset()
 	// Reset the ERC20 extension singleton
 	erc20.ForTestingResetSingleton()
+}
+
+// setupTest prepares the test environment by cleaning up leftover data
+// and resetting singletons. Call this at the start of every test.
+// Note: Tests should still call defer cleanupTestData(t, db) themselves.
+func setupTest(t *testing.T) {
+	t.Helper()
+
+	// Clean up any leftover data from previous tests first
+	cleanupTestData(t, getTestDB(t))
+
+	// Then reset singletons
+	resetTestSingletons()
 }
 
 // getTestDB returns a shared database connection for all tests.
@@ -294,7 +308,7 @@ func TestGetWithdrawalProof_ValidRequest(t *testing.T) {
 	initSchemaOnce(t)
 
 	// Reset singleton state before each test to ensure isolation
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -356,7 +370,7 @@ func TestGetWithdrawalProof_ValidRequest(t *testing.T) {
 
 func TestGetWithdrawalProof_InvalidEpochID(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -385,7 +399,7 @@ func TestGetWithdrawalProof_InvalidEpochID(t *testing.T) {
 
 func TestGetWithdrawalProof_InvalidRecipientFormat(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -430,7 +444,7 @@ func TestGetWithdrawalProof_InvalidRecipientFormat(t *testing.T) {
 
 func TestGetWithdrawalProof_EpochNotFound(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -461,7 +475,7 @@ func TestGetWithdrawalProof_EpochNotFound(t *testing.T) {
 
 func TestGetWithdrawalProof_RecipientNotInEpoch(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -504,7 +518,7 @@ func TestGetWithdrawalProof_RecipientNotInEpoch(t *testing.T) {
 
 func TestGetWithdrawalProof_PendingEpoch_NotEnded(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -594,7 +608,7 @@ func TestGetWithdrawalProof_PendingEpoch_NotEnded(t *testing.T) {
 
 func TestGetWithdrawalProof_PendingEpoch_NotConfirmed(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -681,4 +695,364 @@ func TestGetWithdrawalProof_PendingEpoch_NotConfirmed(t *testing.T) {
 	withdrawalResp := resp
 	require.Equal(t, "pending", withdrawalResp.Status)
 	require.Nil(t, withdrawalResp.EstimatedReadyAt) // No estimate when ended but not confirmed
+}
+
+// setupTestEpochDataWithWithdrawal creates test data including a withdrawal record.
+// This is a helper for withdrawal status tracking tests.
+func setupTestEpochDataWithWithdrawal(t *testing.T, ctx context.Context, app *common.App, suffix string, withdrawalStatus string, includeTxHash bool) (
+	epochID *types.UUID,
+	recipient ethcommon.Address,
+	amount *big.Int,
+) {
+	t.Helper()
+
+	epochID = types.NewUUIDV5([]byte("test-epoch-" + suffix))
+	instanceID := types.NewUUIDV5([]byte("test-instance-" + suffix))
+
+	recipient = ethcommon.HexToAddress("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb4")
+	amount = big.NewInt(1000000000000000000) // 1 token
+
+	// Generate merkle tree
+	userAddrs := []string{recipient.Hex()}
+	amounts := []*big.Int{amount}
+	escrowAddr := "0x2d4f435867066737ba1617ef024e073413909ad2"
+	blockHash := [32]byte{0x01, 0x02, 0x03}
+	_, root, err := bridgeUtils.GenRewardMerkleTree(userAddrs, amounts, escrowAddr, blockHash)
+	require.NoError(t, err)
+
+	// Insert reward instance
+	balanceBig := big.NewInt(1000000000000000000)
+	balance, err := types.NewDecimalFromBigInt(balanceBig, 0)
+	require.NoError(t, err)
+	err = balance.SetPrecisionAndScale(78, 0)
+	require.NoError(t, err)
+
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO reward_instances (id, chain_id, escrow_address, distribution_period, synced, active, erc20_address, erc20_decimals, synced_at, balance)
+		VALUES ($id, $chain_id, $escrow, $period, true, true, $erc20, 18, 100, $balance)
+	`, map[string]any{
+		"id":       instanceID,
+		"chain_id": "11155111",
+		"escrow":   ethcommon.HexToAddress(escrowAddr).Bytes(),
+		"period":   int64(86400),
+		"erc20":    ethcommon.HexToAddress("0x1234567890123456789012345678901234567890").Bytes(),
+		"balance":  balance,
+	}, nil)
+	require.NoError(t, err)
+
+	// Insert epoch
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO epochs (id, instance_id, reward_root, block_hash, confirmed, created_at_block, created_at_unix, ended_at)
+		VALUES ($id, $instance_id, $root, $hash, true, 100, 1000000, 200)
+	`, map[string]any{
+		"id":          epochID,
+		"instance_id": instanceID,
+		"root":        root,
+		"hash":        blockHash[:],
+	}, nil)
+	require.NoError(t, err)
+
+	// Insert epoch reward
+	decimalAmt, err := types.NewDecimalFromBigInt(amount, 0)
+	require.NoError(t, err)
+	err = decimalAmt.SetPrecisionAndScale(78, 0)
+	require.NoError(t, err)
+
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO epoch_rewards (epoch_id, recipient, amount)
+		VALUES ($epoch_id, $recipient, $amount)
+	`, map[string]any{
+		"epoch_id":  epochID,
+		"recipient": recipient.Bytes(),
+		"amount":    decimalAmt,
+	}, nil)
+	require.NoError(t, err)
+
+	// Insert validator signatures
+	validator := ethcommon.HexToAddress("0xValidator1000000000000000000000000000001")
+	sig := make([]byte, 65)
+	copy(sig[0:32], []byte("R1"))
+	copy(sig[32:64], []byte("S1"))
+	sig[64] = 27
+
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO epoch_votes (epoch_id, voter, nonce, signature)
+		VALUES ($epoch_id, $voter, $nonce, $signature)
+	`, map[string]any{
+		"epoch_id":  epochID,
+		"voter":     validator.Bytes(),
+		"nonce":     int64(0),
+		"signature": sig,
+	}, nil)
+	require.NoError(t, err)
+
+	// Insert withdrawal record if status is not empty
+	if withdrawalStatus != "" {
+		if includeTxHash {
+			txHashBytes := ethcommon.HexToHash("0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1").Bytes()
+			err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+				{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, tx_hash, block_number, created_at, claimed_at, updated_at)
+				VALUES ($epoch_id, $recipient, $status, $tx_hash, 12345678, 1000, 2000, 2000)
+			`, map[string]any{
+				"epoch_id":  epochID,
+				"recipient": recipient.Bytes(),
+				"status":    withdrawalStatus,
+				"tx_hash":   txHashBytes,
+			}, nil)
+		} else {
+			err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+				{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, created_at, updated_at)
+				VALUES ($epoch_id, $recipient, $status, 1000, 1000)
+			`, map[string]any{
+				"epoch_id":  epochID,
+				"recipient": recipient.Bytes(),
+				"status":    withdrawalStatus,
+			}, nil)
+		}
+		require.NoError(t, err)
+	}
+
+	return epochID, recipient, amount
+}
+
+// cleanupTestData removes all test data from the database.
+// This should be called with defer to ensure cleanup happens even if test fails.
+func cleanupTestData(t *testing.T, db *pg.DB) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Try up to 3 times to handle "writer tx exists" errors
+	var tx sql.Tx
+	var err error
+	for i := 0; i < 3; i++ {
+		tx, err = db.BeginTx(ctx)
+		if err == nil {
+			break
+		}
+		if i < 2 {
+			// Wait a bit before retrying
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	if err != nil {
+		t.Logf("Warning: failed to begin cleanup transaction after retries: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// Delete in order respecting foreign keys
+	queries := []string{
+		"DELETE FROM kwil_erc20_meta.withdrawals",
+		"DELETE FROM kwil_erc20_meta.epoch_votes",
+		"DELETE FROM kwil_erc20_meta.epoch_rewards",
+		"DELETE FROM kwil_erc20_meta.epochs",
+		"DELETE FROM kwil_erc20_meta.reward_instances",
+	}
+
+	for _, query := range queries {
+		_, err := tx.Execute(ctx, query)
+		if err != nil {
+			t.Logf("Warning: cleanup query failed: %s - %v", query, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Logf("Warning: failed to commit cleanup: %v", err)
+	}
+}
+
+// TestGetWithdrawalProof_StatusTracking_DefaultReady tests that when no withdrawal
+// tracking record exists, the status defaults to "ready" and eth_tx_hash is nil.
+func TestGetWithdrawalProof_StatusTracking_DefaultReady(t *testing.T) {
+	initSchemaOnce(t)
+	setupTest(t)
+
+	ctx := context.Background()
+	db := getTestDB(t)
+	defer cleanupTestData(t, db)
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+
+	engine, err := interpreter.NewInterpreter(ctx, tx, &common.Service{Logger: log.New()}, nil, nil, nil)
+	require.NoError(t, err)
+
+	app := &common.App{
+		DB:     tx,
+		Engine: engine,
+		Service: &common.Service{
+			Logger: log.New(),
+		},
+	}
+
+	// Setup test data WITHOUT withdrawal record
+	epochID, recipient, amount := setupTestEpochDataWithWithdrawal(t, ctx, app, "status-default-ready", "", false)
+
+	err = tx.Commit(ctx)
+	require.NoError(t, err)
+
+	svc := setupTestService(t, db, engine)
+
+	req := &userjson.WithdrawalProofRequest{
+		EpochID:   epochID.String(),
+		Recipient: recipient.Hex(),
+	}
+
+	resp, jsonErr := svc.GetWithdrawalProof(ctx, req)
+	require.Nil(t, jsonErr)
+	require.NotNil(t, resp)
+
+	// Verify response - should have default "ready" status with no tx hash
+	require.Equal(t, recipient.Hex(), resp.Recipient)
+	require.Equal(t, amount.String(), resp.Amount)
+	require.Equal(t, "ready", resp.Status, "status should default to 'ready' when no tracking record exists")
+	require.Nil(t, resp.EthTxHash, "eth_tx_hash should be nil when no tracking record exists")
+}
+
+// TestGetWithdrawalProof_StatusTracking_Ready tests that when a withdrawal
+// tracking record exists with status='ready', it is returned correctly.
+func TestGetWithdrawalProof_StatusTracking_Ready(t *testing.T) {
+	initSchemaOnce(t)
+	setupTest(t)
+
+	ctx := context.Background()
+	db := getTestDB(t)
+	defer cleanupTestData(t, db)
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+
+	engine, err := interpreter.NewInterpreter(ctx, tx, &common.Service{Logger: log.New()}, nil, nil, nil)
+	require.NoError(t, err)
+
+	app := &common.App{
+		DB:     tx,
+		Engine: engine,
+		Service: &common.Service{
+			Logger: log.New(),
+		},
+	}
+
+	// Setup test data WITH withdrawal record (status='ready', no tx_hash)
+	epochID, recipient, amount := setupTestEpochDataWithWithdrawal(t, ctx, app, "status-ready", "ready", false)
+
+	err = tx.Commit(ctx)
+	require.NoError(t, err)
+
+	svc := setupTestService(t, db, engine)
+
+	req := &userjson.WithdrawalProofRequest{
+		EpochID:   epochID.String(),
+		Recipient: recipient.Hex(),
+	}
+
+	resp, jsonErr := svc.GetWithdrawalProof(ctx, req)
+	require.Nil(t, jsonErr)
+	require.NotNil(t, resp)
+
+	// Verify response - should have 'ready' status with no tx hash
+	require.Equal(t, recipient.Hex(), resp.Recipient)
+	require.Equal(t, amount.String(), resp.Amount)
+	require.Equal(t, "ready", resp.Status, "status should be 'ready' from tracking record")
+	require.Nil(t, resp.EthTxHash, "eth_tx_hash should be nil when status is 'ready'")
+}
+
+// TestGetWithdrawalProof_StatusTracking_Claimed tests that when a withdrawal
+// tracking record exists with status='claimed' and a tx_hash, both are returned correctly.
+func TestGetWithdrawalProof_StatusTracking_Claimed(t *testing.T) {
+	initSchemaOnce(t)
+	setupTest(t)
+
+	ctx := context.Background()
+	db := getTestDB(t)
+	defer cleanupTestData(t, db)
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+
+	engine, err := interpreter.NewInterpreter(ctx, tx, &common.Service{Logger: log.New()}, nil, nil, nil)
+	require.NoError(t, err)
+
+	app := &common.App{
+		DB:     tx,
+		Engine: engine,
+		Service: &common.Service{
+			Logger: log.New(),
+		},
+	}
+
+	// Setup test data WITH withdrawal record (status='claimed', with tx_hash)
+	epochID, recipient, amount := setupTestEpochDataWithWithdrawal(t, ctx, app, "status-claimed", "claimed", true)
+
+	err = tx.Commit(ctx)
+	require.NoError(t, err)
+
+	svc := setupTestService(t, db, engine)
+
+	req := &userjson.WithdrawalProofRequest{
+		EpochID:   epochID.String(),
+		Recipient: recipient.Hex(),
+	}
+
+	resp, jsonErr := svc.GetWithdrawalProof(ctx, req)
+	require.Nil(t, jsonErr)
+	require.NotNil(t, resp)
+
+	expectedTxHash := "0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1"
+
+	// Verify response - should have 'claimed' status with tx hash
+	require.Equal(t, recipient.Hex(), resp.Recipient)
+	require.Equal(t, amount.String(), resp.Amount)
+	require.Equal(t, "claimed", resp.Status, "status should be 'claimed' from tracking record")
+	require.NotNil(t, resp.EthTxHash, "eth_tx_hash should not be nil when status is 'claimed'")
+	require.Equal(t, expectedTxHash, *resp.EthTxHash, "eth_tx_hash should match the stored value")
+}
+
+// TestGetWithdrawalProof_StatusTracking_Pending tests that withdrawal records
+// can have 'pending' status (validates the CHECK constraint).
+func TestGetWithdrawalProof_StatusTracking_Pending(t *testing.T) {
+	initSchemaOnce(t)
+	setupTest(t)
+
+	ctx := context.Background()
+	db := getTestDB(t)
+	defer cleanupTestData(t, db)
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+
+	engine, err := interpreter.NewInterpreter(ctx, tx, &common.Service{Logger: log.New()}, nil, nil, nil)
+	require.NoError(t, err)
+
+	app := &common.App{
+		DB:     tx,
+		Engine: engine,
+		Service: &common.Service{
+			Logger: log.New(),
+		},
+	}
+
+	// Setup test data WITH withdrawal record (status='pending')
+	epochID, recipient, amount := setupTestEpochDataWithWithdrawal(t, ctx, app, "status-pending", "pending", false)
+
+	err = tx.Commit(ctx)
+	require.NoError(t, err)
+
+	svc := setupTestService(t, db, engine)
+
+	req := &userjson.WithdrawalProofRequest{
+		EpochID:   epochID.String(),
+		Recipient: recipient.Hex(),
+	}
+
+	resp, jsonErr := svc.GetWithdrawalProof(ctx, req)
+	require.Nil(t, jsonErr)
+	require.NotNil(t, resp)
+
+	// Verify response - should have 'pending' status with no tx hash
+	require.Equal(t, recipient.Hex(), resp.Recipient)
+	require.Equal(t, amount.String(), resp.Amount)
+	require.Equal(t, "pending", resp.Status, "status should be 'pending' from tracking record")
+	require.Nil(t, resp.EthTxHash, "eth_tx_hash should be nil when status is 'pending'")
 }
