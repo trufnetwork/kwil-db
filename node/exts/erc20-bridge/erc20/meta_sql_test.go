@@ -1,3 +1,5 @@
+//go:build kwiltest
+
 package erc20
 
 import (
@@ -13,6 +15,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/engine/interpreter"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
 	"github.com/trufnetwork/kwil-db/node/pg"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
@@ -79,6 +82,9 @@ func TestCreateNewRewardInstance(t *testing.T) {
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 	defer tx.Rollback(ctx) // always rollback
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
 
 	app := setup(t, tx)
 
@@ -152,6 +158,13 @@ func TestCreateNewRewardInstance(t *testing.T) {
 var zeroHex = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
 
 // TestWithdrawalsTableExists verifies that the withdrawals table is created by the schema.
+// TODO: Add schema validation checks for comprehensive coverage:
+//   - Column presence and types (epoch_id, recipient, tx_hash, status, created_at, etc.)
+//   - Primary key constraint on (epoch_id, recipient)
+//   - Foreign key to epochs table
+//   - Status CHECK constraint values ('pending', 'ready', 'claimed')
+//   - Index existence (idx_withdrawals_status, idx_withdrawals_tx_hash, idx_withdrawals_recipient)
+//     This would catch schema drift issues earlier.
 func TestWithdrawalsTableExists(t *testing.T) {
 	ctx := context.Background()
 	db, err := newTestDB()
@@ -161,6 +174,9 @@ func TestWithdrawalsTableExists(t *testing.T) {
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 	defer tx.Rollback(ctx) // always rollback
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
 
 	_ = setup(t, tx) // setup creates the schema
 

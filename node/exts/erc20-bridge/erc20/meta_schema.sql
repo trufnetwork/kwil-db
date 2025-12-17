@@ -91,8 +91,9 @@ CREATE TABLE withdrawals (
     recipient BYTEA NOT NULL,
     tx_hash BYTEA,               -- Blockchain transaction hash (NULL until claimed)
     block_number INT8,           -- Blockchain block number
-    claimed_at INT8,             -- Unix timestamp when claimed
-    updated_at INT8,             -- Last update timestamp
+    created_at INT8 NOT NULL,    -- Unix timestamp when record was created (Kwil block time)
+    claimed_at INT8,             -- Unix timestamp when claimed on external blockchain
+    updated_at INT8,             -- Last update timestamp (Kwil block time)
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'claimed')),
     PRIMARY KEY (epoch_id, recipient),
     FOREIGN KEY (epoch_id) REFERENCES epochs(id) ON DELETE CASCADE
