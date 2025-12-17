@@ -48,7 +48,8 @@ Run each test individually with manual cleanup:
 ```bash
 # Cleanup command (run before each test)
 PGPASSWORD=kwild psql -h localhost -p 5432 -U kwild -d kwil_test_db -c \
-  "DELETE FROM kwil_erc20_meta.epoch_votes; \
+  "DELETE FROM kwil_erc20_meta.withdrawals; \
+   DELETE FROM kwil_erc20_meta.epoch_votes; \
    DELETE FROM kwil_erc20_meta.epoch_rewards; \
    DELETE FROM kwil_erc20_meta.epochs; \
    DELETE FROM kwil_erc20_meta.reward_instances;"
@@ -57,7 +58,7 @@ PGPASSWORD=kwild psql -h localhost -p 5432 -U kwild -d kwil_test_db -c \
 go test ./node/services/jsonrpc/usersvc -tags=kwiltest -run "^TestGetWithdrawalProof_ValidRequest$" -v
 ```
 
-Available tests:
+Available tests (11 total):
 - `TestGetWithdrawalProof_ValidRequest`
 - `TestGetWithdrawalProof_InvalidEpochID`
 - `TestGetWithdrawalProof_InvalidRecipientFormat`
@@ -65,6 +66,93 @@ Available tests:
 - `TestGetWithdrawalProof_RecipientNotInEpoch`
 - `TestGetWithdrawalProof_PendingEpoch_NotEnded`
 - `TestGetWithdrawalProof_PendingEpoch_NotConfirmed`
+- `TestGetWithdrawalProof_StatusTracking_DefaultReady`
+- `TestGetWithdrawalProof_StatusTracking_Ready`
+- `TestGetWithdrawalProof_StatusTracking_Claimed`
+- `TestGetWithdrawalProof_StatusTracking_Pending`
+
+### Withdrawal Status Tracking
+
+The `withdrawals` table tracks withdrawal claim status across multiple blockchains (Ethereum, Polygon, Arbitrum, etc.). This allows `GetWithdrawalProof` to return accurate status information about whether a withdrawal has been claimed on the external blockchain.
+
+#### Status Flow
+
+- **`pending`**: Epoch not finalized yet, withdrawal cannot be claimed
+- **`ready`**: Epoch finalized, user can claim withdrawal on blockchain (default if no tracking record exists)
+- **`claimed`**: User has claimed withdrawal on blockchain, `eth_tx_hash` contains the transaction hash
+
+#### Multi-Chain Support
+
+Chain information is determined through the epoch relationship:
+```
+withdrawals → epochs → reward_instances → chain_id
+```
+
+This design allows a single `withdrawals` table to track claims across all supported chains without storing chain information redundantly.
+
+#### Response Format
+
+The `GetWithdrawalProof` JSON-RPC response includes:
+```json
+{
+  "status": "ready|claimed|pending",
+  "eth_tx_hash": "0xabc123..." // null if not claimed
+  // ... other fields (merkle proof, signatures, etc.)
+}
+```
+
+#### Manual Testing
+
+You can manually test status tracking by inserting records into the `withdrawals` table:
+
+```bash
+# 1. Get a valid epoch_id and recipient from an existing epoch
+PGPASSWORD=kwild psql -h localhost -p 5432 -U kwild -d kwil_test_db -c \
+  "SELECT encode(e.id, 'hex') as epoch_id, encode(r.recipient, 'hex') as recipient
+   FROM kwil_erc20_meta.epochs e
+   JOIN kwil_erc20_meta.epoch_rewards r ON e.id = r.epoch_id
+   WHERE e.confirmed = true
+   LIMIT 1;"
+
+# 2. Test default "ready" status (no record exists)
+curl -X POST http://localhost:8484/rpc/v1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "user.get_withdrawal_proof",
+    "params": {
+      "epoch_id": "<epoch_id_from_step_1>",
+      "recipient": "0x<recipient_hex_from_step_1>"
+    },
+    "id": 1
+  }'
+# Response: {"status": "ready", "eth_tx_hash": null, ...}
+
+# 3. Insert a "ready" status record
+PGPASSWORD=kwild psql -h localhost -p 5432 -U kwild -d kwil_test_db -c \
+  "INSERT INTO kwil_erc20_meta.withdrawals (epoch_id, recipient, status, created_at, updated_at)
+   VALUES (decode('<epoch_id>', 'hex'), decode('<recipient_hex>', 'hex'), 'ready',
+           extract(epoch from now())::int8, extract(epoch from now())::int8);"
+
+# 4. Call GetWithdrawalProof again
+# Response: {"status": "ready", "eth_tx_hash": null, ...}
+
+# 5. Update to "claimed" with transaction hash
+PGPASSWORD=kwild psql -h localhost -p 5432 -U kwild -d kwil_test_db -c \
+  "UPDATE kwil_erc20_meta.withdrawals
+   SET status = 'claimed',
+       tx_hash = decode('abc123def456abc123def456abc123def456abc123def456abc123def456abc1', 'hex'),
+       block_number = 12345678,
+       claimed_at = extract(epoch from now())::int8,
+       updated_at = extract(epoch from now())::int8
+   WHERE epoch_id = decode('<epoch_id>', 'hex')
+     AND recipient = decode('<recipient_hex>', 'hex');"
+
+# 6. Call GetWithdrawalProof again
+# Response: {"status": "claimed", "eth_tx_hash": "0xabc123def456...", ...}
+```
+
+**Note**: In production, the `withdrawals` table will be automatically populated by a blockchain event monitor (Phase 2). For now (Phase 1 MVP), status tracking can be manually tested using the commands above.
 
 ### Prerequisites
 

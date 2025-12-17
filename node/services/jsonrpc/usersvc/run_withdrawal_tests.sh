@@ -25,6 +25,10 @@ TESTS=(
     "TestGetWithdrawalProof_RecipientNotInEpoch"
     "TestGetWithdrawalProof_PendingEpoch_NotEnded"
     "TestGetWithdrawalProof_PendingEpoch_NotConfirmed"
+    "TestGetWithdrawalProof_StatusTracking_DefaultReady"
+    "TestGetWithdrawalProof_StatusTracking_Ready"
+    "TestGetWithdrawalProof_StatusTracking_Claimed"
+    "TestGetWithdrawalProof_StatusTracking_Pending"
 )
 
 # Cleanup function
@@ -36,9 +40,10 @@ cleanup_db() {
         "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = 'kwil_erc20_meta');" 2>/dev/null)
 
     if [ "$SCHEMA_EXISTS" = "t" ]; then
-        # Schema exists, clean up the tables
+        # Schema exists, clean up the tables (order respects foreign keys)
         PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c \
-            "DELETE FROM kwil_erc20_meta.epoch_votes; \
+            "DELETE FROM kwil_erc20_meta.withdrawals; \
+             DELETE FROM kwil_erc20_meta.epoch_votes; \
              DELETE FROM kwil_erc20_meta.epoch_rewards; \
              DELETE FROM kwil_erc20_meta.epochs; \
              DELETE FROM kwil_erc20_meta.reward_instances;" \

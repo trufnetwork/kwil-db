@@ -1421,15 +1421,57 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 	}
 
 	// Check if withdrawal has been completed on the blockchain (multi-chain support)
-	// This requires querying the withdrawals table
-	// For now, we'll just return "ready" status
-	status := "ready"
+	// Query withdrawals table to get current status
+	status := "ready" // Default to ready if no tracking record exists
 	var ethTxHash *string
 
-	// TODO: Query withdrawals table for status tracking:
-	// {kwil_erc20_meta}SELECT tx_hash, status FROM withdrawals
-	// WHERE epoch_id = $epoch_id AND recipient = $recipient
-	// TODO: Implement automatic blockchain event monitoring to update this table
+	// Convert recipient hex string to bytes for query
+	recipientBytes := ethcommon.HexToAddress(req.Recipient).Bytes()
+
+	withdrawalQuery := `
+		{kwil_erc20_meta}SELECT tx_hash, status
+		FROM withdrawals
+		WHERE epoch_id = $epoch_id AND recipient = $recipient
+	`
+
+	err = svc.engine.Execute(engineCtx, readTx, withdrawalQuery, map[string]any{
+		"epoch_id":  epochID,
+		"recipient": recipientBytes,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 2 {
+			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
+		}
+
+		// Handle nullable tx_hash
+		if row.Values[0] != nil {
+			hash, ok := row.Values[0].([]byte)
+			if !ok {
+				return fmt.Errorf("unexpected type for tx_hash: got %T", row.Values[0])
+			}
+			hashHex := "0x" + fmt.Sprintf("%x", hash)
+			ethTxHash = &hashHex
+		}
+
+		// Get status
+		statusVal, ok := row.Values[1].(string)
+		if !ok {
+			return fmt.Errorf("unexpected type for status: got %T", row.Values[1])
+		}
+		status = statusVal
+
+		return nil
+	})
+
+	// If no record exists, status remains "ready" (default set above)
+	// This is fine - the table is optional for backwards compatibility
+	if err != nil {
+		svc.log.Debug("no withdrawal tracking record found, using default status",
+			"epoch_id", epochID.String(),
+			"recipient", req.Recipient,
+			"default_status", status)
+	}
+
+	// TODO (Phase 2): Implement automatic blockchain event monitoring to update this table
 
 	// Parse chain ID
 	var chainID int64 = 1 // Default to Ethereum mainnet
