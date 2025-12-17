@@ -1420,15 +1420,16 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "no valid signatures found", nil)
 	}
 
-	// Check if withdrawal has been completed on Ethereum
-	// This requires querying the ethereum_withdrawals table from the node repo (Issue #5)
+	// Check if withdrawal has been completed on the blockchain (multi-chain support)
+	// This requires querying the withdrawals table
 	// For now, we'll just return "ready" status
 	status := "ready"
 	var ethTxHash *string
 
-	// TODO: Once Issue #5 is implemented, query ethereum_withdrawals table:
-	// {kwil_erc20_meta}SELECT eth_tx_hash, status FROM ethereum_withdrawals
+	// TODO: Query withdrawals table for status tracking:
+	// {kwil_erc20_meta}SELECT tx_hash, status FROM withdrawals
 	// WHERE epoch_id = $epoch_id AND recipient = $recipient
+	// TODO: Implement automatic blockchain event monitoring to update this table
 
 	// Parse chain ID
 	var chainID int64 = 1 // Default to Ethereum mainnet

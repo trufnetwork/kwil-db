@@ -150,3 +150,28 @@ func TestCreateNewRewardInstance(t *testing.T) {
 }
 
 var zeroHex = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+
+// TestWithdrawalsTableExists verifies that the withdrawals table is created by the schema.
+func TestWithdrawalsTableExists(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	require.NoError(t, err)
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) // always rollback
+
+	_ = setup(t, tx) // setup creates the schema
+
+	// Query to check if the table exists by trying to query it
+	// If the table doesn't exist, this will return an error
+	query := `SELECT COUNT(*) FROM kwil_erc20_meta.withdrawals`
+
+	result, err := tx.Execute(ctx, query)
+	require.NoError(t, err, "withdrawals table should exist and be queryable")
+	require.Len(t, result.Rows, 1, "should have one result row")
+	require.Len(t, result.Rows[0], 1, "should have one column")
+
+	// Table exists and is queryable, test passes
+}
