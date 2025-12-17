@@ -1462,14 +1462,23 @@ func (svc *Service) GetWithdrawalProof(ctx context.Context, req *userjson.Withdr
 		return nil
 	})
 
-	// If no record exists, status remains "ready" (default set above)
-	// This is fine - the table is optional for backwards compatibility
 	if err != nil {
-		svc.log.Debug("no withdrawal tracking record found, using default status",
-			"epoch_id", epochID.String(),
-			"recipient", req.Recipient,
-			"default_status", status)
+		// Table not existing is expected during migration (backward compatibility)
+		// Other errors (connection, syntax) are more concerning and should be logged at higher level
+		if strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "not found") {
+			svc.log.Debug("withdrawal tracking table not yet available, using default status",
+				"epoch_id", epochID.String(),
+				"recipient", req.Recipient,
+				"default_status", status)
+		} else {
+			svc.log.Error("failed to query withdrawal status, using default",
+				"epoch_id", epochID.String(),
+				"recipient", req.Recipient,
+				"error", err,
+				"default_status", status)
+		}
 	}
+	// If callback was never invoked (no matching row), status remains "ready" (default)
 
 	// TODO (Phase 2): Implement automatic blockchain event monitoring to update this table
 

@@ -24,6 +24,7 @@ import (
 	bridgeUtils "github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
 	"github.com/trufnetwork/kwil-db/node/pg"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 var (
@@ -48,6 +49,19 @@ func resetTestSingletons() {
 	orderedsync.ForTestingReset()
 	// Reset the ERC20 extension singleton
 	erc20.ForTestingResetSingleton()
+}
+
+// setupTest prepares the test environment by cleaning up leftover data
+// and resetting singletons. Call this at the start of every test.
+// Note: Tests should still call defer cleanupTestData(t, db) themselves.
+func setupTest(t *testing.T) {
+	t.Helper()
+
+	// Clean up any leftover data from previous tests first
+	cleanupTestData(t, getTestDB(t))
+
+	// Then reset singletons
+	resetTestSingletons()
 }
 
 // getTestDB returns a shared database connection for all tests.
@@ -294,7 +308,7 @@ func TestGetWithdrawalProof_ValidRequest(t *testing.T) {
 	initSchemaOnce(t)
 
 	// Reset singleton state before each test to ensure isolation
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -356,7 +370,7 @@ func TestGetWithdrawalProof_ValidRequest(t *testing.T) {
 
 func TestGetWithdrawalProof_InvalidEpochID(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -385,7 +399,7 @@ func TestGetWithdrawalProof_InvalidEpochID(t *testing.T) {
 
 func TestGetWithdrawalProof_InvalidRecipientFormat(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -430,7 +444,7 @@ func TestGetWithdrawalProof_InvalidRecipientFormat(t *testing.T) {
 
 func TestGetWithdrawalProof_EpochNotFound(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -461,7 +475,7 @@ func TestGetWithdrawalProof_EpochNotFound(t *testing.T) {
 
 func TestGetWithdrawalProof_RecipientNotInEpoch(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -504,7 +518,7 @@ func TestGetWithdrawalProof_RecipientNotInEpoch(t *testing.T) {
 
 func TestGetWithdrawalProof_PendingEpoch_NotEnded(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -594,7 +608,7 @@ func TestGetWithdrawalProof_PendingEpoch_NotEnded(t *testing.T) {
 
 func TestGetWithdrawalProof_PendingEpoch_NotConfirmed(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -807,9 +821,22 @@ func cleanupTestData(t *testing.T, db *pg.DB) {
 	t.Helper()
 	ctx := context.Background()
 
-	tx, err := db.BeginTx(ctx)
+	// Try up to 3 times to handle "writer tx exists" errors
+	var tx sql.Tx
+	var err error
+	for i := 0; i < 3; i++ {
+		tx, err = db.BeginTx(ctx)
+		if err == nil {
+			break
+		}
+		if i < 2 {
+			// Wait a bit before retrying
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
 	if err != nil {
-		t.Logf("Warning: failed to begin cleanup transaction: %v", err)
+		t.Logf("Warning: failed to begin cleanup transaction after retries: %v", err)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -839,7 +866,7 @@ func cleanupTestData(t *testing.T, db *pg.DB) {
 // tracking record exists, the status defaults to "ready" and eth_tx_hash is nil.
 func TestGetWithdrawalProof_StatusTracking_DefaultReady(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -887,7 +914,7 @@ func TestGetWithdrawalProof_StatusTracking_DefaultReady(t *testing.T) {
 // tracking record exists with status='ready', it is returned correctly.
 func TestGetWithdrawalProof_StatusTracking_Ready(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -935,7 +962,7 @@ func TestGetWithdrawalProof_StatusTracking_Ready(t *testing.T) {
 // tracking record exists with status='claimed' and a tx_hash, both are returned correctly.
 func TestGetWithdrawalProof_StatusTracking_Claimed(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
@@ -986,7 +1013,7 @@ func TestGetWithdrawalProof_StatusTracking_Claimed(t *testing.T) {
 // can have 'pending' status (validates the CHECK constraint).
 func TestGetWithdrawalProof_StatusTracking_Pending(t *testing.T) {
 	initSchemaOnce(t)
-	resetTestSingletons()
+	setupTest(t)
 
 	ctx := context.Background()
 	db := getTestDB(t)
