@@ -419,7 +419,7 @@ func (ce *ConsensusEngine) Start(ctx context.Context, fns BroadcastFns, peerFns 
 	ce.txAnnouncer = fns.TxAnnouncer
 
 	ce.blockProcessor.SetCallbackFns(fns.TxBroadcaster, peerFns.AddPeer, peerFns.RemovePeer)
-	// Catchup timeout should be atleast greater than the emptyBlockTimeout
+	// Catchup timeout should be at least greater than the emptyBlockTimeout
 	ce.catchupTimeout = max(5*time.Second, ce.emptyBlockTimeout+ce.proposeTimeout)
 	ce.catchupTicker = time.NewTicker(ce.catchupTimeout)
 
@@ -646,7 +646,7 @@ func (ce *ConsensusEngine) handleConsensusMessages(ctx context.Context, msg cons
 // applyLeaderUpdates will apply any leader updates configured on this node
 // using the `validators replace-leader` command. This method is called after
 // processing a blockAnn message and after blocksync and at the init. This method
-// ensures that only existing validators can be promted to leader at the specified
+// ensures that only existing validators can be promoted to leader at the specified
 // heights and updates the roles of the nodes if changed by this update.
 // This method also ensures that the stale updates are removed from the disk.
 func (ce *ConsensusEngine) applyLeaderUpdates() {

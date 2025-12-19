@@ -208,7 +208,7 @@ func (s *Snapshotter) dbSnapshotStream(ctx context.Context, height uint64, forma
 		args = append(args, "-T", table)
 	}
 
-	// Tables for which defintions should be included but not the data
+	// Tables for which definitions should be included but not the data
 	for _, table := range excludeTableData {
 		args = append(args, "--exclude-table-data", table)
 	}
