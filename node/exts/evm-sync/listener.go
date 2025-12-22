@@ -121,7 +121,7 @@ func getChainConf(cfg config.ERC20BridgeConfig, chain chains.Chain) (*chainConfi
 		return nil, fmt.Errorf("local configuration does not have an '%s' config", chain.String())
 	}
 
-	syncChunk, ok := cfg.BlockSyncChuckSize[chains.Ethereum.String()]
+	syncChunk, ok := cfg.BlockSyncChuckSize[chain.String()]
 	if !ok {
 		syncChunk = "1000000"
 	}
@@ -135,9 +135,23 @@ func getChainConf(cfg config.ERC20BridgeConfig, chain chains.Chain) (*chainConfi
 		return nil, errors.New("block_sync_chunk_size must be greater than 0")
 	}
 
+	startBlockStr, ok := cfg.StartBlock[chain.String()]
+	if !ok {
+		startBlockStr = "0"
+	}
+
+	startBlock, err := strconv.ParseInt(startBlockStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid start_block for chain %s: %w", chain.String(), err)
+	}
+	if startBlock < 0 {
+		return nil, fmt.Errorf("start_block for chain %s must be non-negative", chain.String())
+	}
+
 	conf := &chainConfig{
 		BlockSyncChunkSize: blockSyncChunkSize,
 		Provider:           provider,
+		StartBlock:         startBlock,
 	}
 
 	return conf, nil
@@ -152,6 +166,9 @@ type chainConfig struct {
 	// Provider is the URL of the RPC endpoint for the chain.
 	// It is required.
 	Provider string
+	// StartBlock is the starting block number to use when eventstore has no last seen height.
+	// If not configured, defaults to 0.
+	StartBlock int64
 }
 
 // individualListener is a singler configured client that is responsible for listening to a single set of contracts.
@@ -178,6 +195,11 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 	startBlock, err := getLastSeenHeight(ctx, eventstore, i.orderedSyncTopic)
 	if err != nil {
 		return fmt.Errorf("failed to get last seen height: %w", err)
+	}
+	logger.Infof("StartBlock of %s: %d", i.orderedSyncTopic, startBlock)
+	// If eventstore has no last seen height (returns 0), use StartBlock from config if configured
+	if startBlock == 0 && i.chainConf.StartBlock > 0 {
+		startBlock = i.chainConf.StartBlock
 	}
 
 	currentBlock, err := i.client.GetLatestBlock(ctx)
@@ -229,7 +251,7 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 			return nil
 		}
 
-		logger.Info("received new block", "block", newHeight)
+		logger.Debug("received new block", "block", newHeight)
 
 		// lastheight + 1 because we have already processed the last height
 		err := i.processEvents(ctx, startBlock+1, newHeight, eventstore, logger)
@@ -256,7 +278,7 @@ func (i *individualListener) processEvents(ctx context.Context, from, to int64, 
 	}
 
 	if len(logs) == 0 {
-		return nil
+		return setLastSeenHeight(ctx, eventStore, i.orderedSyncTopic, to)
 	}
 
 	// order logs by block number
