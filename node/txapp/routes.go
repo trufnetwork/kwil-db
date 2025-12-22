@@ -635,7 +635,7 @@ func (d *validatorRemoveRoute) InTx(ctx *common.TxContext, app *common.App, tx *
 	}
 
 	// we should try to create the resolution, since validator removals are never
-	// officially "started" by the user. Since we don't have a seperare process for
+	// officially "started" by the user. Since we don't have a separate process for
 	// creating and approving Validator Removals, check if the resolution already exists
 	// and if it does, approve it, otherwise create and approve it.
 	exists, err := resolutionExists(ctx.Ctx, app.DB, event.ID())
