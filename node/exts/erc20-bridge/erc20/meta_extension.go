@@ -72,7 +72,7 @@ var (
 	// so that we know how to decode them
 	logTypeDeposit        = []byte("rcpdepst")
 	logTypeConfirmedEpoch = []byte("cnfepch")
-	logTypeWithdrawal     = []byte("wthdrwl")
+	logTypeWithdrawal     = []byte("wthdrwl") //nolint:unused // TODO: Will be used in another PR (withdrawal listener implementation)
 
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
 
@@ -122,11 +122,15 @@ func idFromDepositListenerUniqueName(name string) (*types.UUID, error) {
 }
 
 // withdrawalListenerUniqueName generates a unique name for the withdrawal listener
+//
+//nolint:unused // TODO: Will be used in another PR (withdrawal listener implementation)
 func withdrawalListenerUniqueName(id types.UUID) string {
 	return withdrawalListenerPrefix + id.String()
 }
 
 // idFromWithdrawalListenerUniqueName extracts the id from the unique name
+//
+//nolint:unused // TODO: Will be used in another PR (event resolution handler)
 func idFromWithdrawalListenerUniqueName(name string) (*types.UUID, error) {
 	if !strings.HasPrefix(name, withdrawalListenerPrefix) {
 		return nil, fmt.Errorf("invalid withdrawal listener name %s", name)
@@ -1985,6 +1989,8 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 // - Option 1: Maintain map of known old contract addresses
 // - Option 2: Query contract ABI features (e.g., check for withdraw() function signature)
 // - Option 3: Add contract_version column to reward_instances table
+//
+//nolint:unused // TODO: Will be used in another PR (withdrawal listener will check this before starting)
 func (r *rewardExtensionInfo) isOldContract() bool {
 	// For now, assume all contracts are new TrufNetworkBridge contracts.
 	// This will be updated when we have deployed instances of both contract types.
@@ -2079,6 +2085,8 @@ type irewardLogParser interface {
 
 // bridgeLogParser is a pre-bound TrufNetworkBridge filterer for parsing Withdraw events.
 // This is used by the withdrawal listener to parse Withdraw events from the new contract.
+//
+//nolint:unused // TODO: Will be used in another PR (applyWithdrawalLog event handler)
 var bridgeLogParser = func() ibridgeLogParser {
 	filt, err := abigen.NewTrufNetworkBridgeFilterer(ethcommon.Address{}, nilEthFilterer{})
 	if err != nil {
@@ -2089,6 +2097,8 @@ var bridgeLogParser = func() ibridgeLogParser {
 }()
 
 // ibridgeLogParser is an interface for parsing TrufNetworkBridge logs.
+//
+//nolint:unused // TODO: Will be used in another PR (type constraint for bridgeLogParser)
 type ibridgeLogParser interface {
 	ParseWithdraw(log ethtypes.Log) (*abigen.TrufNetworkBridgeWithdraw, error)
 }
