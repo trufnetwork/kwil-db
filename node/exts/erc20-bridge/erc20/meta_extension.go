@@ -72,6 +72,7 @@ var (
 	// so that we know how to decode them
 	logTypeDeposit        = []byte("rcpdepst")
 	logTypeConfirmedEpoch = []byte("cnfepch")
+	logTypeWithdrawal     = []byte("wthdrwl")
 
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
 
@@ -98,10 +99,12 @@ func idFromStatePollerUniqueName(name string) (*types.UUID, error) {
 }
 
 const (
-	statePollerPrefix          = "erc20_state_poll_"
-	depositListenerPrefix      = "erc20_transfer_listener_" // retain prefix for stored topics
-	depositEventResolutionName = "erc20_transfer_sync"
-	statePollResolutionName    = "erc20_state_poll_sync"
+	statePollerPrefix             = "erc20_state_poll_"
+	depositListenerPrefix         = "erc20_transfer_listener_" // retain prefix for stored topics
+	depositEventResolutionName    = "erc20_transfer_sync"
+	withdrawalListenerPrefix      = "erc20_withdrawal_listener_"
+	withdrawalEventResolutionName = "erc20_withdrawal_sync"
+	statePollResolutionName       = "erc20_state_poll_sync"
 )
 
 // depositListenerUniqueName generates a unique name for the deposit listener
@@ -116,6 +119,20 @@ func idFromDepositListenerUniqueName(name string) (*types.UUID, error) {
 	}
 
 	return types.ParseUUID(strings.TrimPrefix(name, depositListenerPrefix))
+}
+
+// withdrawalListenerUniqueName generates a unique name for the withdrawal listener
+func withdrawalListenerUniqueName(id types.UUID) string {
+	return withdrawalListenerPrefix + id.String()
+}
+
+// idFromWithdrawalListenerUniqueName extracts the id from the unique name
+func idFromWithdrawalListenerUniqueName(name string) (*types.UUID, error) {
+	if !strings.HasPrefix(name, withdrawalListenerPrefix) {
+		return nil, fmt.Errorf("invalid withdrawal listener name %s", name)
+	}
+
+	return types.ParseUUID(strings.TrimPrefix(name, withdrawalListenerPrefix))
 }
 
 // generateEpochID generates a deterministic UUID for an epoch
@@ -1958,6 +1975,29 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 	})
 }
 
+// isOldContract checks if this instance uses the old RewardDistributor pattern.
+// Returns true for RewardDistributor (old contract), false for TrufNetworkBridge (new contract).
+//
+// The old contract (RewardDistributor) uses a claim-based pattern and does not support withdrawals.
+// The new contract (TrufNetworkBridge) uses a withdrawal-based pattern with validator signatures.
+//
+// TODO: Currently returns false (assumes new contract). Implement contract detection by:
+// - Option 1: Maintain map of known old contract addresses
+// - Option 2: Query contract ABI features (e.g., check for withdraw() function signature)
+// - Option 3: Add contract_version column to reward_instances table
+func (r *rewardExtensionInfo) isOldContract() bool {
+	// For now, assume all contracts are new TrufNetworkBridge contracts.
+	// This will be updated when we have deployed instances of both contract types.
+	// When old RewardDistributor addresses are known, add them to a map:
+	//
+	// oldContractAddresses := map[string]bool{
+	//     "0x1234...": true,  // Known RewardDistributor address
+	// }
+	// return oldContractAddresses[strings.ToLower(r.EscrowAddress.Hex())]
+
+	return false
+}
+
 // stopAllListeners stops all event listeners for the reward extension.
 // If it is synced, this means it must have an active Deposit listener.
 // If it is not synced, it must have an active state poller.
@@ -2035,6 +2075,22 @@ var (
 type irewardLogParser interface {
 	ParseDeposit(log ethtypes.Log) (*abigen.RewardDistributorDeposit, error)
 	ParseRewardPosted(log ethtypes.Log) (*abigen.RewardDistributorRewardPosted, error)
+}
+
+// bridgeLogParser is a pre-bound TrufNetworkBridge filterer for parsing Withdraw events.
+// This is used by the withdrawal listener to parse Withdraw events from the new contract.
+var bridgeLogParser = func() ibridgeLogParser {
+	filt, err := abigen.NewTrufNetworkBridgeFilterer(ethcommon.Address{}, nilEthFilterer{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to bind to TrufNetworkBridge filterer: %v", err))
+	}
+
+	return filt
+}()
+
+// ibridgeLogParser is an interface for parsing TrufNetworkBridge logs.
+type ibridgeLogParser interface {
+	ParseWithdraw(log ethtypes.Log) (*abigen.TrufNetworkBridgeWithdraw, error)
 }
 
 // getSyncedRewardData reads on-chain data from both the RewardDistributor and the Gnosis Safe
