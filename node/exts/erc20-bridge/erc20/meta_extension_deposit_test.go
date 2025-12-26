@@ -5,14 +5,31 @@ package erc20
 import (
 	"context"
 	"math/big"
+	"strings"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
+)
+
+var (
+	// Parse RewardDistributor ABI once for all tests
+	rewardDistributorABI = func() abi.ABI {
+		parsed, err := abi.JSON(strings.NewReader(abigen.RewardDistributorMetaData.ABI))
+		if err != nil {
+			panic(err)
+		}
+		return parsed
+	}()
+
+	// Get Deposit event signature programmatically
+	depositEventID = rewardDistributorABI.Events["Deposit"].ID
 )
 
 // TestApplyDepositLog verifies that applyDepositLog credits the deposit recipient.
@@ -61,7 +78,7 @@ func TestApplyDepositLog(t *testing.T) {
 	depositLog := ethtypes.Log{
 		Address: upd.EscrowAddress,
 		Topics: []ethcommon.Hash{
-			ethcommon.HexToHash("0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c"),
+			depositEventID, // Programmatically derived from ABI
 		},
 		Data: data[:],
 	}
