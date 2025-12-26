@@ -72,7 +72,7 @@ var (
 	// so that we know how to decode them
 	logTypeDeposit        = []byte("rcpdepst")
 	logTypeConfirmedEpoch = []byte("cnfepch")
-	logTypeWithdrawal     = []byte("wthdrwl") //nolint:unused // TODO: Will be used in another PR (withdrawal listener implementation)
+	logTypeWithdrawal     = []byte("wthdrwl")
 
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
 
@@ -122,15 +122,11 @@ func idFromDepositListenerUniqueName(name string) (*types.UUID, error) {
 }
 
 // withdrawalListenerUniqueName generates a unique name for the withdrawal listener
-//
-//nolint:unused // TODO: Will be used in another PR (withdrawal listener implementation)
 func withdrawalListenerUniqueName(id types.UUID) string {
 	return withdrawalListenerPrefix + id.String()
 }
 
 // idFromWithdrawalListenerUniqueName extracts the id from the unique name
-//
-//nolint:unused // TODO: Will be used in another PR (event resolution handler)
 func idFromWithdrawalListenerUniqueName(name string) (*types.UUID, error) {
 	if !strings.HasPrefix(name, withdrawalListenerPrefix) {
 		return nil, fmt.Errorf("invalid withdrawal listener name %s", name)
@@ -2028,23 +2024,24 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 // The old contract (RewardDistributor) uses a claim-based pattern and does not support withdrawals.
 // The new contract (TrufNetworkBridge) uses a withdrawal-based pattern with validator signatures.
 //
-// TODO: Currently returns false (assumes new contract). Implement contract detection by:
-// - Option 1: Maintain map of known old contract addresses
+// CURRENT STATE: Old contracts (RewardDistributor) are in production.
+//                New contracts (TrufNetworkBridge) are NOT yet deployed.
+//
+// TODO: When TrufNetworkBridge contracts are deployed, implement contract detection:
+// - Option 1: Maintain map of known new contract addresses (recommended for initial deployment)
 // - Option 2: Query contract ABI features (e.g., check for withdraw() function signature)
 // - Option 3: Add contract_version column to reward_instances table
-//
-//nolint:unused // TODO: Will be used in another PR (withdrawal listener will check this before starting)
 func (r *rewardExtensionInfo) isOldContract() bool {
-	// For now, assume all contracts are new TrufNetworkBridge contracts.
-	// This will be updated when we have deployed instances of both contract types.
-	// When old RewardDistributor addresses are known, add them to a map:
+	// IMPORTANT: Currently all deployed contracts are OLD (RewardDistributor).
+	// When new TrufNetworkBridge contracts are deployed, add them to the map below:
 	//
-	// oldContractAddresses := map[string]bool{
-	//     "0x1234...": true,  // Known RewardDistributor address
+	// newContractAddresses := map[string]bool{
+	//     "0x1234...": true,  // TrufNetworkBridge on mainnet
+	//     "0x5678...": true,  // TrufNetworkBridge on testnet
 	// }
-	// return oldContractAddresses[strings.ToLower(r.EscrowAddress.Hex())]
+	// return !newContractAddresses[strings.ToLower(r.EscrowAddress.Hex())]
 
-	return false
+	return true // All current contracts are old RewardDistributor
 }
 
 // startWithdrawalListener starts an event listener that listens for Withdraw events on the TrufNetworkBridge contract.
@@ -2200,9 +2197,6 @@ func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.
 	if log.BlockNumber == 0 {
 		return fmt.Errorf("Withdraw event has zero block number")
 	}
-	if len(log.TxHash.Bytes()) == 0 {
-		return fmt.Errorf("Withdraw event has empty transaction hash")
-	}
 
 	// Update withdrawal status to 'claimed' with transaction details
 	// This matches by recipient + kwilBlockHash to ensure we update the correct epoch
@@ -2259,8 +2253,6 @@ var bridgeLogParser = func() ibridgeLogParser {
 }()
 
 // ibridgeLogParser is an interface for parsing TrufNetworkBridge logs.
-//
-//nolint:unused // TODO: Will be used in another PR (type constraint for bridgeLogParser)
 type ibridgeLogParser interface {
 	ParseWithdraw(log ethtypes.Log) (*abigen.TrufNetworkBridgeWithdraw, error)
 }
