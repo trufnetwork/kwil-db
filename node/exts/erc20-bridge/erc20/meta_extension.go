@@ -249,7 +249,8 @@ func init() {
 
 		for _, log := range logs {
 			if bytes.Equal(log.Metadata, logTypeWithdrawal) {
-				err := applyWithdrawalLog(ctx, app, id, *log.Log)
+				// Pass Kwil block height as deterministic timestamp
+				err := applyWithdrawalLog(ctx, app, id, *log.Log, block.Height)
 				if err != nil {
 					return err
 				}
@@ -2162,8 +2163,11 @@ func applyConfirmedEpochLog(ctx context.Context, app *common.App, log ethtypes.L
 // This is called when a user claims a withdrawal on Ethereum, detected via the withdrawal listener.
 // It updates the withdrawal record to 'claimed' status with transaction details.
 //
+// The claimedAt timestamp uses Kwil block height for deterministic consensus.
+// TODO: Consider using Ethereum block timestamp when available in EthLog structure.
+//
 //nolint:unused // Used when withdrawal event resolution is registered
-func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.UUID, log ethtypes.Log) error {
+func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.UUID, log ethtypes.Log, kwilBlockHeight int64) error {
 	// Parse the Withdraw event from TrufNetworkBridge contract
 	data, err := bridgeLogParser.ParseWithdraw(log)
 	if err != nil {
@@ -2172,6 +2176,7 @@ func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.
 
 	// Update withdrawal status to 'claimed' with transaction details
 	// This matches by recipient + kwilBlockHash to ensure we update the correct epoch
+	// Using Kwil block height as deterministic timestamp (not time.Now() for consensus safety)
 	return updateWithdrawalStatus(
 		ctx,
 		app,
@@ -2180,7 +2185,7 @@ func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.
 		data.KwilBlockHash, // Matches the epoch via kwil_block_hash
 		log.TxHash.Bytes(),
 		int64(log.BlockNumber),
-		time.Now().Unix(),
+		kwilBlockHeight, // Deterministic: Kwil block height when event was processed
 	)
 }
 

@@ -248,7 +248,7 @@ func updateWithdrawalStatus(
 	WHERE withdrawals.epoch_id = epochs.id
 		AND epochs.instance_id = $instance_id
 		AND withdrawals.recipient = $recipient
-		AND epochs.kwil_block_hash = $kwil_block_hash
+		AND epochs.block_hash = $kwil_block_hash
 		AND withdrawals.status = 'ready'
 	`, map[string]any{
 		"instance_id":     instanceID,
