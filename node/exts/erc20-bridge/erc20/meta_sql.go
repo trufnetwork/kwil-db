@@ -222,6 +222,45 @@ func userBalanceID(rewardID *types.UUID, user ethcommon.Address) *types.UUID {
 	return &id
 }
 
+// updateWithdrawalStatus updates the status of a withdrawal to 'claimed' when a Withdraw event is detected.
+// It matches the withdrawal by recipient and kwilBlockHash to ensure we update the correct epoch's withdrawal.
+//
+// Note: If no rows are updated (withdrawal already claimed or doesn't exist), the operation succeeds silently.
+// This is safe because duplicate Withdraw events for the same withdrawal are idempotent.
+func updateWithdrawalStatus(
+	ctx context.Context,
+	app *common.App,
+	instanceID *types.UUID,
+	recipient ethcommon.Address,
+	kwilBlockHash [32]byte,
+	txHash []byte,
+	blockNumber int64,
+	claimedAt int64,
+) error {
+	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}UPDATE withdrawals
+	SET status = 'claimed',
+		tx_hash = $tx_hash,
+		block_number = $block_number,
+		claimed_at = $claimed_at,
+		updated_at = $updated_at
+	FROM epochs
+	WHERE withdrawals.epoch_id = epochs.id
+		AND epochs.instance_id = $instance_id
+		AND withdrawals.recipient = $recipient
+		AND epochs.kwil_block_hash = $kwil_block_hash
+		AND withdrawals.status = 'ready'
+	`, map[string]any{
+		"instance_id":     instanceID,
+		"recipient":       recipient.Bytes(),
+		"kwil_block_hash": kwilBlockHash[:],
+		"tx_hash":         txHash,
+		"block_number":    blockNumber,
+		"claimed_at":      claimedAt,
+		"updated_at":      claimedAt,
+	}, nil)
+}
+
 // reuseRewardInstance reuse existing synced reward instance, set active status to true,
 // and update the distribution period.
 // This should be only called when re-use an extension.
