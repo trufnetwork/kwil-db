@@ -402,7 +402,7 @@
       {
         "name": "kwilBlockHash",
         "type": "bytes32",
-        "indexed": false,
+        "indexed": true,
         "internalType": "bytes32"
       }
     ],

@@ -241,6 +241,27 @@ func init() {
 		return nil
 	})
 
+	evmsync.RegisterEventResolution(withdrawalEventResolutionName, func(ctx context.Context, app *common.App, block *common.BlockContext, uniqueName string, logs []*evmsync.EthLog) error {
+		id, err := idFromWithdrawalListenerUniqueName(uniqueName)
+		if err != nil {
+			return err
+		}
+
+		for _, log := range logs {
+			if bytes.Equal(log.Metadata, logTypeWithdrawal) {
+				// Pass Kwil block height as deterministic timestamp
+				err := applyWithdrawalLog(ctx, app, id, *log.Log, block.Height)
+				if err != nil {
+					return err
+				}
+			} else {
+				return fmt.Errorf("unknown log type %x", log.Metadata)
+			}
+		}
+
+		return nil
+	})
+
 	evmsync.RegisterStatePollResolution(statePollResolutionName, func(ctx context.Context, app *common.App, resolution *resolutions.Resolution, block *common.BlockContext, uniqueName string, decodedData []byte) error {
 		id, err := idFromStatePollerUniqueName(uniqueName)
 		if err != nil {
@@ -293,7 +314,12 @@ func init() {
 			// we need to unlock before we call start because it
 			// will acquire the write lock
 			info.mu.Unlock()
-			return info.startDepositListener()
+
+			// Start both deposit and withdrawal listeners
+			if err := info.startDepositListener(); err != nil {
+				return err
+			}
+			return info.startWithdrawalListener()
 		}
 
 		info.mu.Unlock()
@@ -330,7 +356,12 @@ func init() {
 						// deposit listener. Otherwise, we should start the state poller
 						if instance.active {
 							if instance.synced {
+								// Start both deposit and withdrawal listeners
 								err = instance.startDepositListener()
+								if err != nil {
+									return err
+								}
+								err = instance.startWithdrawalListener()
 								if err != nil {
 									return err
 								}
@@ -440,6 +471,11 @@ func init() {
 										return err
 									}
 
+									err = info.startWithdrawalListener()
+									if err != nil {
+										return err
+									}
+
 									return resultFn([]any{id})
 								} else {
 									defer info.mu.RUnlock()
@@ -447,6 +483,13 @@ func init() {
 								// do nothing, we will proceed below to start the state poller
 							} else {
 								err = evmsync.EventSyncer.RegisterNewTopic(ctx.TxContext.Ctx, db, app.Engine, depositListenerUniqueName(id), depositEventResolutionName)
+								if err != nil {
+									return err
+								}
+
+								// Register withdrawal topic
+								// Safe to register for all instances (old contracts simply won't emit Withdraw events)
+								err = evmsync.EventSyncer.RegisterNewTopic(ctx.TxContext.Ctx, db, app.Engine, withdrawalListenerUniqueName(id), withdrawalEventResolutionName)
 								if err != nil {
 									return err
 								}
@@ -2004,15 +2047,91 @@ func (r *rewardExtensionInfo) isOldContract() bool {
 	return false
 }
 
+// startWithdrawalListener starts an event listener that listens for Withdraw events on the TrufNetworkBridge contract.
+// This is only started for new contract instances (isOldContract() == false).
+func (r *rewardExtensionInfo) startWithdrawalListener() error {
+	// Only start withdrawal listener for new contracts
+	if r.isOldContract() {
+		// Old contracts (RewardDistributor) don't support withdrawals
+		return nil
+	}
+
+	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
+	escrowCopy := r.EscrowAddress
+	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
+
+	// Register withdrawal event listener
+	return evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
+		UniqueName: withdrawalListenerUniqueName(*r.ID),
+		Chain:      r.ChainInfo.Name,
+		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
+			if err != nil {
+				return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", err)
+			}
+
+			var logs []*evmsync.EthLog
+
+			// Fetch Withdraw events
+			var withdrawIter *abigen.TrufNetworkBridgeWithdrawIterator
+			err = utils.Retry(ctx, evmMaxRetries, func() error {
+				withdrawIter, err = bridgeFilt.FilterWithdraw(&bind.FilterOpts{
+					Start:   startBlock,
+					End:     &endBlock,
+					Context: ctx,
+				}, nil, nil) // nil filters = get all recipients and kwilBlockHashes
+				if err != nil {
+					return fmt.Errorf("failed to get withdraw logs: %w", err)
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			defer withdrawIter.Close()
+
+			for withdrawIter.Next() {
+				logs = append(logs, &evmsync.EthLog{
+					Metadata: logTypeWithdrawal,
+					Log:      &withdrawIter.Event.Raw,
+				})
+			}
+			if err := withdrawIter.Error(); err != nil {
+				return nil, fmt.Errorf("failed to get withdraw logs: %w", err)
+			}
+
+			return logs, nil
+		},
+	})
+}
+
 // stopAllListeners stops all event listeners for the reward extension.
-// If it is synced, this means it must have an active Deposit listener.
+// If it is synced, this means it must have active Deposit and Withdrawal listeners.
 // If it is not synced, it must have an active state poller.
 // NOTE: UnregisterListener doesn't unregister the topic because the reward
 // instance will not be deleted when `unuse`/`disable`, we need to keep the
 // topics to make sure we don't lose events.
 func (r *rewardExtensionInfo) stopAllListeners() error {
 	if r.synced {
-		return evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID))
+		var errs []error
+
+		// Attempt to stop deposit listener
+		if err := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID)); err != nil {
+			errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
+		}
+
+		// Attempt to stop withdrawal listener (only for new contracts)
+		if !r.isOldContract() {
+			if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
+				errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
+			}
+		}
+
+		// Return combined error if any failed
+		if len(errs) > 0 {
+			return fmt.Errorf("listener cleanup errors: %v", errs)
+		}
+		return nil
 	}
 	return evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
 }
@@ -2055,6 +2174,51 @@ func applyConfirmedEpochLog(ctx context.Context, app *common.App, log ethtypes.L
 	return confirmEpoch(ctx, app, data.Root[:])
 }
 
+// applyWithdrawalLog applies a Withdraw log to update withdrawal status.
+// This is called when a user claims a withdrawal on Ethereum, detected via the withdrawal listener.
+// It updates the withdrawal record to 'claimed' status with transaction details.
+//
+// The claimedAt timestamp uses Kwil block height for deterministic consensus.
+// TODO: Consider using Ethereum block timestamp when available in EthLog structure.
+func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.UUID, log ethtypes.Log, kwilBlockHeight int64) error {
+	// Parse the Withdraw event from TrufNetworkBridge contract
+	data, err := bridgeLogParser.ParseWithdraw(log)
+	if err != nil {
+		return fmt.Errorf("failed to parse Withdraw event: %w", err)
+	}
+
+	// Validate parsed data
+	if data == nil {
+		return fmt.Errorf("parsed Withdraw event data is nil")
+	}
+	if data.Recipient == (ethcommon.Address{}) {
+		return fmt.Errorf("Withdraw event has zero recipient address")
+	}
+	if data.KwilBlockHash == ([32]byte{}) {
+		return fmt.Errorf("Withdraw event has empty kwilBlockHash")
+	}
+	if log.BlockNumber == 0 {
+		return fmt.Errorf("Withdraw event has zero block number")
+	}
+	if len(log.TxHash.Bytes()) == 0 {
+		return fmt.Errorf("Withdraw event has empty transaction hash")
+	}
+
+	// Update withdrawal status to 'claimed' with transaction details
+	// This matches by recipient + kwilBlockHash to ensure we update the correct epoch
+	// Using Kwil block height as deterministic timestamp (not time.Now() for consensus safety)
+	return updateWithdrawalStatus(
+		ctx,
+		app,
+		instanceID,
+		data.Recipient,
+		data.KwilBlockHash, // Matches the epoch via kwil_block_hash
+		log.TxHash.Bytes(),
+		int64(log.BlockNumber),
+		kwilBlockHeight, // Deterministic: Kwil block height when event was processed
+	)
+}
+
 // erc20ValueFromBigInt converts a big.Int to a decimal.Decimal(78,0)
 func erc20ValueFromBigInt(b *big.Int) (*types.Decimal, error) {
 	dec, err := types.NewDecimalFromBigInt(b, 0)
@@ -2085,8 +2249,6 @@ type irewardLogParser interface {
 
 // bridgeLogParser is a pre-bound TrufNetworkBridge filterer for parsing Withdraw events.
 // This is used by the withdrawal listener to parse Withdraw events from the new contract.
-//
-//nolint:unused // TODO: Will be used in another PR (applyWithdrawalLog event handler)
 var bridgeLogParser = func() ibridgeLogParser {
 	filt, err := abigen.NewTrufNetworkBridgeFilterer(ethcommon.Address{}, nilEthFilterer{})
 	if err != nil {
