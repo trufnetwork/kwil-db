@@ -54,15 +54,6 @@ func TestIdFromWithdrawalListenerUniqueName_InvalidName(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid withdrawal listener name")
 }
 
-// TestIsOldContract tests the contract detection method
-func TestIsOldContract(t *testing.T) {
-	info := &rewardExtensionInfo{}
-
-	// Currently all deployed contracts are old RewardDistributor
-	// When TrufNetworkBridge is deployed, this will need contract-specific detection
-	require.True(t, info.isOldContract(), "should return true - all current contracts are old RewardDistributor")
-}
-
 // TestApplyWithdrawalLog_InvalidData tests validation logic for invalid withdrawal events
 func TestApplyWithdrawalLog_InvalidData(t *testing.T) {
 	ctx := context.Background()

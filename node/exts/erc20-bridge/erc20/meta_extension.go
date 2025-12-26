@@ -2018,41 +2018,10 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 	})
 }
 
-// isOldContract checks if this instance uses the old RewardDistributor pattern.
-// Returns true for RewardDistributor (old contract), false for TrufNetworkBridge (new contract).
-//
-// The old contract (RewardDistributor) uses a claim-based pattern and does not support withdrawals.
-// The new contract (TrufNetworkBridge) uses a withdrawal-based pattern with validator signatures.
-//
-// CURRENT STATE: Old contracts (RewardDistributor) are in production.
-//                New contracts (TrufNetworkBridge) are NOT yet deployed.
-//
-// TODO: When TrufNetworkBridge contracts are deployed, implement contract detection:
-// - Option 1: Maintain map of known new contract addresses (recommended for initial deployment)
-// - Option 2: Query contract ABI features (e.g., check for withdraw() function signature)
-// - Option 3: Add contract_version column to reward_instances table
-func (r *rewardExtensionInfo) isOldContract() bool {
-	// IMPORTANT: Currently all deployed contracts are OLD (RewardDistributor).
-	// When new TrufNetworkBridge contracts are deployed, add them to the map below:
-	//
-	// newContractAddresses := map[string]bool{
-	//     "0x1234...": true,  // TrufNetworkBridge on mainnet
-	//     "0x5678...": true,  // TrufNetworkBridge on testnet
-	// }
-	// return !newContractAddresses[strings.ToLower(r.EscrowAddress.Hex())]
-
-	return true // All current contracts are old RewardDistributor
-}
-
-// startWithdrawalListener starts an event listener that listens for Withdraw events on the TrufNetworkBridge contract.
-// This is only started for new contract instances (isOldContract() == false).
+// startWithdrawalListener starts an event listener that listens for Withdraw events on the contract.
+// The listener is registered for all instances but only processes events if the contract emits them.
+// Old contracts (RewardDistributor) never emit Withdraw events, so the listener remains dormant for those instances.
 func (r *rewardExtensionInfo) startWithdrawalListener() error {
-	// Only start withdrawal listener for new contracts
-	if r.isOldContract() {
-		// Old contracts (RewardDistributor) don't support withdrawals
-		return nil
-	}
-
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
@@ -2117,11 +2086,9 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 			errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
 		}
 
-		// Attempt to stop withdrawal listener (only for new contracts)
-		if !r.isOldContract() {
-			if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
-				errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
-			}
+		// Attempt to stop withdrawal listener
+		if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
+			errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
 		}
 
 		// Return combined error if any failed
