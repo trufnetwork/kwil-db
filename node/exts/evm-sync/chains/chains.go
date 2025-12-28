@@ -35,6 +35,21 @@ func init() {
 			ID:                    "84532",
 			RequiredConfirmations: 12,
 		},
+		ChainInfo{
+			Name:                  "hardhat",
+			ID:                    "31337",
+			RequiredConfirmations: 12,
+		},
+		ChainInfo{
+			Name:                  "arbitrum_sepolia",
+			ID:                    "421614",
+			RequiredConfirmations: 2,
+		},
+		ChainInfo{
+			Name:                  "arbitrum_one",
+			ID:                    "42161",
+			RequiredConfirmations: 4,
+		},
 	)
 	if err != nil {
 		panic(err)
@@ -44,9 +59,12 @@ func init() {
 type Chain string
 
 const (
-	Ethereum    Chain = "ethereum"
-	Sepolia     Chain = "sepolia"
-	BaseSepolia Chain = "base-sepolia"
+	Ethereum        Chain = "ethereum"
+	Sepolia         Chain = "sepolia"
+	BaseSepolia     Chain = "base-sepolia"
+	Hardhat         Chain = "hardhat"
+	ArbitrumSepolia Chain = "arbitrum_sepolia"
+	ArbitrumOne     Chain = "arbitrum_one"
 )
 
 func (c Chain) String() string {
@@ -55,7 +73,7 @@ func (c Chain) String() string {
 
 func (c Chain) Valid() error {
 	switch c {
-	case Ethereum, Sepolia, BaseSepolia:
+	case Ethereum, Sepolia, BaseSepolia, Hardhat, ArbitrumSepolia, ArbitrumOne:
 		return nil
 	default:
 		return fmt.Errorf("invalid chain: %s", c)
