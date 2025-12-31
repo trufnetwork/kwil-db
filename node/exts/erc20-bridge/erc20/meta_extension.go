@@ -557,7 +557,9 @@ func init() {
 
 							if !info.active {
 								info.mu.RUnlock()
-								return fmt.Errorf("reward extension with id %s is already disabled", id)
+								// Already disabled - this is idempotent, return success
+								// This allows UNUSE to complete namespace cleanup even when called multiple times
+								return nil
 							}
 
 							err := setActiveStatus(ctx.TxContext.Ctx, app, id, false)
