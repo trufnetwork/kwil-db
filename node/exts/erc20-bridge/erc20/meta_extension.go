@@ -1976,6 +1976,7 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 				}
 				return nil
 			})
+			var iterErr error
 			if err != nil {
 				logger.Warnf("RewardDistributor FilterDeposit failed (trying TrufNetworkBridge): %v", err)
 			} else {
@@ -1987,14 +1988,17 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 						Log:      &depositIter.Event.Raw,
 					})
 				}
-				if err := depositIter.Error(); err != nil {
-					return nil, fmt.Errorf("failed to iterate RewardDistributor deposit logs: %w", err)
+				iterErr = depositIter.Error()
+				if iterErr != nil {
+					// Iteration failed (likely ABI parsing error) - try TrufNetworkBridge
+					logger.Warnf("RewardDistributor deposit iteration failed (trying TrufNetworkBridge): %v", iterErr)
+					logs = nil // Clear any partial results
 				}
 			}
 
 			// Try TrufNetworkBridge format (if RewardDistributor failed or returned no events)
 			// TODO(migration): Make this the primary path and remove RewardDistributor fallback once migration complete.
-			if err != nil || len(logs) == 0 {
+			if err != nil || iterErr != nil || len(logs) == 0 {
 				bridgeFilt, bridgeErr := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
 				if bridgeErr != nil {
 					return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", bridgeErr)
