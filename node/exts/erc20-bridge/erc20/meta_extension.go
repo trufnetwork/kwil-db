@@ -1942,7 +1942,8 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 	})
 }
 
-// startDepositListener starts an event listener that listens for Deposit events on the RewardDistributor escrow
+// startDepositListener starts an event listener that listens for Deposit events on the bridge contract.
+// It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 func (r *rewardExtensionInfo) startDepositListener() error {
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
@@ -1954,43 +1955,91 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
-			escrowFilt, err := abigen.NewRewardDistributorFilterer(escrowCopy, client)
+			var logs []*evmsync.EthLog
+
+			// TODO(migration): Remove RewardDistributor fallback once all deployments migrate to TrufNetworkBridge.
+			// Try RewardDistributor format first (backward compatibility)
+			rewardFilt, err := abigen.NewRewardDistributorFilterer(escrowCopy, client)
 			if err != nil {
 				return nil, fmt.Errorf("failed to bind to RewardDistributor filterer: %w", err)
 			}
 
-			var logs []*evmsync.EthLog
-
 			var depositIter *abigen.RewardDistributorDepositIterator
 			err = utils.Retry(ctx, evmMaxRetries, func() error {
-				depositIter, err = escrowFilt.FilterDeposit(&bind.FilterOpts{
+				depositIter, err = rewardFilt.FilterDeposit(&bind.FilterOpts{
 					Start:   startBlock,
 					End:     &endBlock,
 					Context: ctx,
 				})
 				if err != nil {
-					return fmt.Errorf("failed to get deposit logs: %w", err)
+					return fmt.Errorf("failed to get RewardDistributor deposit logs: %w", err)
 				}
 				return nil
 			})
 			if err != nil {
-				return nil, err
+				logger.Warnf("RewardDistributor FilterDeposit failed (trying TrufNetworkBridge): %v", err)
+			} else {
+				// Successfully got RewardDistributor events
+				defer depositIter.Close()
+				for depositIter.Next() {
+					logs = append(logs, &evmsync.EthLog{
+						Metadata: logTypeDeposit,
+						Log:      &depositIter.Event.Raw,
+					})
+				}
+				if err := depositIter.Error(); err != nil {
+					return nil, fmt.Errorf("failed to iterate RewardDistributor deposit logs: %w", err)
+				}
 			}
-			defer depositIter.Close()
 
-			for depositIter.Next() {
-				logs = append(logs, &evmsync.EthLog{
-					Metadata: logTypeDeposit,
-					Log:      &depositIter.Event.Raw,
+			// Try TrufNetworkBridge format (if RewardDistributor failed or returned no events)
+			// TODO(migration): Make this the primary path and remove RewardDistributor fallback once migration complete.
+			if err != nil || len(logs) == 0 {
+				bridgeFilt, bridgeErr := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
+				if bridgeErr != nil {
+					return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", bridgeErr)
+				}
+
+				var bridgeDepositIter *abigen.TrufNetworkBridgeDepositIterator
+				bridgeErr = utils.Retry(ctx, evmMaxRetries, func() error {
+					// nil recipient filter = get deposits for all recipients
+					bridgeDepositIter, bridgeErr = bridgeFilt.FilterDeposit(&bind.FilterOpts{
+						Start:   startBlock,
+						End:     &endBlock,
+						Context: ctx,
+					}, nil)
+					if bridgeErr != nil {
+						return fmt.Errorf("failed to get TrufNetworkBridge deposit logs: %w", bridgeErr)
+					}
+					return nil
 				})
-			}
-			if err := depositIter.Error(); err != nil {
-				return nil, fmt.Errorf("failed to get deposit logs: %w", err)
+				if bridgeErr != nil {
+					return nil, bridgeErr
+				}
+				defer bridgeDepositIter.Close()
+
+				// Clear logs from failed RewardDistributor attempt
+				if err != nil {
+					logs = nil
+				}
+
+				for bridgeDepositIter.Next() {
+					logs = append(logs, &evmsync.EthLog{
+						Metadata: logTypeDeposit,
+						Log:      &bridgeDepositIter.Event.Raw,
+					})
+				}
+				if err := bridgeDepositIter.Error(); err != nil {
+					return nil, fmt.Errorf("failed to iterate TrufNetworkBridge deposit logs: %w", err)
+				}
 			}
 
+			// TODO(migration): Remove RewardPosted event handling once all deployments migrate to TrufNetworkBridge.
+			// TrufNetworkBridge uses local validator voting for epoch confirmation, not on-chain RewardPosted events.
+			// Fetch RewardPosted events (only RewardDistributor has this)
 			var postIter *abigen.RewardDistributorRewardPostedIterator
 			err = utils.Retry(ctx, evmMaxRetries, func() error {
-				postIter, err = escrowFilt.FilterRewardPosted(&bind.FilterOpts{
+				postIter, err = rewardFilt.FilterRewardPosted(&bind.FilterOpts{
 					Start:   startBlock,
 					End:     &endBlock,
 					Context: ctx,
@@ -2001,18 +2050,20 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 				return nil
 			})
 			if err != nil {
-				return nil, err
-			}
-			defer postIter.Close()
+				// TrufNetworkBridge doesn't have RewardPosted events, so this is expected to fail
+				logger.Debugf("RewardPosted events not available (expected for TrufNetworkBridge): %v", err)
+			} else {
+				defer postIter.Close()
 
-			for postIter.Next() {
-				logs = append(logs, &evmsync.EthLog{
-					Metadata: logTypeConfirmedEpoch,
-					Log:      &postIter.Event.Raw,
-				})
-			}
-			if err := postIter.Error(); err != nil {
-				return nil, fmt.Errorf("failed to get reward posted logs: %w", err)
+				for postIter.Next() {
+					logs = append(logs, &evmsync.EthLog{
+						Metadata: logTypeConfirmedEpoch,
+						Log:      &postIter.Event.Raw,
+					})
+				}
+				if err := postIter.Error(); err != nil {
+					return nil, fmt.Errorf("failed to iterate reward posted logs: %w", err)
+				}
 			}
 
 			return logs, nil
@@ -2116,21 +2167,49 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 }
 
 // applyDepositLog applies a Deposit log to the reward extension.
+// It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
+// The format is auto-detected based on the event log structure.
+// TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
 func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
-	data, err := rewardLogParser.ParseDeposit(log)
-	if err != nil {
-		return fmt.Errorf("failed to parse Deposit event: %w", err)
+	var recipient ethcommon.Address
+	var amount *big.Int
+	var err error
+
+	// Detect event format based on log structure:
+	// - TrufNetworkBridge: indexed recipient (topics[1]), amount in data (32 bytes)
+	// - RewardDistributor: non-indexed recipient and amount in data (64 bytes)
+	if len(log.Topics) >= 2 && len(log.Data) == 32 {
+		// TrufNetworkBridge format (indexed recipient)
+		bridgeData, parseErr := bridgeLogParser.ParseDeposit(log)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse TrufNetworkBridge Deposit event: %w", parseErr)
+		}
+		recipient = bridgeData.Recipient
+		amount = bridgeData.Amount
+	} else if len(log.Data) == 64 {
+		// TODO(migration): Remove RewardDistributor support once migration complete.
+		// RewardDistributor format (non-indexed recipient)
+		rewardData, parseErr := rewardLogParser.ParseDeposit(log)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse RewardDistributor Deposit event: %w", parseErr)
+		}
+		recipient = rewardData.Recipient
+		amount = rewardData.Amount
+	} else {
+		return fmt.Errorf("unknown Deposit event format: topics=%d, data_len=%d", len(log.Topics), len(log.Data))
 	}
 
-	val, err := erc20ValueFromBigInt(data.Amount)
+	val, err := erc20ValueFromBigInt(amount)
 	if err != nil {
 		return fmt.Errorf("failed to convert big.Int to decimal.Decimal: %w", err)
 	}
 
-	return creditBalance(ctx, app, id, data.Recipient, val)
+	return creditBalance(ctx, app, id, recipient, val)
 }
 
 // applyConfirmedEpochLog applies a ConfirmedEpoch log to the reward extension.
+// TODO(migration): Remove this function once all deployments migrate to TrufNetworkBridge.
+// TrufNetworkBridge uses local validator voting for epoch confirmation, not on-chain RewardPosted events.
 func applyConfirmedEpochLog(ctx context.Context, app *common.App, log ethtypes.Log) error {
 	data, err := rewardLogParser.ParseRewardPosted(log)
 	if err != nil {
@@ -2193,6 +2272,7 @@ func erc20ValueFromBigInt(b *big.Int) (*types.Decimal, error) {
 }
 
 var (
+	// TODO(migration): Remove rewardLogParser once all deployments migrate to TrufNetworkBridge.
 	// rewardLogParser is a pre-bound RewardDistributor filterer for parsing Deposit and RewardPosted events.
 	rewardLogParser = func() irewardLogParser {
 		filt, err := abigen.NewRewardDistributorFilterer(ethcommon.Address{}, nilEthFilterer{})
@@ -2204,6 +2284,7 @@ var (
 	}()
 )
 
+// TODO(migration): Remove irewardLogParser interface once all deployments migrate to TrufNetworkBridge.
 // irewardLogParser is an interface for parsing RewardDistributor logs.
 type irewardLogParser interface {
 	ParseDeposit(log ethtypes.Log) (*abigen.RewardDistributorDeposit, error)
@@ -2224,10 +2305,13 @@ var bridgeLogParser = func() ibridgeLogParser {
 // ibridgeLogParser is an interface for parsing TrufNetworkBridge logs.
 type ibridgeLogParser interface {
 	ParseWithdraw(log ethtypes.Log) (*abigen.TrufNetworkBridgeWithdraw, error)
+	ParseDeposit(log ethtypes.Log) (*abigen.TrufNetworkBridgeDeposit, error)
 }
 
-// getSyncedRewardData reads on-chain data from both the RewardDistributor and the Gnosis Safe
-// it references, returning them in a syncedRewardData struct.
+// getSyncedRewardData reads on-chain data from the bridge contract and token.
+// TODO(migration): Update to use TrufNetworkBridge binding once all deployments migrated.
+// Currently uses RewardDistributor binding for backward compatibility, but both contracts
+// have rewardToken() function with same signature, so this works for both.
 // It does not get the tokens owned by escrow; it will later sync those from erc20 logs
 func getSyncedRewardData(
 	ctx context.Context,
@@ -2236,12 +2320,15 @@ func getSyncedRewardData(
 ) (*syncedRewardData, error) {
 
 	// 1) Instantiate a binding to RewardDistributor at distributorAddr.
+	// TODO(migration): Change to TrufNetworkBridge binding once migration complete.
+	// Works with both contracts since both have rewardToken() with same signature.
 	distributor, err := abigen.NewRewardDistributor(distributorAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to bind to RewardDistributor: %w", err)
 	}
 
 	// 2) Read the rewardToken address from the RewardDistributor
+	// TrufNetworkBridge also has rewardToken() function (alias for getBridgedToken)
 	rewardTokenAddr, err := distributor.RewardToken(&bind.CallOpts{Context: ctx})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rewardToken from RewardDistributor: %w", err)
