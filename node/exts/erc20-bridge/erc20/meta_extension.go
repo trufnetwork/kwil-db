@@ -2677,6 +2677,14 @@ func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error
 		{Type: bytes32Type},
 	}
 
+	// Validate inputs are exactly 32 bytes before copying
+	if len(merkleRoot) != 32 {
+		return nil, fmt.Errorf("invalid merkleRoot size: expected 32 bytes, got %d bytes", len(merkleRoot))
+	}
+	if len(blockHash) != 32 {
+		return nil, fmt.Errorf("invalid blockHash size: expected 32 bytes, got %d bytes", len(blockHash))
+	}
+
 	// Convert to fixed-size arrays
 	var rootBytes32 [32]byte
 	var hashBytes32 [32]byte
