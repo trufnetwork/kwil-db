@@ -178,9 +178,13 @@ func ForTestingResetSingleton() {
 	// Completely reinitialize the singleton to ensure clean state
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
 
-	// Clear running signers map for clean test state
+	// Cancel all running signers and clear tracking maps for clean test state
 	runningSignersMu.Lock()
+	for _, cancel := range runningSignerCancels {
+		cancel() // Stop any running signer goroutines
+	}
 	runningSigners = make(map[string]bool)
+	runningSignerCancels = make(map[string]context.CancelFunc)
 	runningSignersMu.Unlock()
 }
 

@@ -86,7 +86,13 @@ var (
 
 	// runningSigners tracks which instance IDs have active validator signer goroutines
 	// to prevent duplicate signers if OnStart is called multiple times
-	runningSigners   = make(map[string]bool)
+	runningSigners = make(map[string]bool)
+
+	// runningSignerCancels stores cancel functions for active signer goroutines
+	// to allow graceful shutdown when instances are disabled
+	runningSignerCancels = make(map[string]context.CancelFunc)
+
+	// runningSignersMu protects both runningSigners and runningSignerCancels maps
 	runningSignersMu sync.Mutex
 )
 
@@ -406,22 +412,31 @@ func init() {
 							key, err := getValidatorSigningKey(app, instance.ID)
 							if err != nil {
 								app.Service.Logger.Warnf("failed to get validator signing key for instance %s: %v", instance.ID, err)
-								// Clean up tracking map on error
+								// Clean up tracking maps on error
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
 								runningSignersMu.Unlock()
 								continue
 							}
 							if key != nil {
-								// Start background signer with a long-lived context
-								// Use context.Background() so the signer runs for the lifetime of the node,
-								// not just until OnStart returns
+								// Create cancellable context so we can stop the signer when instance is disabled
+								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
+								signerCtx, cancel := context.WithCancel(context.Background())
+
+								// Store cancel function for cleanup on disable
+								runningSignersMu.Lock()
+								runningSignerCancels[instanceIDStr] = cancel
+								runningSignersMu.Unlock()
+
+								// Start background signer with cancellable context
 								signer := NewValidatorSigner(app, instance.ID, key)
-								go signer.Start(context.Background())
+								go signer.Start(signerCtx)
 							} else {
-								// No key available, clean up tracking map
+								// No key available, clean up tracking maps
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
 								runningSignersMu.Unlock()
 							}
 						}
@@ -626,6 +641,17 @@ func init() {
 							info.mu.Lock()
 							info.active = false
 							info.mu.Unlock()
+
+							// Stop validator signer goroutine if running
+							instanceIDStr := id.String()
+							runningSignersMu.Lock()
+							if cancel, ok := runningSignerCancels[instanceIDStr]; ok {
+								cancel() // Signal signer to stop
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								app.Service.Logger.Debugf("stopped validator signer for instance %s", id)
+							}
+							runningSignersMu.Unlock()
 
 							// stopAllListeners does not require a lock.
 							// Any error returned here suggests some sort of critical bug
@@ -2543,10 +2569,13 @@ func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.Pri
 	// For non-custodial validator signing, we use the same key for all instances
 	// (vs custodial which needs different keys per instance for Safe multisig)
 	//
-	// Deterministic key selection: If multiple keys are configured in the map,
-	// we sort the keys and select the first one. This ensures consistent behavior
-	// across node restarts. The first alphabetically-sorted key is chosen for
-	// backward compatibility with single-key configurations.
+	// Deterministic key selection: When multiple keys exist in the config map,
+	// we must consistently select the same key across node restarts to avoid
+	// nonce conflicts and duplicate votes. We sort keys alphabetically and select
+	// the first one. This approach:
+	// 1. Ensures deterministic selection (same key every time)
+	// 2. Maintains backward compatibility (single-key configs work unchanged)
+	// 3. Avoids configuration complexity (no need to specify "primary" key)
 	var keys []string
 	for key := range bridgeConfig.Signer {
 		keys = append(keys, key)
