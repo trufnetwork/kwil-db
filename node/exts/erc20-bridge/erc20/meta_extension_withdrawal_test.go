@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 
 	"github.com/trufnetwork/kwil-db/common"
@@ -92,7 +93,7 @@ func TestApplyWithdrawalLog_InvalidData(t *testing.T) {
 			name: "zero recipient address",
 			log: ethtypes.Log{
 				Topics: []ethcommon.Hash{
-					withdrawEventID, // Programmatically derived from ABI
+					withdrawEventID,  // Programmatically derived from ABI
 					ethcommon.Hash{}, // zero address
 					{0x01, 0x02, 0x03},
 				},
@@ -421,4 +422,134 @@ func TestApplyWithdrawalLog_Idempotent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "claimed", status)
+}
+
+// ============================================================================
+// Validator Signing Tests
+// ============================================================================
+
+// TestComputeEpochMessageHash tests the message hash computation for epoch signing
+func TestComputeEpochMessageHash(t *testing.T) {
+	merkleRoot := crypto.Keccak256([]byte("test merkle root"))
+	blockHash := crypto.Keccak256([]byte("test block hash"))
+
+	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
+	require.NoError(t, err)
+	require.Len(t, messageHash, 32)
+
+	// Verify the hash is deterministic
+	messageHash2, err := computeEpochMessageHash(merkleRoot, blockHash)
+	require.NoError(t, err)
+	require.Equal(t, messageHash, messageHash2)
+
+	// Verify different inputs produce different hashes
+	differentRoot := crypto.Keccak256([]byte("different root"))
+	messageHash3, err := computeEpochMessageHash(differentRoot, blockHash)
+	require.NoError(t, err)
+	require.NotEqual(t, messageHash, messageHash3)
+}
+
+// TestSignMessage tests ECDSA signing functionality
+func TestSignMessage(t *testing.T) {
+	// Generate test key
+	privateKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+
+	messageHash := crypto.Keccak256([]byte("test message"))
+
+	signature, err := signMessage(messageHash, privateKey)
+	require.NoError(t, err)
+	require.Len(t, signature, 65, "ECDSA signature should be 65 bytes")
+
+	// Verify the signature
+	pubKey, err := crypto.SigToPub(messageHash, signature)
+	require.NoError(t, err)
+	require.Equal(t, privateKey.PublicKey, *pubKey)
+}
+
+// TestCountEpochVotes tests counting validator signatures
+func TestCountEpochVotes(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available - this test requires database connection")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	// Create test instance and epoch
+	id := newUUID()
+	chainInfo, ok := chains.GetChainInfoByID("1")
+	require.True(t, ok)
+
+	testReward := &userProvidedData{
+		ID:                 id,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc"),
+		DistributionPeriod: 3600,
+	}
+
+	require.NoError(t, createNewRewardInstance(ctx, app, testReward))
+
+	epochID := newUUID()
+	pending := &PendingEpoch{
+		ID:          epochID,
+		StartHeight: 10,
+		StartTime:   100,
+	}
+	require.NoError(t, createEpoch(ctx, app, pending, id))
+
+	// Count for empty epoch
+	count, err := countEpochVotes(ctx, app, epochID)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+
+	// Add validator votes using direct database inserts (storeEpochVote was removed)
+	const nonCustodialNonce = 0
+
+	// Add first validator vote
+	validator1 := ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+	_, err = app.DB.Execute(ctx, `
+		INSERT INTO kwil_erc20_meta.epoch_votes (epoch_id, voter, nonce, signature)
+		VALUES ($1, $2, $3, $4)
+	`, epochID, validator1.Bytes(), nonCustodialNonce, []byte("sig1"))
+	require.NoError(t, err)
+
+	count, err = countEpochVotes(ctx, app, epochID)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	// Add second validator vote
+	validator2 := ethcommon.HexToAddress("0x0000000000000000000000000000000000000002")
+	_, err = app.DB.Execute(ctx, `
+		INSERT INTO kwil_erc20_meta.epoch_votes (epoch_id, voter, nonce, signature)
+		VALUES ($1, $2, $3, $4)
+	`, epochID, validator2.Bytes(), nonCustodialNonce, []byte("sig2"))
+	require.NoError(t, err)
+
+	count, err = countEpochVotes(ctx, app, epochID)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	// Add third validator vote
+	validator3 := ethcommon.HexToAddress("0x0000000000000000000000000000000000000003")
+	_, err = app.DB.Execute(ctx, `
+		INSERT INTO kwil_erc20_meta.epoch_votes (epoch_id, voter, nonce, signature)
+		VALUES ($1, $2, $3, $4)
+	`, epochID, validator3.Bytes(), nonCustodialNonce, []byte("sig3"))
+	require.NoError(t, err)
+
+	count, err = countEpochVotes(ctx, app, epochID)
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
 }

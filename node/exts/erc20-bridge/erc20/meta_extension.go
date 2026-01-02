@@ -15,19 +15,25 @@ package erc20
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/trufnetwork/kwil-db/common"
@@ -370,6 +376,24 @@ func init() {
 						}
 
 						getSingleton().instances.Set(*instance.ID, instance)
+					}
+
+					// Start validator signer services for non-custodial withdrawals
+					// This runs in background and submits validator signatures via transactions
+					for _, instance := range instances {
+						if instance.active && instance.synced {
+							// Try to get validator signing key
+							key, err := getValidatorSigningKey(app, instance.ID)
+							if err != nil {
+								app.Service.Logger.Warnf("failed to get validator signing key for instance %s: %v", instance.ID, err)
+								continue
+							}
+							if key != nil {
+								// Start background signer
+								signer := NewValidatorSigner(app, instance.ID, key)
+								go signer.Start(ctx)
+							}
+						}
 					}
 
 					return nil
@@ -1160,7 +1184,51 @@ func init() {
 								return fmt.Errorf("epoch cannot be voted")
 							}
 
-							return voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
+							// Store the vote
+							err = voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
+							if err != nil {
+								return err
+							}
+
+							// For non-custodial validator signatures (nonce=0), check threshold and confirm epoch
+							// This ensures epoch confirmation happens deterministically during consensus
+							const nonCustodialNonce = 0
+							if nonce == nonCustodialNonce {
+								// Count votes for this epoch
+								voteCount, err := countEpochVotes(ctx.TxContext.Ctx, app, epochID)
+								if err != nil {
+									// Don't fail the vote if counting fails
+									app.Service.Logger.Warnf("failed to count votes for epoch %s: %v", epochID, err)
+									return nil
+								}
+
+								// Check if threshold reached (2-of-3 validators)
+								// TODO: Make threshold configurable via instance settings
+								const requiredVotes = 2
+								if voteCount >= requiredVotes {
+									// Get epoch merkle root for confirmation
+									result, err := app.DB.Execute(ctx.TxContext.Ctx, `
+										SELECT reward_root FROM kwil_erc20_meta.epochs
+										WHERE id = $1
+									`, epochID)
+									if err != nil {
+										app.Service.Logger.Warnf("failed to get epoch merkle root: %v", err)
+										return nil
+									}
+
+									if len(result.Rows) > 0 {
+										merkleRoot := result.Rows[0][0].([]byte)
+										err = confirmEpoch(ctx.TxContext.Ctx, app, merkleRoot)
+										if err != nil {
+											app.Service.Logger.Warnf("failed to confirm epoch %s: %v", epochID, err)
+											return nil
+										}
+										app.Service.Logger.Infof("epoch %s confirmed with %d validator signatures", epochID, voteCount)
+									}
+								}
+							}
+
+							return nil
 						},
 					},
 					{
@@ -2403,4 +2471,129 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 	}
 
 	return n, nil
+}
+
+// ============================================================================
+// Validator Signing for Non-Custodial Withdrawals
+// ============================================================================
+
+// getValidatorSigningKey retrieves the validator's ECDSA private key from configuration.
+// Returns nil if no key is configured (backward compatibility).
+// Uses the existing [erc20_bridge.signer] config structure.
+func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.PrivateKey, error) {
+	// Get ERC20 bridge configuration from LocalConfig
+	// This uses the existing [erc20_bridge] section
+	if app.Service.LocalConfig == nil {
+		return nil, nil // No config, skip signing
+	}
+
+	bridgeConfig := app.Service.LocalConfig.Erc20Bridge
+	if bridgeConfig.Signer == nil || len(bridgeConfig.Signer) == 0 {
+		return nil, nil // No signer config, skip signing
+	}
+
+	// For non-custodial validator signing, we use the same key for all instances
+	// (vs custodial which needs different keys per instance for Safe multisig)
+	// Use deterministic key selection by sorting map keys
+	var keys []string
+	for key := range bridgeConfig.Signer {
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return nil, nil // No signer keys configured
+	}
+	sort.Strings(keys) // Sort to ensure deterministic selection
+	signerPath := bridgeConfig.Signer[keys[0]]
+
+	// Read private key from file
+	rawPkBytes, err := os.ReadFile(signerPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key file %s: %w", signerPath, err)
+	}
+
+	// Parse hex-encoded private key
+	pkStr := strings.TrimSpace(string(rawPkBytes))
+	pkStr = strings.TrimPrefix(pkStr, "0x") // Remove 0x prefix if present
+	pkBytes, err := hex.DecodeString(pkStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode private key hex: %w", err)
+	}
+
+	// Convert to ECDSA private key
+	privateKey, err := crypto.ToECDSA(pkBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ECDSA private key: %w", err)
+	}
+
+	return privateKey, nil
+}
+
+// computeEpochMessageHash computes the message hash that validators sign.
+// This matches the format expected by TrufNetworkBridge contract:
+// keccak256(abi.encode(merkleRoot, kwilBlockHash))
+func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error) {
+	// Use go-ethereum's ABI encoder
+	bytes32Type, err := abi.NewType("bytes32", "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bytes32 type: %w", err)
+	}
+
+	arguments := abi.Arguments{
+		{Type: bytes32Type},
+		{Type: bytes32Type},
+	}
+
+	// Convert to fixed-size arrays
+	var rootBytes32 [32]byte
+	var hashBytes32 [32]byte
+	copy(rootBytes32[:], merkleRoot)
+	copy(hashBytes32[:], blockHash)
+
+	// ABI encode
+	packed, err := arguments.Pack(rootBytes32, hashBytes32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack arguments: %w", err)
+	}
+
+	// Keccak256 hash
+	messageHash := crypto.Keccak256(packed)
+	return messageHash, nil
+}
+
+// signMessage signs a message hash using ECDSA (Ethereum-compatible).
+// Returns a 65-byte signature in [R || S || V] format.
+func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+	// Sign using go-ethereum's crypto package
+	// This produces a 65-byte signature with recovery ID
+	signature, err := crypto.Sign(messageHash, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign message: %w", err)
+	}
+	return signature, nil
+}
+
+// countEpochVotes returns the number of validator signatures for an epoch.
+// Only counts non-custodial validator signatures (nonce=0).
+func countEpochVotes(ctx context.Context, app *common.App, epochID *types.UUID) (int, error) {
+	const nonCustodialNonce = 0
+
+	result, err := app.DB.Execute(ctx, `
+		SELECT COUNT(*) as vote_count
+		FROM kwil_erc20_meta.epoch_votes
+		WHERE epoch_id = $1 AND nonce = $2
+	`, epochID, nonCustodialNonce)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(result.Rows) == 0 {
+		return 0, nil
+	}
+
+	count, ok := result.Rows[0][0].(int64)
+	if !ok {
+		return 0, fmt.Errorf("unexpected type for vote count")
+	}
+
+	return int(count), nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/core/rpc/transport"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node"
@@ -41,6 +42,7 @@ import (
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
 	"github.com/trufnetwork/kwil-db/node/store"
 	"github.com/trufnetwork/kwil-db/node/txapp"
+	"github.com/trufnetwork/kwil-db/node/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 	"github.com/trufnetwork/kwil-db/node/voting"
 )
@@ -102,6 +104,16 @@ func buildServer(ctx context.Context, d *coreDependencies) *server {
 
 	// Consensus
 	ce := buildConsensusEngine(ctx, d, db, mp, bs, bp)
+
+	// Update TxApp's service with BroadcastTxFn from ConsensusEngine
+	// This enables extensions to submit transactions to the mempool
+	txApp.UpdateBroadcastTxFn(func(ctx context.Context, tx *ktypes.Transaction) (ktypes.Hash, error) {
+		// Convert core/types.Transaction to node/types.Tx for consensus engine
+		nodeTx := types.NewTx(tx)
+		// Call consensus engine's BroadcastTx with sync=1 (synchronous broadcast)
+		txHash, _, err := ce.BroadcastTx(ctx, nodeTx, 1)
+		return txHash, err
+	})
 
 	// Node
 	node := buildNode(d, mp, bs, ce, snapshotStore, db, bp, p2pSvc)
