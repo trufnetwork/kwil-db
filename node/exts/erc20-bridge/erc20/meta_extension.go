@@ -389,9 +389,11 @@ func init() {
 								continue
 							}
 							if key != nil {
-								// Start background signer
+								// Start background signer with a long-lived context
+								// Use context.Background() so the signer runs for the lifetime of the node,
+								// not just until OnStart returns
 								signer := NewValidatorSigner(app, instance.ID, key)
-								go signer.Start(ctx)
+								go signer.Start(context.Background())
 							}
 						}
 					}
@@ -1217,7 +1219,16 @@ func init() {
 									}
 
 									if len(result.Rows) > 0 {
-										merkleRoot := result.Rows[0][0].([]byte)
+										// Check for nil merkle root before type assertion
+										if result.Rows[0][0] == nil {
+											app.Service.Logger.Warnf("epoch %s has nil reward_root, cannot confirm", epochID)
+											return nil
+										}
+										merkleRoot, ok := result.Rows[0][0].([]byte)
+										if !ok {
+											app.Service.Logger.Warnf("epoch %s reward_root is not []byte type", epochID)
+											return nil
+										}
 										err = confirmEpoch(ctx.TxContext.Ctx, app, merkleRoot)
 										if err != nil {
 											app.Service.Logger.Warnf("failed to confirm epoch %s: %v", epochID, err)
@@ -2488,7 +2499,7 @@ func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.Pri
 	}
 
 	bridgeConfig := app.Service.LocalConfig.Erc20Bridge
-	if bridgeConfig.Signer == nil || len(bridgeConfig.Signer) == 0 {
+	if len(bridgeConfig.Signer) == 0 {
 		return nil, nil // No signer config, skip signing
 	}
 

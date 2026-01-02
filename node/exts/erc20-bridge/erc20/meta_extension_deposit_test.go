@@ -143,7 +143,7 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 	depositLog := ethtypes.Log{
 		Address: upd.EscrowAddress,
 		Topics: []ethcommon.Hash{
-			depositEventID,                       // Event signature (same for both contracts)
+			depositEventID,                           // Event signature (same for both contracts)
 			ethcommon.BytesToHash(recipient.Bytes()), // Indexed recipient parameter
 		},
 		Data: data[:],

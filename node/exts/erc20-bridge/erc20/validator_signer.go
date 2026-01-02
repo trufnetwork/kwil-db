@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/trufnetwork/kwil-db/common"
-	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 
@@ -30,21 +30,21 @@ type ValidatorSigner struct {
 	address    ethcommon.Address
 	logger     log.Logger
 
-	// Track last checked block to avoid duplicate work
-	mu              sync.Mutex
-	lastCheckedBlock int64
-	votedEpochs     map[string]bool // epochID -> voted
+	// Track voted epochs and nonce to avoid duplicate work and nonce conflicts
+	mu          sync.Mutex
+	votedEpochs map[string]bool // epochID -> voted
+	localNonce  uint64          // Local nonce counter for transaction creation
 }
 
 // NewValidatorSigner creates a new validator signer service.
 func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecdsa.PrivateKey) *ValidatorSigner {
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
 	return &ValidatorSigner{
-		app:        app,
-		instanceID: instanceID,
-		privateKey: privateKey,
-		address:    address,
-		logger:     app.Service.Logger,
+		app:         app,
+		instanceID:  instanceID,
+		privateKey:  privateKey,
+		address:     address,
+		logger:      app.Service.Logger,
 		votedEpochs: make(map[string]bool),
 	}
 }
@@ -234,16 +234,26 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 	// Create ECDSA signer
 	signer := &auth.EthPersonalSigner{Key: *kwilPrivKey}
 
-	// Get current account nonce
-	accountID := &types.AccountID{
-		Identifier: v.address.Bytes(),
-		KeyType:    kwilcrypto.KeyTypeSecp256k1,
+	// Get current account nonce with concurrency-safe local counter
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	// Initialize local nonce if needed
+	if v.localNonce == 0 {
+		accountID := &types.AccountID{
+			Identifier: v.address.Bytes(),
+			KeyType:    kwilcrypto.KeyTypeSecp256k1,
+		}
+		account, err := v.app.Accounts.GetAccount(ctx, v.app.DB, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get account nonce: %w", err)
+		}
+		v.localNonce = uint64(account.Nonce)
 	}
-	account, err := v.app.Accounts.GetAccount(ctx, v.app.DB, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get account nonce: %w", err)
-	}
-	nonce := uint64(account.Nonce)
+
+	// Use and increment local nonce
+	nonce := v.localNonce
+	v.localNonce++
 
 	// Create action execution payload
 	// The vote_epoch action expects: (instance_id, epoch_id, nonce, signature)
@@ -283,6 +293,12 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 		return nil, fmt.Errorf("failed to marshal action execution: %w", err)
 	}
 
+	// Get ChainID from genesis config
+	chainID := ""
+	if v.app.Service.GenesisConfig != nil {
+		chainID = v.app.Service.GenesisConfig.ChainID
+	}
+
 	// Create transaction
 	tx := &types.Transaction{
 		Body: &types.TransactionBody{
@@ -291,6 +307,7 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 			PayloadType: types.PayloadTypeExecute,
 			Fee:         big.NewInt(0), // No fee for validator votes
 			Nonce:       nonce,
+			ChainID:     chainID, // Set chain ID to prevent replay attacks
 		},
 		Serialization: types.SignedMsgConcat,
 	}
