@@ -15,22 +15,29 @@ package erc20
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/trufnetwork/kwil-db/common"
+	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/core/utils/order"
@@ -77,6 +84,17 @@ var (
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
 
 	_SINGLETON *extensionInfo
+
+	// runningSigners tracks which instance IDs have active validator signer goroutines
+	// to prevent duplicate signers if OnStart is called multiple times
+	runningSigners = make(map[string]bool)
+
+	// runningSignerCancels stores cancel functions for active signer goroutines
+	// to allow graceful shutdown when instances are disabled
+	runningSignerCancels = make(map[string]context.CancelFunc)
+
+	// runningSignersMu protects both runningSigners and runningSignerCancels maps
+	runningSignersMu sync.Mutex
 )
 
 // generates a deterministic UUID for the chain and escrow
@@ -372,6 +390,59 @@ func init() {
 						getSingleton().instances.Set(*instance.ID, instance)
 					}
 
+					// Start validator signer services for non-custodial withdrawals
+					// This runs in background and submits validator signatures via transactions
+					for _, instance := range instances {
+						if instance.active && instance.synced {
+							instanceIDStr := instance.ID.String()
+
+							// Check if signer is already running for this instance
+							runningSignersMu.Lock()
+							alreadyRunning := runningSigners[instanceIDStr]
+							if !alreadyRunning {
+								runningSigners[instanceIDStr] = true
+							}
+							runningSignersMu.Unlock()
+
+							if alreadyRunning {
+								app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
+								continue
+							}
+
+							// Try to get validator signing key
+							key, err := getValidatorSigningKey(app, instance.ID)
+							if err != nil {
+								app.Service.Logger.Warnf("failed to get validator signing key for instance %s: %v", instance.ID, err)
+								// Clean up tracking maps on error
+								runningSignersMu.Lock()
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								runningSignersMu.Unlock()
+								continue
+							}
+							if key != nil {
+								// Create cancellable context so we can stop the signer when instance is disabled
+								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
+								signerCtx, cancel := context.WithCancel(context.Background())
+
+								// Store cancel function for cleanup on disable
+								runningSignersMu.Lock()
+								runningSignerCancels[instanceIDStr] = cancel
+								runningSignersMu.Unlock()
+
+								// Start background signer with cancellable context
+								signer := NewValidatorSigner(app, instance.ID, key)
+								go signer.Start(signerCtx)
+							} else {
+								// No key available, clean up tracking maps
+								runningSignersMu.Lock()
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								runningSignersMu.Unlock()
+							}
+						}
+					}
+
 					return nil
 				},
 				Methods: []precompiles.Method{
@@ -571,6 +642,17 @@ func init() {
 							info.mu.Lock()
 							info.active = false
 							info.mu.Unlock()
+
+							// Stop validator signer goroutine if running
+							instanceIDStr := id.String()
+							runningSignersMu.Lock()
+							if cancel, ok := runningSignerCancels[instanceIDStr]; ok {
+								cancel() // Signal signer to stop
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								app.Service.Logger.Debugf("stopped validator signer for instance %s", id)
+							}
+							runningSignersMu.Unlock()
 
 							// stopAllListeners does not require a lock.
 							// Any error returned here suggests some sort of critical bug
@@ -1148,9 +1230,6 @@ func init() {
 								return err
 							}
 
-							// NOTE: if we have safe address and safe nonce, we can verify the signature
-							// But if we only have safe address, and safeNonce from the input, then it's no point
-
 							ok, err := canVoteEpoch(ctx.TxContext.Ctx, app, epochID)
 							if err != nil {
 								return fmt.Errorf("check epoch can vote: %w", err)
@@ -1160,7 +1239,113 @@ func init() {
 								return fmt.Errorf("epoch cannot be voted")
 							}
 
-							return voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
+							// Verify signature for non-custodial validator votes (nonce=0)
+							// This prevents forged votes from non-validators
+							const nonCustodialNonce = 0
+							if nonce == nonCustodialNonce {
+								// Query epoch's reward_root and block_hash for signature verification
+								result, err := app.DB.Execute(ctx.TxContext.Ctx, `
+									SELECT reward_root, block_hash
+									FROM kwil_erc20_meta.epochs
+									WHERE id = $1
+								`, epochID)
+								if err != nil {
+									return fmt.Errorf("failed to query epoch data for signature verification: %w", err)
+								}
+								if len(result.Rows) == 0 {
+									return fmt.Errorf("epoch %s not found for signature verification", epochID)
+								}
+
+								// Extract reward_root and block_hash with nil checks
+								if result.Rows[0][0] == nil || result.Rows[0][1] == nil {
+									return fmt.Errorf("epoch %s missing reward_root or block_hash (not finalized yet)", epochID)
+								}
+								rewardRoot, ok := result.Rows[0][0].([]byte)
+								if !ok {
+									return fmt.Errorf("invalid reward_root type for epoch %s", epochID)
+								}
+								blockHash, ok := result.Rows[0][1].([]byte)
+								if !ok {
+									return fmt.Errorf("invalid block_hash type for epoch %s", epochID)
+								}
+
+								// Compute the message hash that validators sign
+								messageHash, err := computeEpochMessageHash(rewardRoot, blockHash)
+								if err != nil {
+									return fmt.Errorf("failed to compute epoch message hash: %w", err)
+								}
+
+								// Verify signature against caller's address
+								err = utils.EthGnosisVerifyDigest(signature, messageHash, from.Bytes())
+								if err != nil {
+									return fmt.Errorf("signature verification failed for address %s: %w", from.Hex(), err)
+								}
+
+								// Signature is valid - proceed to store vote
+								app.Service.Logger.Debugf("signature verified for epoch %s from validator %s", epochID, from.Hex())
+							}
+
+							// Store the vote (only reached if signature verification passed for nonce=0)
+							err = voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
+							if err != nil {
+								return err
+							}
+
+							// For non-custodial validator signatures (nonce=0), check threshold and confirm epoch
+							// This ensures epoch confirmation happens deterministically during consensus
+							if nonce == nonCustodialNonce {
+								// Calculate BFT threshold (2/3 of total validator voting power)
+								totalPower, thresholdPower, err := calculateBFTThreshold(app)
+								if err != nil {
+									app.Service.Logger.Errorf("failed to calculate BFT threshold: %v", err)
+									return fmt.Errorf("failed to calculate BFT threshold: %w", err)
+								}
+
+								// Sum voting power of all validators who voted for this epoch
+								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
+								if err != nil {
+									app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
+									return fmt.Errorf("failed to sum voting power for epoch %s: %w", epochID, err)
+								}
+
+								app.Service.Logger.Debugf("epoch %s: voting_power=%d, threshold=%d, total_power=%d",
+									epochID, votingPower, thresholdPower, totalPower)
+
+								// Check if threshold reached (BFT: >= 2/3 of validator voting power)
+								if votingPower >= thresholdPower {
+									// Get epoch merkle root for confirmation
+									result, err := app.DB.Execute(ctx.TxContext.Ctx, `
+										SELECT reward_root FROM kwil_erc20_meta.epochs
+										WHERE id = $1
+									`, epochID)
+									if err != nil {
+										app.Service.Logger.Errorf("failed to get epoch merkle root: %v", err)
+										return fmt.Errorf("failed to get epoch merkle root: %w", err)
+									}
+
+									if len(result.Rows) > 0 {
+										// Check for nil merkle root before type assertion
+										if result.Rows[0][0] == nil {
+											app.Service.Logger.Warnf("epoch %s has nil reward_root, cannot confirm", epochID)
+											return fmt.Errorf("epoch %s has nil reward_root, cannot confirm", epochID)
+										}
+										merkleRoot, ok := result.Rows[0][0].([]byte)
+										if !ok {
+											app.Service.Logger.Errorf("epoch %s reward_root is not []byte type", epochID)
+											return fmt.Errorf("epoch %s reward_root has invalid type %T", epochID, result.Rows[0][0])
+										}
+										err = confirmEpoch(ctx.TxContext.Ctx, app, merkleRoot)
+										if err != nil {
+											app.Service.Logger.Errorf("failed to confirm epoch %s: %v", epochID, err)
+											return fmt.Errorf("failed to confirm epoch %s: %w", epochID, err)
+										}
+										app.Service.Logger.Infof("epoch %s confirmed with voting_power=%d (threshold=%d)",
+											epochID, votingPower, thresholdPower)
+									}
+								}
+							}
+
+							return nil
 						},
 					},
 					{
@@ -2403,4 +2588,243 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 	}
 
 	return n, nil
+}
+
+// ============================================================================
+// Validator Signing for Non-Custodial Withdrawals
+// ============================================================================
+
+// getValidatorSigningKey retrieves the validator's ECDSA private key from configuration.
+// Returns nil if no key is configured (backward compatibility).
+// Uses the existing [erc20_bridge.signer] config structure.
+func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.PrivateKey, error) {
+	// Get ERC20 bridge configuration from LocalConfig
+	// This uses the existing [erc20_bridge] section
+	if app.Service.LocalConfig == nil {
+		return nil, nil // No config, skip signing
+	}
+
+	bridgeConfig := app.Service.LocalConfig.Erc20Bridge
+	if len(bridgeConfig.Signer) == 0 {
+		return nil, nil // No signer config, skip signing
+	}
+
+	// For non-custodial validator signing, we use the same key for all instances
+	// (vs custodial which needs different keys per instance for Safe multisig)
+	//
+	// Deterministic key selection: When multiple keys exist in the config map,
+	// we must consistently select the same key across node restarts to avoid
+	// nonce conflicts and duplicate votes. We sort keys alphabetically and select
+	// the first one. This approach:
+	// 1. Ensures deterministic selection (same key every time)
+	// 2. Maintains backward compatibility (single-key configs work unchanged)
+	// 3. Avoids configuration complexity (no need to specify "primary" key)
+	var keys []string
+	for key := range bridgeConfig.Signer {
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return nil, nil // No signer keys configured
+	}
+	sort.Strings(keys) // Sort to ensure deterministic selection
+	signerPath := bridgeConfig.Signer[keys[0]]
+
+	// Check file permissions for security (should be restrictive like 0600)
+	fileInfo, err := os.Stat(signerPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat private key file %s: %w", signerPath, err)
+	}
+	// Warn if file has overly permissive permissions (readable by group/others)
+	if fileInfo.Mode().Perm()&0077 != 0 {
+		app.Service.Logger.Warnf("private key file %s has insecure permissions %v (should be 0600 or stricter)", signerPath, fileInfo.Mode().Perm())
+	}
+
+	// Read private key from file
+	rawPkBytes, err := os.ReadFile(signerPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key file %s: %w", signerPath, err)
+	}
+
+	// Parse hex-encoded private key
+	pkStr := strings.TrimSpace(string(rawPkBytes))
+	pkStr = strings.TrimPrefix(pkStr, "0x") // Remove 0x prefix if present
+	pkBytes, err := hex.DecodeString(pkStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode private key hex: %w", err)
+	}
+
+	// Convert to ECDSA private key
+	privateKey, err := crypto.ToECDSA(pkBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ECDSA private key: %w", err)
+	}
+
+	return privateKey, nil
+}
+
+// computeEpochMessageHash computes the message hash that validators sign.
+// This matches the format expected by TrufNetworkBridge contract:
+// keccak256(abi.encode(merkleRoot, kwilBlockHash))
+func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error) {
+	// Use go-ethereum's ABI encoder
+	bytes32Type, err := abi.NewType("bytes32", "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bytes32 type: %w", err)
+	}
+
+	arguments := abi.Arguments{
+		{Type: bytes32Type},
+		{Type: bytes32Type},
+	}
+
+	// Validate inputs are exactly 32 bytes before copying
+	if len(merkleRoot) != 32 {
+		return nil, fmt.Errorf("invalid merkleRoot size: expected 32 bytes, got %d bytes", len(merkleRoot))
+	}
+	if len(blockHash) != 32 {
+		return nil, fmt.Errorf("invalid blockHash size: expected 32 bytes, got %d bytes", len(blockHash))
+	}
+
+	// Convert to fixed-size arrays
+	var rootBytes32 [32]byte
+	var hashBytes32 [32]byte
+	copy(rootBytes32[:], merkleRoot)
+	copy(hashBytes32[:], blockHash)
+
+	// ABI encode
+	packed, err := arguments.Pack(rootBytes32, hashBytes32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack arguments: %w", err)
+	}
+
+	// Keccak256 hash
+	messageHash := crypto.Keccak256(packed)
+	return messageHash, nil
+}
+
+// signMessage signs a message hash using ECDSA (Ethereum-compatible).
+// Returns a 65-byte signature in [R || S || V] format.
+func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+	// Sign using go-ethereum's crypto package
+	// This produces a 65-byte signature with recovery ID
+	signature, err := crypto.Sign(messageHash, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign message: %w", err)
+	}
+	return signature, nil
+}
+
+// calculateBFTThreshold calculates the BFT threshold (2/3 of total validator voting power).
+// Returns (totalPower, thresholdPower, error).
+// Uses ceiling division to ensure >= 2/3 of voting power is required.
+func calculateBFTThreshold(app *common.App) (int64, int64, error) {
+	// Get all validators and sum their voting power
+	validators := app.Validators.GetValidators()
+
+	var totalPower int64
+	for _, v := range validators {
+		totalPower += v.Power
+	}
+
+	if totalPower == 0 {
+		return 0, 0, fmt.Errorf("no validators with voting power")
+	}
+
+	// Calculate 2/3 threshold using ceiling division: ceil(totalPower * 2 / 3)
+	// Formula: (totalPower * 2 + 3 - 1) / 3 = (totalPower * 2 + 2) / 3
+	thresholdPower := (totalPower*2 + 2) / 3
+
+	return totalPower, thresholdPower, nil
+}
+
+// sumEpochVotingPower calculates the total voting power of validators who voted for an epoch.
+// Only counts non-custodial validator signatures (nonce=0).
+//
+// IMPORTANT: This function only counts voting power for validators using secp256k1 keys.
+// Non-custodial validator voting requires EthPersonalSigner (Ethereum addresses), which
+// necessitates secp256k1 keys. Validators with other key types (e.g., ed25519) will not
+// participate in non-custodial withdrawal voting, though they remain fully functional
+// validators in the network's BFT consensus.
+//
+// Note: This function cannot use ctx.TxContext because it's called from a handler.
+// It matches votes by Ethereum address, which requires validators to use EthPersonalSigner.
+func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {
+	const nonCustodialNonce = 0
+
+	// Get all votes for this epoch (stores Ethereum addresses as voters)
+	result, err := app.DB.Execute(ctx, `
+		SELECT voter
+		FROM kwil_erc20_meta.epoch_votes
+		WHERE epoch_id = $1 AND nonce = $2
+	`, epochID, nonCustodialNonce)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query epoch votes: %w", err)
+	}
+
+	// For each vote, we need to find the corresponding validator
+	// Unfortunately, epoch_votes stores Ethereum addresses, not validator pubkeys
+	// We need to iterate through validators and match their Ethereum address
+	validators := app.Validators.GetValidators()
+
+	// Build a map of validator Ethereum addresses -> power
+	// This requires computing each validator's Ethereum address from their pubkey
+	validatorPowerMap := make(map[string]int64)
+	for _, v := range validators {
+		// Compute Ethereum address from validator pubkey
+		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
+		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
+			// Parse the pubkey and derive Ethereum address
+			ethAddr, err := ethAddressFromPubKey(v.Identifier)
+			if err != nil {
+				// Skip validators with invalid keys
+				app.Service.Logger.Warnf("failed to derive Ethereum address for validator: %v", err)
+				continue
+			}
+			validatorPowerMap[ethAddr.Hex()] = v.Power
+		}
+	}
+
+	// Sum voting power for all voters
+	var votingPower int64
+	for _, row := range result.Rows {
+		voterBytes, ok := row[0].([]byte)
+		if !ok {
+			continue
+		}
+
+		// Convert voter bytes to Ethereum address
+		if len(voterBytes) != 20 {
+			continue
+		}
+		voter := ethcommon.BytesToAddress(voterBytes)
+
+		// Look up voting power
+		if power, ok := validatorPowerMap[voter.Hex()]; ok {
+			votingPower += power
+		}
+	}
+
+	return votingPower, nil
+}
+
+// ethAddressFromPubKey derives an Ethereum address from a secp256k1 public key.
+// The pubKey should be 33 bytes (compressed) or 65 bytes (uncompressed).
+func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
+	// Parse the public key
+	pubkey, err := crypto.UnmarshalPubkey(pubKey)
+	if err != nil {
+		// Try decompressing if it's a 33-byte compressed key
+		if len(pubKey) == 33 {
+			pubkey, err = crypto.DecompressPubkey(pubKey)
+			if err != nil {
+				return ethcommon.Address{}, fmt.Errorf("failed to decompress pubkey: %w", err)
+			}
+		} else {
+			return ethcommon.Address{}, fmt.Errorf("failed to parse pubkey: %w", err)
+		}
+	}
+
+	// Derive Ethereum address from public key
+	address := crypto.PubkeyToAddress(*pubkey)
+	return address, nil
 }

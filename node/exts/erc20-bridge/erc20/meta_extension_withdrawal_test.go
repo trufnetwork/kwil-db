@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 
 	"github.com/trufnetwork/kwil-db/common"
@@ -92,7 +93,7 @@ func TestApplyWithdrawalLog_InvalidData(t *testing.T) {
 			name: "zero recipient address",
 			log: ethtypes.Log{
 				Topics: []ethcommon.Hash{
-					withdrawEventID, // Programmatically derived from ABI
+					withdrawEventID,  // Programmatically derived from ABI
 					ethcommon.Hash{}, // zero address
 					{0x01, 0x02, 0x03},
 				},
@@ -421,4 +422,47 @@ func TestApplyWithdrawalLog_Idempotent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "claimed", status)
+}
+
+// ============================================================================
+// Validator Signing Tests
+// ============================================================================
+
+// TestComputeEpochMessageHash tests the message hash computation for epoch signing
+func TestComputeEpochMessageHash(t *testing.T) {
+	merkleRoot := crypto.Keccak256([]byte("test merkle root"))
+	blockHash := crypto.Keccak256([]byte("test block hash"))
+
+	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
+	require.NoError(t, err)
+	require.Len(t, messageHash, 32)
+
+	// Verify the hash is deterministic
+	messageHash2, err := computeEpochMessageHash(merkleRoot, blockHash)
+	require.NoError(t, err)
+	require.Equal(t, messageHash, messageHash2)
+
+	// Verify different inputs produce different hashes
+	differentRoot := crypto.Keccak256([]byte("different root"))
+	messageHash3, err := computeEpochMessageHash(differentRoot, blockHash)
+	require.NoError(t, err)
+	require.NotEqual(t, messageHash, messageHash3)
+}
+
+// TestSignMessage tests ECDSA signing functionality
+func TestSignMessage(t *testing.T) {
+	// Generate test key
+	privateKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+
+	messageHash := crypto.Keccak256([]byte("test message"))
+
+	signature, err := signMessage(messageHash, privateKey)
+	require.NoError(t, err)
+	require.Len(t, signature, 65, "ECDSA signature should be 65 bytes")
+
+	// Verify the signature
+	pubKey, err := crypto.SigToPub(messageHash, signature)
+	require.NoError(t, err)
+	require.Equal(t, privateKey.PublicKey, *pubKey)
 }

@@ -86,6 +86,13 @@ func (r *TxApp) UpdateNodeStatus(nodeStatus common.NodeStatusProvider) {
 	r.service.NodeStatus = nodeStatus
 }
 
+// UpdateBroadcastTxFn updates the service's BroadcastTxFn callback.
+// This should be called after the ConsensusEngine is created to enable
+// extensions to submit transactions to the mempool.
+func (r *TxApp) UpdateBroadcastTxFn(broadcastFn common.BroadcastTxFn) {
+	r.service.BroadcastTxFn = broadcastFn
+}
+
 // GenesisInit initializes the TxApp. It must be called outside of a session,
 // and before any session is started.
 // It can assign the initial validator set and initial account balances.

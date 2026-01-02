@@ -42,7 +42,17 @@ type Service struct {
 	// NodeStatus provides runtime status information about the node.
 	// Extensions can query this to adapt behavior based on node state.
 	NodeStatus NodeStatusProvider
+
+	// BroadcastTxFn allows extensions to submit transactions to the mempool.
+	// This enables background services to create and broadcast transactions
+	// that will be included in blocks and executed deterministically.
+	// If nil, transaction broadcasting is not available.
+	BroadcastTxFn BroadcastTxFn
 }
+
+// BroadcastTxFn is a function that submits a transaction to the mempool.
+// Returns the transaction hash if successful.
+type BroadcastTxFn func(ctx context.Context, tx *types.Transaction) (types.Hash, error)
 
 // NameLogger returns a new Service with the logger named.
 // Every other field is the same pointer as the original.
@@ -53,6 +63,7 @@ func (s *Service) NamedLogger(name string) *Service {
 		LocalConfig:   s.LocalConfig,
 		Identity:      s.Identity,
 		NodeStatus:    s.NodeStatus,
+		BroadcastTxFn: s.BroadcastTxFn,
 	}
 }
 
