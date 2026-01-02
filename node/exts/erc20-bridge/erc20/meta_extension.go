@@ -37,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/trufnetwork/kwil-db/common"
+	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/core/utils/order"
@@ -1252,7 +1253,7 @@ func init() {
 							const nonCustodialNonce = 0
 							if nonce == nonCustodialNonce {
 								// Calculate BFT threshold (2/3 of total validator voting power)
-								totalPower, thresholdPower, err := calculateBFTThreshold(ctx.TxContext.Ctx, app)
+								totalPower, thresholdPower, err := calculateBFTThreshold(app)
 								if err != nil {
 									app.Service.Logger.Warnf("failed to calculate BFT threshold: %v", err)
 									return nil
@@ -2666,7 +2667,7 @@ func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, erro
 // calculateBFTThreshold calculates the BFT threshold (2/3 of total validator voting power).
 // Returns (totalPower, thresholdPower, error).
 // Uses ceiling division to ensure >= 2/3 of voting power is required.
-func calculateBFTThreshold(ctx context.Context, app *common.App) (int64, int64, error) {
+func calculateBFTThreshold(app *common.App) (int64, int64, error) {
 	// Get all validators and sum their voting power
 	validators := app.Validators.GetValidators()
 
@@ -2721,7 +2722,7 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 	for _, v := range validators {
 		// Compute Ethereum address from validator pubkey
 		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
-		if v.KeyType == "secp256k1" {
+		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
 			// Parse the pubkey and derive Ethereum address
 			ethAddr, err := ethAddressFromPubKey(v.Identifier)
 			if err != nil {
