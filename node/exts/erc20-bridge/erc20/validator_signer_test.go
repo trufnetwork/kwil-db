@@ -177,7 +177,9 @@ func TestVoteEpochThresholdAndConfirmation(t *testing.T) {
 	require.False(t, result.Rows[0][0].(bool))
 
 	// Verify vote count is 1
-	count, err := countEpochVotes(ctx, app, epochID)
+	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
+	require.NoError(t, err)
+	count := int(result.Rows[0][0].(int64))
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 
@@ -204,7 +206,9 @@ func TestVoteEpochThresholdAndConfirmation(t *testing.T) {
 	require.True(t, result.Rows[0][0].(bool))
 
 	// Verify votes were cleaned up after confirmation
-	count, err = countEpochVotes(ctx, app, epochID)
+	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
+	require.NoError(t, err)
+	count = int(result.Rows[0][0].(int64))
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
 }
@@ -274,8 +278,9 @@ func TestVoteEpochDuplicateVote(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify vote count is 1
-	count, err := countEpochVotes(ctx, app, epochID)
+	result, err := app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
+	count := int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
 	// Validator votes again with different signature (simulate re-signing)
@@ -286,12 +291,13 @@ func TestVoteEpochDuplicateVote(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify vote count is STILL 1 (duplicate vote updated, not added)
-	count, err = countEpochVotes(ctx, app, epochID)
+	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
+	count = int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
 	// Verify signature was updated
-	result, err := app.DB.Execute(ctx, `
+	result, err = app.DB.Execute(ctx, `
 		SELECT signature FROM kwil_erc20_meta.epoch_votes
 		WHERE epoch_id = $1 AND voter = $2
 	`, epochID, validatorAddr.Bytes())
@@ -606,11 +612,12 @@ func TestValidatorSignerEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify 1 vote, epoch NOT confirmed
-	count, err := countEpochVotes(ctx, app, epochID)
+	result, err := app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
+	count := int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
-	result, err := app.DB.Execute(ctx, `SELECT confirmed FROM kwil_erc20_meta.epochs WHERE id = $1`, epochID)
+	result, err = app.DB.Execute(ctx, `SELECT confirmed FROM kwil_erc20_meta.epochs WHERE id = $1`, epochID)
 	require.NoError(t, err)
 	require.False(t, result.Rows[0][0].(bool))
 
@@ -636,7 +643,9 @@ func TestValidatorSignerEndToEnd(t *testing.T) {
 	require.True(t, result.Rows[0][0].(bool))
 
 	// Verify votes were cleaned up
-	count, err = countEpochVotes(ctx, app, epochID)
+	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
+	require.NoError(t, err)
+	count = int(result.Rows[0][0].(int64))
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
 

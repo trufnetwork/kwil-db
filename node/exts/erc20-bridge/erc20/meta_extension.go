@@ -1196,18 +1196,25 @@ func init() {
 							// This ensures epoch confirmation happens deterministically during consensus
 							const nonCustodialNonce = 0
 							if nonce == nonCustodialNonce {
-								// Count votes for this epoch
-								voteCount, err := countEpochVotes(ctx.TxContext.Ctx, app, epochID)
+								// Calculate BFT threshold (2/3 of total validator voting power)
+								totalPower, thresholdPower, err := calculateBFTThreshold(ctx.TxContext.Ctx, app)
 								if err != nil {
-									// Don't fail the vote if counting fails
-									app.Service.Logger.Warnf("failed to count votes for epoch %s: %v", epochID, err)
+									app.Service.Logger.Warnf("failed to calculate BFT threshold: %v", err)
 									return nil
 								}
 
-								// Check if threshold reached (2-of-3 validators)
-								// TODO: Make threshold configurable via instance settings
-								const requiredVotes = 2
-								if voteCount >= requiredVotes {
+								// Sum voting power of all validators who voted for this epoch
+								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
+								if err != nil {
+									app.Service.Logger.Warnf("failed to sum voting power for epoch %s: %v", epochID, err)
+									return nil
+								}
+
+								app.Service.Logger.Debugf("epoch %s: voting_power=%d, threshold=%d, total_power=%d",
+									epochID, votingPower, thresholdPower, totalPower)
+
+								// Check if threshold reached (BFT: >= 2/3 of validator voting power)
+								if votingPower >= thresholdPower {
 									// Get epoch merkle root for confirmation
 									result, err := app.DB.Execute(ctx.TxContext.Ctx, `
 										SELECT reward_root FROM kwil_erc20_meta.epochs
@@ -1234,7 +1241,8 @@ func init() {
 											app.Service.Logger.Warnf("failed to confirm epoch %s: %v", epochID, err)
 											return nil
 										}
-										app.Service.Logger.Infof("epoch %s confirmed with %d validator signatures", epochID, voteCount)
+										app.Service.Logger.Infof("epoch %s confirmed with voting_power=%d (threshold=%d)",
+											epochID, votingPower, thresholdPower)
 									}
 								}
 							}
@@ -2583,28 +2591,110 @@ func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, erro
 	return signature, nil
 }
 
-// countEpochVotes returns the number of validator signatures for an epoch.
+// calculateBFTThreshold calculates the BFT threshold (2/3 of total validator voting power).
+// Returns (totalPower, thresholdPower, error).
+// Uses ceiling division to ensure >= 2/3 of voting power is required.
+func calculateBFTThreshold(ctx context.Context, app *common.App) (int64, int64, error) {
+	// Get all validators and sum their voting power
+	validators := app.Validators.GetValidators()
+
+	var totalPower int64
+	for _, v := range validators {
+		totalPower += v.Power
+	}
+
+	if totalPower == 0 {
+		return 0, 0, fmt.Errorf("no validators with voting power")
+	}
+
+	// Calculate 2/3 threshold using ceiling division: ceil(totalPower * 2 / 3)
+	// Formula: (totalPower * 2 + 3 - 1) / 3 = (totalPower * 2 + 2) / 3
+	thresholdPower := (totalPower*2 + 2) / 3
+
+	return totalPower, thresholdPower, nil
+}
+
+// sumEpochVotingPower calculates the total voting power of validators who voted for an epoch.
 // Only counts non-custodial validator signatures (nonce=0).
-func countEpochVotes(ctx context.Context, app *common.App, epochID *types.UUID) (int, error) {
+// Note: This function cannot use ctx.TxContext because it's called from a handler.
+// It matches votes by Ethereum address, which requires validators to use EthPersonalSigner.
+func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {
 	const nonCustodialNonce = 0
 
+	// Get all votes for this epoch (stores Ethereum addresses as voters)
 	result, err := app.DB.Execute(ctx, `
-		SELECT COUNT(*) as vote_count
+		SELECT voter
 		FROM kwil_erc20_meta.epoch_votes
 		WHERE epoch_id = $1 AND nonce = $2
 	`, epochID, nonCustodialNonce)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to query epoch votes: %w", err)
 	}
 
-	if len(result.Rows) == 0 {
-		return 0, nil
+	// For each vote, we need to find the corresponding validator
+	// Unfortunately, epoch_votes stores Ethereum addresses, not validator pubkeys
+	// We need to iterate through validators and match their Ethereum address
+	validators := app.Validators.GetValidators()
+
+	// Build a map of validator Ethereum addresses -> power
+	// This requires computing each validator's Ethereum address from their pubkey
+	validatorPowerMap := make(map[string]int64)
+	for _, v := range validators {
+		// Compute Ethereum address from validator pubkey
+		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
+		if v.KeyType == "secp256k1" {
+			// Parse the pubkey and derive Ethereum address
+			ethAddr, err := ethAddressFromPubKey(v.Identifier)
+			if err != nil {
+				// Skip validators with invalid keys
+				app.Service.Logger.Warnf("failed to derive Ethereum address for validator: %v", err)
+				continue
+			}
+			validatorPowerMap[ethAddr.Hex()] = v.Power
+		}
 	}
 
-	count, ok := result.Rows[0][0].(int64)
-	if !ok {
-		return 0, fmt.Errorf("unexpected type for vote count")
+	// Sum voting power for all voters
+	var votingPower int64
+	for _, row := range result.Rows {
+		voterBytes, ok := row[0].([]byte)
+		if !ok {
+			continue
+		}
+
+		// Convert voter bytes to Ethereum address
+		if len(voterBytes) != 20 {
+			continue
+		}
+		voter := ethcommon.BytesToAddress(voterBytes)
+
+		// Look up voting power
+		if power, ok := validatorPowerMap[voter.Hex()]; ok {
+			votingPower += power
+		}
 	}
 
-	return int(count), nil
+	return votingPower, nil
+}
+
+// ethAddressFromPubKey derives an Ethereum address from a secp256k1 public key.
+// The pubKey should be 33 bytes (compressed) or 65 bytes (uncompressed).
+func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
+	// Parse the public key
+	pubkey, err := crypto.UnmarshalPubkey(pubKey)
+	if err != nil {
+		// Try decompressing if it's a 33-byte compressed key
+		if len(pubKey) == 33 {
+			pubkey, err = crypto.DecompressPubkey(pubKey)
+			if err != nil {
+				return ethcommon.Address{}, fmt.Errorf("failed to decompress pubkey: %w", err)
+			}
+		} else {
+			return ethcommon.Address{}, fmt.Errorf("failed to parse pubkey: %w", err)
+		}
+	}
+
+	// Derive Ethereum address from public key
+	address := crypto.PubkeyToAddress(*pubkey)
+	return address, nil
 }

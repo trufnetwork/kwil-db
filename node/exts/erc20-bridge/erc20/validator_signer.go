@@ -143,10 +143,41 @@ func (v *ValidatorSigner) getFinalizedEpochs(ctx context.Context) ([]*FinalizedE
 
 	var epochs []*FinalizedEpoch
 	for _, row := range result.Rows {
+		// Safely extract ID with nil check
+		if row[0] == nil {
+			v.logger.Warn("skipping epoch with nil ID")
+			continue
+		}
+		epochID, ok := row[0].(*types.UUID)
+		if !ok {
+			v.logger.Warnf("skipping epoch with invalid ID type: %T", row[0])
+			continue
+		}
+
+		// Safely extract reward_root with nil check
+		var rewardRoot []byte
+		if row[1] != nil {
+			rewardRoot, ok = row[1].([]byte)
+			if !ok {
+				v.logger.Warnf("skipping epoch %s with invalid reward_root type: %T", epochID, row[1])
+				continue
+			}
+		}
+
+		// Safely extract block_hash with nil check
+		var blockHash []byte
+		if row[2] != nil {
+			blockHash, ok = row[2].([]byte)
+			if !ok {
+				v.logger.Warnf("skipping epoch %s with invalid block_hash type: %T", epochID, row[2])
+				continue
+			}
+		}
+
 		epoch := &FinalizedEpoch{
-			ID:         row[0].(*types.UUID),
-			RewardRoot: row[1].([]byte),
-			BlockHash:  row[2].([]byte),
+			ID:         epochID,
+			RewardRoot: rewardRoot,
+			BlockHash:  blockHash,
 		}
 		epochs = append(epochs, epoch)
 	}

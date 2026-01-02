@@ -310,7 +310,9 @@ func TestMultipleEpochsVoting(t *testing.T) {
 
 	// Verify all 3 epochs have 1 vote each
 	for _, epochID := range []*types.UUID{epoch1ID, epoch2ID, epoch3ID} {
-		count, err := countEpochVotes(ctx, app, epochID)
+		result, err := app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
+		require.NoError(t, err)
+		count := int(result.Rows[0][0].(int64))
 		require.NoError(t, err)
 		require.Equal(t, 1, count)
 	}
@@ -435,52 +437,4 @@ func TestSignMessageDeterminism(t *testing.T) {
 
 	require.Equal(t, privateKey.PublicKey, *pubKey1)
 	require.Equal(t, privateKey.PublicKey, *pubKey2)
-}
-
-// TestCountEpochVotesEmpty tests counting votes on epoch with no votes
-func TestCountEpochVotesEmpty(t *testing.T) {
-	ctx := context.Background()
-	db, err := newTestDB()
-	if err != nil {
-		t.Skip("PostgreSQL not available - this test requires database connection")
-	}
-	defer db.Close()
-
-	tx, err := db.BeginTx(ctx)
-	require.NoError(t, err)
-	defer tx.Rollback(ctx)
-
-	orderedsync.ForTestingReset()
-	defer orderedsync.ForTestingReset()
-	ForTestingResetSingleton()
-	defer ForTestingResetSingleton()
-
-	app := setup(t, tx)
-
-	// Create instance and epoch
-	instanceID := newUUID()
-	chainInfo, ok := chains.GetChainInfoByID("1")
-	require.True(t, ok)
-
-	testReward := &userProvidedData{
-		ID:                 instanceID,
-		ChainInfo:          &chainInfo,
-		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc"),
-		DistributionPeriod: 3600,
-	}
-
-	require.NoError(t, createNewRewardInstance(ctx, app, testReward))
-
-	epochID := newUUID()
-	pending := &PendingEpoch{
-		ID:          epochID,
-		StartHeight: 10,
-		StartTime:   100,
-	}
-	require.NoError(t, createEpoch(ctx, app, pending, instanceID))
-
-	// Count votes on empty epoch
-	count, err := countEpochVotes(ctx, app, epochID)
-	require.NoError(t, err)
-	require.Equal(t, 0, count)
 }
