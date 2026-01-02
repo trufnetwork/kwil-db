@@ -80,6 +80,15 @@ func (v *ValidatorSigner) pollAndSign(ctx context.Context) {
 		return
 	}
 
+	// Periodically clean up confirmed epochs from memory to prevent unbounded growth
+	v.mu.Lock()
+	if len(v.votedEpochs) > 100 {
+		v.mu.Unlock()
+		v.cleanupConfirmedEpochs(ctx)
+	} else {
+		v.mu.Unlock()
+	}
+
 	for _, epoch := range epochs {
 		// Check if already voted
 		v.mu.Lock()
@@ -204,7 +213,10 @@ func (v *ValidatorSigner) hasVoted(ctx context.Context, epochID *types.UUID) (bo
 		return false, nil
 	}
 
-	count := result.Rows[0][0].(int64)
+	count, ok := result.Rows[0][0].(int64)
+	if !ok {
+		return false, fmt.Errorf("unexpected type for count: %T", result.Rows[0][0])
+	}
 	return count > 0, nil
 }
 
@@ -266,11 +278,13 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 	signer := &auth.EthPersonalSigner{Key: *kwilPrivKey}
 
 	// Get current account nonce with concurrency-safe local counter
+	// Use double-check pattern to avoid holding mutex during GetAccount call
 	v.mu.Lock()
-	defer v.mu.Unlock()
+	needsInit := v.localNonce == 0
+	v.mu.Unlock()
 
-	// Initialize local nonce if needed
-	if v.localNonce == 0 {
+	if needsInit {
+		// Fetch account nonce outside mutex to avoid blocking
 		accountID := &types.AccountID{
 			Identifier: v.address.Bytes(),
 			KeyType:    kwilcrypto.KeyTypeSecp256k1,
@@ -279,12 +293,21 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 		if err != nil {
 			return nil, fmt.Errorf("failed to get account nonce: %w", err)
 		}
-		v.localNonce = uint64(account.Nonce)
+		initialNonce := uint64(account.Nonce)
+
+		// Double-check pattern: only set if still zero
+		v.mu.Lock()
+		if v.localNonce == 0 {
+			v.localNonce = initialNonce
+		}
+		v.mu.Unlock()
 	}
 
 	// Use and increment local nonce
+	v.mu.Lock()
 	nonce := v.localNonce
 	v.localNonce++
+	v.mu.Unlock()
 
 	// Create action execution payload
 	// The vote_epoch action expects: (instance_id, epoch_id, nonce, signature)
@@ -350,4 +373,45 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 	}
 
 	return tx, nil
+}
+
+// cleanupConfirmedEpochs removes confirmed epochs from the in-memory votedEpochs map
+// to prevent unbounded memory growth over time.
+func (v *ValidatorSigner) cleanupConfirmedEpochs(ctx context.Context) {
+	// Query all confirmed epochs for this instance
+	result, err := v.app.DB.Execute(ctx, `
+		SELECT id FROM kwil_erc20_meta.epochs
+		WHERE instance_id = $1 AND confirmed = true
+	`, v.instanceID)
+	if err != nil {
+		v.logger.Warnf("failed to query confirmed epochs for cleanup: %v", err)
+		return
+	}
+
+	// Build set of confirmed epoch IDs
+	confirmedEpochs := make(map[string]bool)
+	for _, row := range result.Rows {
+		if row[0] == nil {
+			continue
+		}
+		if epochID, ok := row[0].(*types.UUID); ok {
+			confirmedEpochs[epochID.String()] = true
+		}
+	}
+
+	// Remove confirmed epochs from votedEpochs map
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	removedCount := 0
+	for epochID := range v.votedEpochs {
+		if confirmedEpochs[epochID] {
+			delete(v.votedEpochs, epochID)
+			removedCount++
+		}
+	}
+
+	if removedCount > 0 {
+		v.logger.Debugf("cleaned up %d confirmed epochs from memory (votedEpochs map now has %d entries)", removedCount, len(v.votedEpochs))
+	}
 }

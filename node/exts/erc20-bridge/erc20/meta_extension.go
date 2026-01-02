@@ -2524,6 +2524,16 @@ func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.Pri
 	sort.Strings(keys) // Sort to ensure deterministic selection
 	signerPath := bridgeConfig.Signer[keys[0]]
 
+	// Check file permissions for security (should be restrictive like 0600)
+	fileInfo, err := os.Stat(signerPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat private key file %s: %w", signerPath, err)
+	}
+	// Warn if file has overly permissive permissions (readable by group/others)
+	if fileInfo.Mode().Perm()&0077 != 0 {
+		app.Service.Logger.Warnf("private key file %s has insecure permissions %v (should be 0600 or stricter)", signerPath, fileInfo.Mode().Perm())
+	}
+
 	// Read private key from file
 	rawPkBytes, err := os.ReadFile(signerPath)
 	if err != nil {
