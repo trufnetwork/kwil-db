@@ -83,6 +83,11 @@ var (
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
 
 	_SINGLETON *extensionInfo
+
+	// runningSigners tracks which instance IDs have active validator signer goroutines
+	// to prevent duplicate signers if OnStart is called multiple times
+	runningSigners   = make(map[string]bool)
+	runningSignersMu sync.Mutex
 )
 
 // generates a deterministic UUID for the chain and escrow
@@ -382,10 +387,29 @@ func init() {
 					// This runs in background and submits validator signatures via transactions
 					for _, instance := range instances {
 						if instance.active && instance.synced {
+							instanceIDStr := instance.ID.String()
+
+							// Check if signer is already running for this instance
+							runningSignersMu.Lock()
+							alreadyRunning := runningSigners[instanceIDStr]
+							if !alreadyRunning {
+								runningSigners[instanceIDStr] = true
+							}
+							runningSignersMu.Unlock()
+
+							if alreadyRunning {
+								app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
+								continue
+							}
+
 							// Try to get validator signing key
 							key, err := getValidatorSigningKey(app, instance.ID)
 							if err != nil {
 								app.Service.Logger.Warnf("failed to get validator signing key for instance %s: %v", instance.ID, err)
+								// Clean up tracking map on error
+								runningSignersMu.Lock()
+								delete(runningSigners, instanceIDStr)
+								runningSignersMu.Unlock()
 								continue
 							}
 							if key != nil {
@@ -394,6 +418,11 @@ func init() {
 								// not just until OnStart returns
 								signer := NewValidatorSigner(app, instance.ID, key)
 								go signer.Start(context.Background())
+							} else {
+								// No key available, clean up tracking map
+								runningSignersMu.Lock()
+								delete(runningSigners, instanceIDStr)
+								runningSignersMu.Unlock()
 							}
 						}
 					}
@@ -2513,7 +2542,11 @@ func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.Pri
 
 	// For non-custodial validator signing, we use the same key for all instances
 	// (vs custodial which needs different keys per instance for Safe multisig)
-	// Use deterministic key selection by sorting map keys
+	//
+	// Deterministic key selection: If multiple keys are configured in the map,
+	// we sort the keys and select the first one. This ensures consistent behavior
+	// across node restarts. The first alphabetically-sorted key is chosen for
+	// backward compatibility with single-key configurations.
 	var keys []string
 	for key := range bridgeConfig.Signer {
 		keys = append(keys, key)
@@ -2626,6 +2659,13 @@ func calculateBFTThreshold(ctx context.Context, app *common.App) (int64, int64, 
 
 // sumEpochVotingPower calculates the total voting power of validators who voted for an epoch.
 // Only counts non-custodial validator signatures (nonce=0).
+//
+// IMPORTANT: This function only counts voting power for validators using secp256k1 keys.
+// Non-custodial validator voting requires EthPersonalSigner (Ethereum addresses), which
+// necessitates secp256k1 keys. Validators with other key types (e.g., ed25519) will not
+// participate in non-custodial withdrawal voting, though they remain fully functional
+// validators in the network's BFT consensus.
+//
 // Note: This function cannot use ctx.TxContext because it's called from a handler.
 // It matches votes by Ethereum address, which requires validators to use EthPersonalSigner.
 func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {

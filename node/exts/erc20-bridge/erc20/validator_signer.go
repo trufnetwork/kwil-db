@@ -18,6 +18,14 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
+const (
+	// signerPollingInterval is how often the validator signer checks for new finalized epochs
+	signerPollingInterval = 30 * time.Second
+
+	// votedEpochsCleanupThreshold is the number of entries in votedEpochs map that triggers cleanup
+	votedEpochsCleanupThreshold = 100
+)
+
 // ValidatorSigner is a background service that monitors for finalized epochs
 // and automatically submits validator signatures via transactions.
 //
@@ -54,7 +62,7 @@ func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecd
 func (v *ValidatorSigner) Start(ctx context.Context) {
 	v.logger.Infof("starting validator signer for instance %s (address: %s)", v.instanceID, v.address.Hex())
 
-	ticker := time.NewTicker(30 * time.Second) // Poll every 30 seconds
+	ticker := time.NewTicker(signerPollingInterval)
 	defer ticker.Stop()
 
 	// Run immediately on startup
@@ -82,7 +90,7 @@ func (v *ValidatorSigner) pollAndSign(ctx context.Context) {
 
 	// Periodically clean up confirmed epochs from memory to prevent unbounded growth
 	v.mu.Lock()
-	if len(v.votedEpochs) > 100 {
+	if len(v.votedEpochs) > votedEpochsCleanupThreshold {
 		v.mu.Unlock()
 		v.cleanupConfirmedEpochs(ctx)
 	} else {
