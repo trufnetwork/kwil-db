@@ -1230,9 +1230,6 @@ func init() {
 								return err
 							}
 
-							// NOTE: if we have safe address and safe nonce, we can verify the signature
-							// But if we only have safe address, and safeNonce from the input, then it's no point
-
 							ok, err := canVoteEpoch(ctx.TxContext.Ctx, app, epochID)
 							if err != nil {
 								return fmt.Errorf("check epoch can vote: %w", err)
@@ -1242,7 +1239,53 @@ func init() {
 								return fmt.Errorf("epoch cannot be voted")
 							}
 
-							// Store the vote
+							// Verify signature for non-custodial validator votes (nonce=0)
+							// This prevents forged votes from non-validators
+							const nonCustodialNonce = 0
+							if nonce == nonCustodialNonce {
+								// Query epoch's reward_root and block_hash for signature verification
+								result, err := app.DB.Execute(ctx.TxContext.Ctx, `
+									SELECT reward_root, block_hash
+									FROM kwil_erc20_meta.epochs
+									WHERE id = $1
+								`, epochID)
+								if err != nil {
+									return fmt.Errorf("failed to query epoch data for signature verification: %w", err)
+								}
+								if len(result.Rows) == 0 {
+									return fmt.Errorf("epoch %s not found for signature verification", epochID)
+								}
+
+								// Extract reward_root and block_hash with nil checks
+								if result.Rows[0][0] == nil || result.Rows[0][1] == nil {
+									return fmt.Errorf("epoch %s missing reward_root or block_hash (not finalized yet)", epochID)
+								}
+								rewardRoot, ok := result.Rows[0][0].([]byte)
+								if !ok {
+									return fmt.Errorf("invalid reward_root type for epoch %s", epochID)
+								}
+								blockHash, ok := result.Rows[0][1].([]byte)
+								if !ok {
+									return fmt.Errorf("invalid block_hash type for epoch %s", epochID)
+								}
+
+								// Compute the message hash that validators sign
+								messageHash, err := computeEpochMessageHash(rewardRoot, blockHash)
+								if err != nil {
+									return fmt.Errorf("failed to compute epoch message hash: %w", err)
+								}
+
+								// Verify signature against caller's address
+								err = utils.EthGnosisVerifyDigest(signature, messageHash, from.Bytes())
+								if err != nil {
+									return fmt.Errorf("signature verification failed for address %s: %w", from.Hex(), err)
+								}
+
+								// Signature is valid - proceed to store vote
+								app.Service.Logger.Debugf("signature verified for epoch %s from validator %s", epochID, from.Hex())
+							}
+
+							// Store the vote (only reached if signature verification passed for nonce=0)
 							err = voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
 							if err != nil {
 								return err
@@ -1250,20 +1293,19 @@ func init() {
 
 							// For non-custodial validator signatures (nonce=0), check threshold and confirm epoch
 							// This ensures epoch confirmation happens deterministically during consensus
-							const nonCustodialNonce = 0
 							if nonce == nonCustodialNonce {
 								// Calculate BFT threshold (2/3 of total validator voting power)
 								totalPower, thresholdPower, err := calculateBFTThreshold(app)
 								if err != nil {
-									app.Service.Logger.Warnf("failed to calculate BFT threshold: %v", err)
-									return nil
+									app.Service.Logger.Errorf("failed to calculate BFT threshold: %v", err)
+									return fmt.Errorf("failed to calculate BFT threshold: %w", err)
 								}
 
 								// Sum voting power of all validators who voted for this epoch
 								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
 								if err != nil {
-									app.Service.Logger.Warnf("failed to sum voting power for epoch %s: %v", epochID, err)
-									return nil
+									app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
+									return fmt.Errorf("failed to sum voting power for epoch %s: %w", epochID, err)
 								}
 
 								app.Service.Logger.Debugf("epoch %s: voting_power=%d, threshold=%d, total_power=%d",
@@ -1277,25 +1319,25 @@ func init() {
 										WHERE id = $1
 									`, epochID)
 									if err != nil {
-										app.Service.Logger.Warnf("failed to get epoch merkle root: %v", err)
-										return nil
+										app.Service.Logger.Errorf("failed to get epoch merkle root: %v", err)
+										return fmt.Errorf("failed to get epoch merkle root: %w", err)
 									}
 
 									if len(result.Rows) > 0 {
 										// Check for nil merkle root before type assertion
 										if result.Rows[0][0] == nil {
 											app.Service.Logger.Warnf("epoch %s has nil reward_root, cannot confirm", epochID)
-											return nil
+											return fmt.Errorf("epoch %s has nil reward_root, cannot confirm", epochID)
 										}
 										merkleRoot, ok := result.Rows[0][0].([]byte)
 										if !ok {
-											app.Service.Logger.Warnf("epoch %s reward_root is not []byte type", epochID)
-											return nil
+											app.Service.Logger.Errorf("epoch %s reward_root is not []byte type", epochID)
+											return fmt.Errorf("epoch %s reward_root has invalid type %T", epochID, result.Rows[0][0])
 										}
 										err = confirmEpoch(ctx.TxContext.Ctx, app, merkleRoot)
 										if err != nil {
-											app.Service.Logger.Warnf("failed to confirm epoch %s: %v", epochID, err)
-											return nil
+											app.Service.Logger.Errorf("failed to confirm epoch %s: %v", epochID, err)
+											return fmt.Errorf("failed to confirm epoch %s: %w", epochID, err)
 										}
 										app.Service.Logger.Infof("epoch %s confirmed with voting_power=%d (threshold=%d)",
 											epochID, votingPower, thresholdPower)
