@@ -13,6 +13,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -31,8 +32,14 @@ const (
 //
 // This runs outside the consensus path to avoid determinism issues.
 // Signatures are submitted as transactions that call the vote_epoch action.
+//
+// ARCHITECTURAL FIX APPLIED: This service now uses app.Service.DBPool (database pool)
+// instead of app.DB (transaction-scoped reference). This prevents "tx is closed" errors
+// when the background goroutine tries to query the database.
+// Pattern follows /node/exts/erc20-bridge/signersvc/kwil.go.
 type ValidatorSigner struct {
-	app        *common.App
+	app        *common.App            // For Engine, Accounts, Service access
+	dbPool     sql.DelayedReadTxMaker // Database pool for fresh transactions
 	instanceID *types.UUID
 	privateKey *ecdsa.PrivateKey
 	address    ethcommon.Address
@@ -47,25 +54,62 @@ type ValidatorSigner struct {
 // NewValidatorSigner creates a new validator signer service.
 func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecdsa.PrivateKey) *ValidatorSigner {
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
+
+	logger := app.Service.Logger
+	logger.Infof("[VALIDATOR_SIGNER_DEBUG] Creating validator signer for instance %s", instanceID)
+	logger.Infof("[VALIDATOR_SIGNER_DEBUG] app.Service.DBPool type: %T", app.Service.DBPool)
+
+	// Get database pool from Service for background queries
+	dbPool := app.Service.DBPool
+	if dbPool == nil {
+		logger.Warnf("DBPool is nil - validator signer will not function properly!")
+	}
+
 	return &ValidatorSigner{
 		app:         app,
+		dbPool:      dbPool,
 		instanceID:  instanceID,
 		privateKey:  privateKey,
 		address:     address,
-		logger:      app.Service.Logger,
+		logger:      logger,
 		votedEpochs: make(map[string]bool),
 	}
+}
+
+// beginReadTx creates a fresh read transaction from the database pool.
+// Returns an error if dbPool is nil to prevent panics.
+func (v *ValidatorSigner) beginReadTx() (sql.OuterReadTx, error) {
+	if v.dbPool == nil {
+		return nil, fmt.Errorf("database pool not available")
+	}
+	return v.dbPool.BeginDelayedReadTx(), nil
 }
 
 // Start begins the background polling loop.
 // This goroutine runs for the lifetime of the node.
 func (v *ValidatorSigner) Start(ctx context.Context) {
 	v.logger.Infof("starting validator signer for instance %s (address: %s)", v.instanceID, v.address.Hex())
+	v.logger.Infof("[VALIDATOR_SIGNER_DEBUG] Start() called, app.DB type: %T", v.app.DB)
 
 	ticker := time.NewTicker(signerPollingInterval)
 	defer ticker.Stop()
 
-	// Run immediately on startup
+	// Add instance-specific delay to prevent simultaneous startup queries
+	// This prevents "conn busy" errors when multiple instances start together
+	// Using deterministic jitter based on UUID ensures each instance has a unique delay
+	jitter := 0
+	if v.instanceID != nil {
+		// Sum UUID bytes for deterministic instance-specific jitter (0-9 * 100ms)
+		sum := 0
+		idBytes := v.instanceID[:]
+		for _, b := range idBytes {
+			sum += int(b)
+		}
+		jitter = sum % 10
+	}
+	time.Sleep(time.Duration(jitter) * 100 * time.Millisecond)
+
+	// Run after delay
 	v.pollAndSign(ctx)
 
 	for {
@@ -81,6 +125,8 @@ func (v *ValidatorSigner) Start(ctx context.Context) {
 
 // pollAndSign checks for finalized epochs and submits votes.
 func (v *ValidatorSigner) pollAndSign(ctx context.Context) {
+	v.logger.Debugf("[VALIDATOR_SIGNER_DEBUG] pollAndSign() called for instance %s", v.instanceID)
+
 	// Query for finalized but unconfirmed epochs
 	epochs, err := v.getFinalizedEpochs(ctx)
 	if err != nil {
@@ -120,6 +166,13 @@ func (v *ValidatorSigner) pollAndSign(ctx context.Context) {
 			continue
 		}
 
+		// Check if BroadcastTxFn is available before trying to vote
+		// If not available yet (during startup), skip this epoch and retry on next poll
+		if v.app.Service.BroadcastTxFn == nil {
+			v.logger.Debugf("BroadcastTxFn not yet available for epoch %s, will retry on next poll", epoch.ID)
+			continue // Skip without marking as voted, so we retry next time
+		}
+
 		// Sign and submit vote
 		err = v.signAndVote(ctx, epoch)
 		if err != nil {
@@ -145,7 +198,20 @@ type FinalizedEpoch struct {
 
 // getFinalizedEpochs queries for epochs that are finalized but not yet confirmed.
 func (v *ValidatorSigner) getFinalizedEpochs(ctx context.Context) ([]*FinalizedEpoch, error) {
-	result, err := v.app.DB.Execute(ctx, `
+	// DEBUG: Log when we're trying to access the database
+	v.logger.Debugf("[VALIDATOR_SIGNER_DEBUG] Attempting to query finalized epochs for instance %s", v.instanceID)
+	v.logger.Debugf("[VALIDATOR_SIGNER_DEBUG] dbPool type: %T", v.dbPool)
+
+	// Create a fresh read transaction from the database pool
+	readTx, err := v.beginReadTx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin read transaction: %w", err)
+	}
+	defer readTx.Rollback(ctx)
+
+	v.logger.Debugf("[VALIDATOR_SIGNER_DEBUG] Successfully created delayed read transaction, type: %T", readTx)
+
+	result, err := readTx.Execute(ctx, `
 		SELECT id, reward_root, block_hash
 		FROM kwil_erc20_meta.epochs
 		WHERE instance_id = $1
@@ -206,7 +272,16 @@ func (v *ValidatorSigner) getFinalizedEpochs(ctx context.Context) ([]*FinalizedE
 func (v *ValidatorSigner) hasVoted(ctx context.Context, epochID *types.UUID) (bool, error) {
 	const nonCustodialNonce = 0
 
-	result, err := v.app.DB.Execute(ctx, `
+	v.logger.Debugf("[VALIDATOR_SIGNER_DEBUG] Checking if voted for epoch %s", epochID)
+
+	// Create a fresh read transaction from the database pool
+	readTx, err := v.beginReadTx()
+	if err != nil {
+		return false, fmt.Errorf("failed to begin read transaction: %w", err)
+	}
+	defer readTx.Rollback(ctx)
+
+	result, err := readTx.Execute(ctx, `
 		SELECT COUNT(*) as count
 		FROM kwil_erc20_meta.epoch_votes
 		WHERE epoch_id = $1
@@ -248,10 +323,7 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 	}
 
 	// 3. Submit vote transaction
-	// CRITICAL: BroadcastTxFn must be available for proper consensus
-	if v.app.Service.BroadcastTxFn == nil {
-		return fmt.Errorf("BroadcastTxFn not available - cannot submit validator vote (check node initialization)")
-	}
+	// NOTE: BroadcastTxFn availability is checked in pollAndSign before calling this function
 
 	// Create transaction calling vote_epoch action
 	tx, err := v.createVoteTransaction(ctx, epoch.ID, signature)
@@ -293,11 +365,18 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 
 	if needsInit {
 		// Fetch account nonce outside mutex to avoid blocking
+		// Create fresh read transaction from database pool
+		readTx, err := v.beginReadTx()
+		if err != nil {
+			return nil, fmt.Errorf("failed to begin read transaction: %w", err)
+		}
+		defer readTx.Rollback(ctx)
+
 		accountID := &types.AccountID{
 			Identifier: v.address.Bytes(),
 			KeyType:    kwilcrypto.KeyTypeSecp256k1,
 		}
-		account, err := v.app.Accounts.GetAccount(ctx, v.app.DB, accountID)
+		account, err := v.app.Accounts.GetAccount(ctx, readTx, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get account nonce: %w", err)
 		}
@@ -386,8 +465,16 @@ func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *ty
 // cleanupConfirmedEpochs removes confirmed epochs from the in-memory votedEpochs map
 // to prevent unbounded memory growth over time.
 func (v *ValidatorSigner) cleanupConfirmedEpochs(ctx context.Context) {
+	// Create a fresh read transaction from the database pool
+	readTx, err := v.beginReadTx()
+	if err != nil {
+		v.logger.Warnf("failed to begin read transaction for cleanup: %v", err)
+		return
+	}
+	defer readTx.Rollback(ctx)
+
 	// Query all confirmed epochs for this instance
-	result, err := v.app.DB.Execute(ctx, `
+	result, err := readTx.Execute(ctx, `
 		SELECT id FROM kwil_erc20_meta.epochs
 		WHERE instance_id = $1 AND confirmed = true
 	`, v.instanceID)

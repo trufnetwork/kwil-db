@@ -312,6 +312,7 @@ func TestGetWithdrawalProof_ValidRequest(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 
 	// Begin transaction for setup
 	tx, err := db.BeginTx(ctx)
@@ -374,6 +375,7 @@ func TestGetWithdrawalProof_InvalidEpochID(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 
@@ -403,6 +405,7 @@ func TestGetWithdrawalProof_InvalidRecipientFormat(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 
@@ -448,6 +451,7 @@ func TestGetWithdrawalProof_EpochNotFound(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 
@@ -479,6 +483,7 @@ func TestGetWithdrawalProof_RecipientNotInEpoch(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 
@@ -522,6 +527,7 @@ func TestGetWithdrawalProof_PendingEpoch_NotEnded(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 
@@ -612,6 +618,7 @@ func TestGetWithdrawalProof_PendingEpoch_NotConfirmed(t *testing.T) {
 
 	ctx := context.Background()
 	db := getTestDB(t)
+	defer cleanupTestData(t, db)
 	tx, err := db.BeginTx(ctx)
 	require.NoError(t, err)
 

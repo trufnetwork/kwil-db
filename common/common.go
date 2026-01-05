@@ -48,6 +48,14 @@ type Service struct {
 	// that will be included in blocks and executed deterministically.
 	// If nil, transaction broadcasting is not available.
 	BroadcastTxFn BroadcastTxFn
+
+	// DBPool provides access to the database connection pool for creating
+	// fresh read transactions. This is needed by background services that
+	// run outside the consensus transaction scope. Extensions should use
+	// DBPool.BeginDelayedReadTx() to create read-only transactions.
+	// This field may be nil in test contexts where background services
+	// are not needed.
+	DBPool sql.DelayedReadTxMaker
 }
 
 // BroadcastTxFn is a function that submits a transaction to the mempool.
@@ -64,6 +72,7 @@ func (s *Service) NamedLogger(name string) *Service {
 		Identity:      s.Identity,
 		NodeStatus:    s.NodeStatus,
 		BroadcastTxFn: s.BroadcastTxFn,
+		DBPool:        s.DBPool,
 	}
 }
 

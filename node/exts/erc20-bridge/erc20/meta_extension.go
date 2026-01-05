@@ -2703,11 +2703,11 @@ func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error
 }
 
 // signMessage signs a message hash using ECDSA (Ethereum-compatible).
-// Returns a 65-byte signature in [R || S || V] format.
+// Returns a 65-byte signature in [R || S || V] format with V = 31 or 32 (Gnosis Safe EIP-191 format).
 func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
-	// Sign using go-ethereum's crypto package
-	// This produces a 65-byte signature with recovery ID
-	signature, err := crypto.Sign(messageHash, privateKey)
+	// Use EthGnosisSignDigest to produce Gnosis Safe compatible signature
+	// This produces a 65-byte signature with V = 31 or 32 (EIP-191 prefixed message)
+	signature, err := utils.EthGnosisSignDigest(messageHash, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign message: %w", err)
 	}
