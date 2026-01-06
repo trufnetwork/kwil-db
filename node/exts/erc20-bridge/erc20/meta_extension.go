@@ -15,7 +15,6 @@ package erc20
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -406,10 +405,10 @@ func init() {
 								continue
 							}
 
-							// Try to get validator signing key
-							key, err := getValidatorSigningKey(app, instance.ID)
+							// Try to get validator signer
+							signer, err := getValidatorSigner(app, instance.ID)
 							if err != nil {
-								app.Service.Logger.Warnf("failed to get validator signing key for instance %s: %v", instance.ID, err)
+								app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
 								// Clean up tracking maps on error
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
@@ -417,7 +416,7 @@ func init() {
 								runningSignersMu.Unlock()
 								continue
 							}
-							if key != nil {
+							if signer != nil {
 								// Create cancellable context so we can stop the signer when instance is disabled
 								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
 								signerCtx, cancel := context.WithCancel(context.Background())
@@ -428,10 +427,9 @@ func init() {
 								runningSignersMu.Unlock()
 
 								// Start background signer with cancellable context
-								signer := NewValidatorSigner(app, instance.ID, key)
 								go signer.Start(signerCtx)
 							} else {
-								// No key available, clean up tracking maps
+								// No signer available, clean up tracking maps
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
 								delete(runningSignerCancels, instanceIDStr)
@@ -2591,31 +2589,25 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 // Validator Signing for Non-Custodial Withdrawals
 // ============================================================================
 
-// getValidatorSigningKey retrieves the validator's ECDSA private key for signing epochs.
+// getValidatorSigner returns a ValidatorSigner wrapper for the node's validator key.
 // For non-custodial validator voting, this MUST use the node's validator key (not bridge signer key)
 // to ensure signatures map to the validator's registered identity in the validator set.
-func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.PrivateKey, error) {
-	// Use the node's private key from Service
-	// This is the validator's registered key and ensures signatures map correctly
-	if app.Service.PrivateKey == nil {
-		return nil, nil // No private key available
+// Returns nil if no validator signer is available.
+func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSigner, error) {
+	// Use the ValidatorSigner from Service
+	// This provides controlled access to signing without exposing the raw private key
+	if app.Service.ValidatorSigner == nil {
+		return nil, nil // No validator signer available
 	}
 
-	// Convert Kwil private key to ECDSA private key
-	switch privKey := app.Service.PrivateKey.(type) {
-	case *kwilcrypto.Secp256k1PrivateKey:
-		// Extract the private key bytes and convert to go-ethereum's ecdsa.PrivateKey
-		privKeyBytes := privKey.Bytes()
-		ecdsaKey, err := crypto.ToECDSA(privKeyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert validator key to ECDSA: %w", err)
-		}
-		return ecdsaKey, nil
-	default:
-		// Node is using a non-secp256k1 key (e.g., Ed25519)
-		// Non-custodial validator signing requires secp256k1 for Ethereum compatibility
-		return nil, fmt.Errorf("validator signing requires secp256k1 key, but node uses %T", privKey)
+	// Get Ethereum address for the validator
+	addressBytes, err := app.Service.ValidatorSigner.EthereumAddress()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get validator Ethereum address: %w", err)
 	}
+
+	// Create ValidatorSigner with the interface
+	return NewValidatorSignerFromInterface(app, instanceID, app.Service.ValidatorSigner, addressBytes), nil
 }
 
 // computeEpochMessageHash computes the message hash that validators sign.
@@ -2656,18 +2648,6 @@ func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error
 	// Keccak256 hash
 	messageHash := crypto.Keccak256(packed)
 	return messageHash, nil
-}
-
-// signMessage signs a message hash using ECDSA (Ethereum-compatible).
-// Returns a 65-byte signature in [R || S || V] format with V = 31 or 32 (Gnosis Safe EIP-191 format).
-func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
-	// Use EthGnosisSignDigest to produce Gnosis Safe compatible signature
-	// This produces a 65-byte signature with V = 31 or 32 (EIP-191 prefixed message)
-	signature, err := utils.EthGnosisSignDigest(messageHash, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign message: %w", err)
-	}
-	return signature, nil
 }
 
 // calculateBFTThreshold calculates the BFT threshold (2/3 of total validator voting power).

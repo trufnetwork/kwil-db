@@ -444,14 +444,15 @@ func buildMetaStore(ctx context.Context, db *pg.DB) {
 // service returns a common.Service with the given logger name
 func (c *coreDependencies) service(loggerName string, dbPool sql.DelayedReadTxMaker) *common.Service {
 	signer := auth.GetNodeSigner(c.privKey)
+	logger := c.logger.New(loggerName)
 
 	return &common.Service{
-		Logger:        c.logger.New(loggerName),
-		GenesisConfig: c.genesisCfg,
-		LocalConfig:   c.cfg,
-		Identity:      signer.CompactID(),
-		PrivateKey:    c.privKey,
-		DBPool:        dbPool,
+		Logger:          logger,
+		GenesisConfig:   c.genesisCfg,
+		LocalConfig:     c.cfg,
+		Identity:        signer.CompactID(),
+		ValidatorSigner: NewValidatorSigner(c.privKey, signer.CompactID(), logger),
+		DBPool:          dbPool,
 	}
 }
 

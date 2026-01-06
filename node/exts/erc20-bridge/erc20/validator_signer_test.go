@@ -92,7 +92,13 @@ func TestVoteEpochAction(t *testing.T) {
 	require.Equal(t, signature, result.Rows[0][1])
 
 	// Verify signature is valid by recovering public key
-	recoveredPubKey, err := crypto.SigToPub(messageHash, signature)
+	// Note: signMessage returns Gnosis Safe format (V=31/32), but crypto.SigToPub expects V=0/1
+	// We need to adjust V for recovery verification
+	sigForRecovery := make([]byte, len(signature))
+	copy(sigForRecovery, signature)
+	sigForRecovery[64] -= 31 // Convert V: 31/32 -> 0/1
+
+	recoveredPubKey, err := crypto.SigToPub(messageHash, sigForRecovery)
 	require.NoError(t, err)
 	require.Equal(t, validatorKey.PublicKey, *recoveredPubKey)
 
@@ -205,12 +211,13 @@ func TestVoteEpochThresholdAndConfirmation(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Rows[0][0].(bool))
 
-	// Verify votes were cleaned up after confirmation
+	// Verify votes are PRESERVED after confirmation (for withdrawal proof generation)
+	// This is the fix: votes are NOT deleted after confirmation
 	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
 	count = int(result.Rows[0][0].(int64))
 	require.NoError(t, err)
-	require.Equal(t, 0, count)
+	require.Equal(t, 2, count, "votes should be preserved for withdrawal proof generation")
 }
 
 // TestVoteEpochDuplicateVote tests handling of duplicate votes from the same validator
@@ -517,7 +524,12 @@ func TestValidatorSignerSignAndVote(t *testing.T) {
 	require.Equal(t, 65, len(signature), "signature should be 65 bytes")
 
 	// Verify signature is valid
-	recoveredPubKey, err := crypto.SigToPub(messageHash, signature)
+	// Adjust V for recovery (Gnosis Safe V=31/32 -> standard V=0/1)
+	sigForRecovery2 := make([]byte, len(signature))
+	copy(sigForRecovery2, signature)
+	sigForRecovery2[64] -= 31
+
+	recoveredPubKey, err := crypto.SigToPub(messageHash, sigForRecovery2)
 	require.NoError(t, err)
 	require.Equal(t, validatorKey.PublicKey, *recoveredPubKey)
 

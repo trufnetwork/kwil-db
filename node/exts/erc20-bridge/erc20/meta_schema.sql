@@ -74,7 +74,7 @@ CREATE TABLE meta
 
 -- epoch_votes holds the votes from signer
 -- A signer can vote multiple times with different safe_nonce
--- After an epoch is confirmed, we can delete all related votes.
+-- Votes are preserved after confirmation for withdrawal proof generation.
 CREATE TABLE epoch_votes (
     epoch_id UUID NOT NULL REFERENCES epochs(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
     voter BYTEA NOT NULL,

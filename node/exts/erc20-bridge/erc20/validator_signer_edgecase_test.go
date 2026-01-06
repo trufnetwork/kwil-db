@@ -429,10 +429,19 @@ func TestSignMessageDeterminism(t *testing.T) {
 	require.Len(t, sig1, 65)
 	require.Len(t, sig2, 65)
 
-	pubKey1, err := crypto.SigToPub(messageHash, sig1)
+	// Adjust V for recovery (Gnosis Safe V=31/32 -> standard V=0/1)
+	sig1ForRecovery := make([]byte, len(sig1))
+	copy(sig1ForRecovery, sig1)
+	sig1ForRecovery[64] -= 31
+
+	sig2ForRecovery := make([]byte, len(sig2))
+	copy(sig2ForRecovery, sig2)
+	sig2ForRecovery[64] -= 31
+
+	pubKey1, err := crypto.SigToPub(messageHash, sig1ForRecovery)
 	require.NoError(t, err)
 
-	pubKey2, err := crypto.SigToPub(messageHash, sig2)
+	pubKey2, err := crypto.SigToPub(messageHash, sig2ForRecovery)
 	require.NoError(t, err)
 
 	require.Equal(t, privateKey.PublicKey, *pubKey1)

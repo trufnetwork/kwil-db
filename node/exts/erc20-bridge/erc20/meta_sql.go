@@ -80,15 +80,13 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 	}, nil)
 }
 
-// confirmEpoch confirms an epoch was received on-chain, also delete all the votes
-// associated with the epoch.
+// confirmEpoch confirms an epoch was received on-chain.
+// Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE epochs
 	SET confirmed = true
 	WHERE reward_root = $root;
-
-    {kwil_erc20_meta}DELETE FROM epoch_votes where epoch_id=(SELECT id FROM epochs WHERE reward_root = $root);
 	`, map[string]any{
 		"root": root,
 	}, nil)
