@@ -462,7 +462,7 @@ func TestSignMessage(t *testing.T) {
 	require.Len(t, signature, 65, "ECDSA signature should be 65 bytes")
 
 	// Verify the signature (signMessage adds Ethereum signed message prefix)
-	prefix := []byte("\x19Ethereum Signed Message:\n32")
+	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 	// Adjust V for recovery (Gnosis Safe V=31/32 -> standard V=0/1)

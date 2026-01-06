@@ -55,6 +55,10 @@ const (
 	uint256Precision        = 78
 
 	rewardMerkleTreeLRUSize = 1000
+
+	// EthereumSignedMessagePrefix is the prefix used for EIP-191 compliant message signing.
+	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash() format.
+	EthereumSignedMessagePrefix = "\x19Ethereum Signed Message:\n32"
 )
 
 var (
@@ -1271,7 +1275,7 @@ func init() {
 								}
 
 								// Add Ethereum signed message prefix to match contract expectation
-								prefix := []byte("\x19Ethereum Signed Message:\n32")
+								prefix := []byte(EthereumSignedMessagePrefix)
 								ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 								// Verify signature against caller's address

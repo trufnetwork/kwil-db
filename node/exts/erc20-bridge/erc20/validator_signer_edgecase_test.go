@@ -430,7 +430,7 @@ func TestSignMessageDeterminism(t *testing.T) {
 	require.Len(t, sig2, 65)
 
 	// signMessage adds Ethereum signed message prefix, so we need to add it for recovery too
-	prefix := []byte("\x19Ethereum Signed Message:\n32")
+	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 	// Adjust V for recovery (Gnosis Safe V=31/32 -> standard V=0/1)

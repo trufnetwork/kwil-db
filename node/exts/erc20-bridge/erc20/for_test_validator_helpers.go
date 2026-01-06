@@ -20,7 +20,7 @@ import (
 // This replaces the old signMessage function that was removed during the ValidatorSigner refactoring.
 func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
 	// Add Ethereum signed message prefix to match contract expectation
-	prefix := []byte("\x19Ethereum Signed Message:\n32")
+	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 	// Use the same Gnosis Safe signature format as the production code

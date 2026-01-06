@@ -312,7 +312,7 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 
 	// 2. Add Ethereum signed message prefix to match contract expectation
 	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash()
-	prefix := []byte("\x19Ethereum Signed Message:\n32")
+	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 	// 3. Sign the prefixed message using the validator signer interface
