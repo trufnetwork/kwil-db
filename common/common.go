@@ -39,6 +39,12 @@ type Service struct {
 	// Identity is the node/validator identity (pubkey).
 	Identity []byte // maybe this actuall needs to be crypto.PubKey???
 
+	// PrivateKey is the node's private key. This is provided to extensions
+	// that need to sign messages on behalf of the validator node.
+	// For non-custodial validator voting, extensions must use this key
+	// to ensure signatures map to the validator's registered identity.
+	PrivateKey crypto.PrivateKey
+
 	// NodeStatus provides runtime status information about the node.
 	// Extensions can query this to adapt behavior based on node state.
 	NodeStatus NodeStatusProvider
@@ -70,6 +76,7 @@ func (s *Service) NamedLogger(name string) *Service {
 		GenesisConfig: s.GenesisConfig,
 		LocalConfig:   s.LocalConfig,
 		Identity:      s.Identity,
+		PrivateKey:    s.PrivateKey,
 		NodeStatus:    s.NodeStatus,
 		BroadcastTxFn: s.BroadcastTxFn,
 		DBPool:        s.DBPool,

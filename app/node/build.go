@@ -450,6 +450,7 @@ func (c *coreDependencies) service(loggerName string, dbPool sql.DelayedReadTxMa
 		GenesisConfig: c.genesisCfg,
 		LocalConfig:   c.cfg,
 		Identity:      signer.CompactID(),
+		PrivateKey:    c.privKey,
 		DBPool:        dbPool,
 	}
 }

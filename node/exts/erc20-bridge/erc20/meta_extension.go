@@ -17,12 +17,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
-	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -2594,72 +2591,31 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 // Validator Signing for Non-Custodial Withdrawals
 // ============================================================================
 
-// getValidatorSigningKey retrieves the validator's ECDSA private key from configuration.
-// Returns nil if no key is configured (backward compatibility).
-// Uses the existing [erc20_bridge.signer] config structure.
+// getValidatorSigningKey retrieves the validator's ECDSA private key for signing epochs.
+// For non-custodial validator voting, this MUST use the node's validator key (not bridge signer key)
+// to ensure signatures map to the validator's registered identity in the validator set.
 func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.PrivateKey, error) {
-	// Get ERC20 bridge configuration from LocalConfig
-	// This uses the existing [erc20_bridge] section
-	if app.Service.LocalConfig == nil {
-		return nil, nil // No config, skip signing
+	// Use the node's private key from Service
+	// This is the validator's registered key and ensures signatures map correctly
+	if app.Service.PrivateKey == nil {
+		return nil, nil // No private key available
 	}
 
-	bridgeConfig := app.Service.LocalConfig.Erc20Bridge
-	if len(bridgeConfig.Signer) == 0 {
-		return nil, nil // No signer config, skip signing
+	// Convert Kwil private key to ECDSA private key
+	switch privKey := app.Service.PrivateKey.(type) {
+	case *kwilcrypto.Secp256k1PrivateKey:
+		// Extract the private key bytes and convert to go-ethereum's ecdsa.PrivateKey
+		privKeyBytes := privKey.Bytes()
+		ecdsaKey, err := crypto.ToECDSA(privKeyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert validator key to ECDSA: %w", err)
+		}
+		return ecdsaKey, nil
+	default:
+		// Node is using a non-secp256k1 key (e.g., Ed25519)
+		// Non-custodial validator signing requires secp256k1 for Ethereum compatibility
+		return nil, fmt.Errorf("validator signing requires secp256k1 key, but node uses %T", privKey)
 	}
-
-	// For non-custodial validator signing, we use the same key for all instances
-	// (vs custodial which needs different keys per instance for Safe multisig)
-	//
-	// Deterministic key selection: When multiple keys exist in the config map,
-	// we must consistently select the same key across node restarts to avoid
-	// nonce conflicts and duplicate votes. We sort keys alphabetically and select
-	// the first one. This approach:
-	// 1. Ensures deterministic selection (same key every time)
-	// 2. Maintains backward compatibility (single-key configs work unchanged)
-	// 3. Avoids configuration complexity (no need to specify "primary" key)
-	var keys []string
-	for key := range bridgeConfig.Signer {
-		keys = append(keys, key)
-	}
-	if len(keys) == 0 {
-		return nil, nil // No signer keys configured
-	}
-	sort.Strings(keys) // Sort to ensure deterministic selection
-	signerPath := bridgeConfig.Signer[keys[0]]
-
-	// Check file permissions for security (should be restrictive like 0600)
-	fileInfo, err := os.Stat(signerPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat private key file %s: %w", signerPath, err)
-	}
-	// Warn if file has overly permissive permissions (readable by group/others)
-	if fileInfo.Mode().Perm()&0077 != 0 {
-		app.Service.Logger.Warnf("private key file %s has insecure permissions %v (should be 0600 or stricter)", signerPath, fileInfo.Mode().Perm())
-	}
-
-	// Read private key from file
-	rawPkBytes, err := os.ReadFile(signerPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read private key file %s: %w", signerPath, err)
-	}
-
-	// Parse hex-encoded private key
-	pkStr := strings.TrimSpace(string(rawPkBytes))
-	pkStr = strings.TrimPrefix(pkStr, "0x") // Remove 0x prefix if present
-	pkBytes, err := hex.DecodeString(pkStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode private key hex: %w", err)
-	}
-
-	// Convert to ECDSA private key
-	privateKey, err := crypto.ToECDSA(pkBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse ECDSA private key: %w", err)
-	}
-
-	return privateKey, nil
 }
 
 // computeEpochMessageHash computes the message hash that validators sign.
@@ -2769,7 +2725,9 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 	// Build a map of validator Ethereum addresses -> power
 	// This requires computing each validator's Ethereum address from their pubkey
 	validatorPowerMap := make(map[string]int64)
+	app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
 	for _, v := range validators {
+		app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
 		// Compute Ethereum address from validator pubkey
 		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
 		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
@@ -2777,12 +2735,14 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 			ethAddr, err := ethAddressFromPubKey(v.Identifier)
 			if err != nil {
 				// Skip validators with invalid keys
-				app.Service.Logger.Warnf("failed to derive Ethereum address for validator: %v", err)
+				app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
 				continue
 			}
+			app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
 			validatorPowerMap[ethAddr.Hex()] = v.Power
 		}
 	}
+	app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
 
 	// Sum voting power for all voters
 	var votingPower int64
