@@ -19,8 +19,12 @@ import (
 // signMessage is a test helper that signs a message hash using Gnosis Safe EIP-191 format.
 // This replaces the old signMessage function that was removed during the ValidatorSigner refactoring.
 func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+	// Add Ethereum signed message prefix to match contract expectation
+	prefix := []byte("\x19Ethereum Signed Message:\n32")
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
 	// Use the same Gnosis Safe signature format as the production code
-	return utils.EthGnosisSignDigest(messageHash, privateKey)
+	return utils.EthGnosisSignDigest(ethSignedMessageHash, privateKey)
 }
 
 // testDBPoolAdapter adapts app.DB (transaction) to DelayedReadTxMaker for tests.

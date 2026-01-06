@@ -14,6 +14,7 @@ import (
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const (
@@ -309,8 +310,13 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 		return fmt.Errorf("failed to compute message hash: %w", err)
 	}
 
-	// 2. Sign the message using the validator signer interface
-	signature, err := v.validatorSigner.Sign(ctx, messageHash, common.PurposeEpochVoting)
+	// 2. Add Ethereum signed message prefix to match contract expectation
+	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash()
+	prefix := []byte("\x19Ethereum Signed Message:\n32")
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+	// 3. Sign the prefixed message using the validator signer interface
+	signature, err := v.validatorSigner.Sign(ctx, ethSignedMessageHash, common.PurposeEpochVoting)
 	if err != nil {
 		return fmt.Errorf("failed to sign message: %w", err)
 	}
@@ -320,7 +326,7 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 		return fmt.Errorf("invalid signature length: %d", len(signature))
 	}
 
-	// 3. Submit vote transaction
+	// 4. Submit vote transaction
 	// NOTE: BroadcastTxFn availability is checked in pollAndSign before calling this function
 
 	// Create transaction calling vote_epoch action

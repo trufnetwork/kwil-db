@@ -1270,8 +1270,12 @@ func init() {
 									return fmt.Errorf("failed to compute epoch message hash: %w", err)
 								}
 
+								// Add Ethereum signed message prefix to match contract expectation
+								prefix := []byte("\x19Ethereum Signed Message:\n32")
+								ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
 								// Verify signature against caller's address
-								err = utils.EthGnosisVerifyDigest(signature, messageHash, from.Bytes())
+								err = utils.EthGnosisVerifyDigest(signature, ethSignedMessageHash, from.Bytes())
 								if err != nil {
 									return fmt.Errorf("signature verification failed for address %s: %w", from.Hex(), err)
 								}
