@@ -1501,8 +1501,15 @@ func init() {
 		err := getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			defer info.mu.RUnlock()
+
+			// DEBUG: Log entry into end_block check
+			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
+			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
+				id, info.currentEpoch.ID, info.currentEpoch.StartHeight, info.currentEpoch.StartTime, info.userProvidedData.DistributionPeriod, elapsedTime)
+
 			// If the block is greater than or equal to the start time + distribution period: Otherwise, we should do nothing.
 			if block.Timestamp-info.currentEpoch.StartTime < info.userProvidedData.DistributionPeriod {
+				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Not ready to finalize (elapsed %d < period %d)", id, elapsedTime, info.userProvidedData.DistributionPeriod)
 				return nil
 			}
 
@@ -1519,17 +1526,30 @@ func init() {
 				return err
 			}
 
+			// DEBUG: Log previous epoch check result
+			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
+				id, preExists, preConfirmed, info.currentEpoch.StartHeight)
+
 			if !preExists || // first epoch should always be finalized
 				(preExists && preConfirmed) { // previous epoch exists and is confirmed
+				// DEBUG: Log before generating merkle tree
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
+					id, info.currentEpoch.ID, info.EscrowAddress.Hex())
+
 				leafNum, jsonBody, root, total, err := genMerkleTreeForEpoch(ctx, app, info.currentEpoch.ID, info.EscrowAddress.Hex(), block.Hash)
 				if err != nil {
 					return err
 				}
 
 				if leafNum == 0 {
-					app.Service.Logger.Debug("no rewards to distribute, delay finalized current epoch")
+					app.Service.Logger.Warnf("[ENDBLOCK] Instance %s: genMerkleTreeForEpoch returned 0 rewards for epoch ID=%s - delaying finalization",
+						id, info.currentEpoch.ID)
 					return nil
 				}
+
+				// DEBUG: Log successful merkle tree generation
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Generated merkle tree with %d leaves, total=%s, root=%x",
+					id, leafNum, total.String(), root)
 
 				erc20Total, err := erc20ValueFromBigInt(total)
 				if err != nil {
@@ -1543,6 +1563,11 @@ func init() {
 
 				// create a new epoch
 				newEpoch := newPendingEpoch(id, block)
+
+				// DEBUG: Log new epoch creation
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Creating new epoch ID=%s, startHeight=%d, startTime=%d (old epoch ID=%s)",
+					id, newEpoch.ID, newEpoch.StartHeight, newEpoch.StartTime, info.currentEpoch.ID)
+
 				err = createEpoch(ctx, app, newEpoch, id)
 				if err != nil {
 					return err
@@ -1554,11 +1579,13 @@ func init() {
 				mtLRUCache.Put(b32Root, jsonBody)
 
 				newEpochs[*id] = newEpoch
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Successfully finalized epoch and created new epoch", id)
 				return nil
 			}
 
 			// if previous epoch exists and not confirmed, we do nothing.
-			app.Service.Logger.Debug("previous epoch is not confirmed yet, skip finalize current epoch")
+			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
+				id, info.currentEpoch.ID)
 			return nil
 		})
 		if err != nil {
@@ -1570,7 +1597,13 @@ func init() {
 			newEpoch, ok := newEpochs[*id]
 			if ok {
 				info.mu.Lock()
+				oldEpochID := info.currentEpoch.ID
 				info.currentEpoch = newEpoch
+
+				// DEBUG: Log epoch update in memory
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Updated in-memory currentEpoch: %s -> %s",
+					id, oldEpochID, newEpoch.ID)
+
 				info.mu.Unlock()
 			}
 			return nil
@@ -1583,16 +1616,24 @@ func init() {
 
 func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.UUID,
 	escrowAddr string, blockHash [32]byte) (leafNum int, jsonTree []byte, root []byte, total *big.Int, err error) {
+	// DEBUG: Log entry into genMerkleTreeForEpoch
+	app.Service.Logger.Infof("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
+
 	var rewards []*EpochReward
 	err = getRewardsForEpoch(ctx, app, epochID, func(reward *EpochReward) error {
 		rewards = append(rewards, reward)
 		return nil
 	})
 	if err != nil {
+		app.Service.Logger.Errorf("[MERKLE] getRewardsForEpoch failed for epoch ID=%s: %v", epochID, err)
 		return 0, nil, nil, nil, err
 	}
 
+	// DEBUG: Log number of rewards collected
+	app.Service.Logger.Infof("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
+
 	if len(rewards) == 0 { // no rewards, delay finalize current epoch
+		app.Service.Logger.Warnf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
 		return 0, nil, nil, nil, nil // should skip
 	}
 
@@ -1815,13 +1856,20 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 	info.mu.RLock()
 	defer info.mu.RUnlock()
 
+	// DEBUG: Log withdrawal request
+	app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: User %s requesting withdrawal to %s, amount=%s, currentEpoch ID=%s",
+		id, fromAddr.Hex(), recipientAddr.Hex(), amount.String(), info.currentEpoch.ID)
+
 	// we dont need to update the cached data here since we are directly converting
 	// a user balance (which is never cached) into a reward (which is also never cached)
 	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
 	if err != nil {
+		app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: lockAndIssue failed for epoch ID=%s: %v",
+			id, info.currentEpoch.ID, err)
 		return err
 	}
 
+	app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: Successfully added withdrawal to epoch ID=%s", id, info.currentEpoch.ID)
 	return nil
 }
 

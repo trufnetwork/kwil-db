@@ -163,6 +163,10 @@ func getStoredRewardInstances(ctx context.Context, app *common.App) ([]*rewardEx
 			StartTime:   epochCreatedAtUnix,
 		}
 
+		// DEBUG: Log loaded epoch for each instance
+		app.Service.Logger.Infof("[INIT] Loaded instance %s with currentEpoch ID=%s, startHeight=%d, synced=%v, active=%v",
+			reward.ID, epochID, epochCreatedAtBlock, reward.synced, reward.active)
+
 		if !reward.synced {
 			rewards = append(rewards, reward)
 			return nil
@@ -293,7 +297,11 @@ func createSchema(ctx context.Context, app *common.App) error {
 
 // issueReward issues a reward to a user.
 func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, epochID *types.UUID, user ethcommon.Address, amount *types.Decimal) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	// DEBUG: Log before inserting into epoch_rewards
+	app.Service.Logger.Infof("[DB] issueReward: Inserting into epoch_rewards - epoch_id=%s, recipient=%s, amount=%s",
+		epochID, user.Hex(), amount.String())
+
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE reward_instances
 	SET balance = balance - $amount
     WHERE id = $instance_id;
@@ -307,6 +315,14 @@ func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, e
 		"user":        user.Bytes(),
 		"amount":      amount,
 	}, nil)
+
+	if err != nil {
+		app.Service.Logger.Errorf("[DB] issueReward failed for epoch_id=%s: %v", epochID, err)
+	} else {
+		app.Service.Logger.Infof("[DB] issueReward succeeded for epoch_id=%s", epochID)
+	}
+
+	return err
 }
 
 // transferTokens transfers tokens from one user to another.
@@ -348,7 +364,11 @@ func transferTokensFromUserToNetwork(ctx context.Context, app *common.App, rewar
 
 // lockAndIssue locks balance from a user and issues a reward to the designated recipient.
 func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, epochID *types.UUID, from ethcommon.Address, recipient ethcommon.Address, amount *types.Decimal) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	// DEBUG: Log lockAndIssue operation
+	app.Service.Logger.Infof("[DB] lockAndIssue: reward_id=%s, epoch_id=%s, from=%s, recipient=%s, amount=%s",
+		rewardID, epochID, from.Hex(), recipient.Hex(), amount.String())
+
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE balances
 	SET balance = balance - $amount
 	WHERE reward_id = $reward_id AND address = $from;
@@ -363,6 +383,14 @@ func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, ep
 		"recipient": recipient.Bytes(),
 		"amount":    amount,
 	}, nil)
+
+	if err != nil {
+		app.Service.Logger.Errorf("[DB] lockAndIssue failed for epoch_id=%s: %v", epochID, err)
+	} else {
+		app.Service.Logger.Infof("[DB] lockAndIssue succeeded - inserted into epoch_rewards for epoch_id=%s", epochID)
+	}
+
+	return err
 }
 
 // transferTokensFromNetworkToUser transfers tokens from the network to a user.
@@ -409,13 +437,18 @@ func balanceOf(ctx context.Context, app *common.App, rewardID *types.UUID, user 
 
 // getRewardsForEpoch gets all rewards for an epoch.
 func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUID, fn func(reward *EpochReward) error) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	// DEBUG: Log which epoch we're querying rewards for
+	app.Service.Logger.Infof("[REWARDS] Querying epoch_rewards for epoch_id=%s", epochID)
+
+	rewardCount := 0
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT recipient, amount
 	FROM epoch_rewards
 	WHERE epoch_id = $epoch_id
 	`, map[string]any{
 		"epoch_id": epochID,
 	}, func(row *common.Row) error {
+		rewardCount++
 		if len(row.Values) != 2 {
 			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
 		}
@@ -430,6 +463,10 @@ func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUI
 			Amount:    row.Values[1].(*types.Decimal),
 		})
 	})
+
+	// DEBUG: Log how many rewards were found
+	app.Service.Logger.Infof("[REWARDS] Found %d rewards for epoch_id=%s", rewardCount, epochID)
+	return err
 }
 
 // previousEpochConfirmed return whether previous exists and confirmed.
