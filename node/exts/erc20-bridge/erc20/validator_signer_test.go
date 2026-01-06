@@ -654,12 +654,12 @@ func TestValidatorSignerEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Rows[0][0].(bool))
 
-	// Verify votes were cleaned up
+	// Verify votes are preserved after confirmation (for withdrawal proof generation)
 	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
 	count = int(result.Rows[0][0].(int64))
 	require.NoError(t, err)
-	require.Equal(t, 0, count)
+	require.Equal(t, 2, count, "votes should be preserved for withdrawal proof generation")
 
 	// Validator 3 tries to vote (after confirmation)
 	sig3, err := signMessage(messageHash, validator3Key)

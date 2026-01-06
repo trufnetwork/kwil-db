@@ -12,13 +12,6 @@ import (
 	"github.com/trufnetwork/kwil-db/core/log"
 )
 
-// Allowed signing purposes for validator operations
-const (
-	PurposeEpochVoting       = "epoch_voting"
-	PurposeWithdrawalSig     = "withdrawal_signature"
-	PurposeGnosisSafeSigning = "gnosis_safe_signing"
-)
-
 // validatorSignerImpl implements common.ValidatorSigner interface.
 // It provides controlled access to validator signing operations without
 // exposing the raw private key to extensions.
@@ -70,18 +63,8 @@ func (v *validatorSignerImpl) Sign(ctx context.Context, messageHash []byte, purp
 		return nil, fmt.Errorf("failed to convert validator key to ECDSA: %w", err)
 	}
 
-	// Sign based on purpose
-	switch purpose {
-	case PurposeEpochVoting, PurposeWithdrawalSig:
-		// Use Gnosis Safe EIP-191 compatible signature format
-		return signGnosisSafeDigest(messageHash, ecdsaKey)
-	case PurposeGnosisSafeSigning:
-		// Use Gnosis Safe signature format
-		return signGnosisSafeDigest(messageHash, ecdsaKey)
-	default:
-		// Should not reach here due to validatePurpose, but handle defensively
-		return nil, fmt.Errorf("unsupported signing purpose: %s", purpose)
-	}
+	// All validated purposes use Gnosis Safe EIP-191 compatible signature format
+	return signGnosisSafeDigest(messageHash, ecdsaKey)
 }
 
 // Identity returns the validator's public key bytes.
@@ -125,7 +108,7 @@ func (v *validatorSignerImpl) CreateSecp256k1Signer() (auth.Signer, error) {
 // validatePurpose checks if the signing purpose is allowed.
 func (v *validatorSignerImpl) validatePurpose(purpose string) error {
 	switch purpose {
-	case PurposeEpochVoting, PurposeWithdrawalSig, PurposeGnosisSafeSigning:
+	case common.PurposeEpochVoting, common.PurposeWithdrawalSig, common.PurposeGnosisSafeSigning:
 		return nil
 	default:
 		return fmt.Errorf("unauthorized signing purpose: %s", purpose)

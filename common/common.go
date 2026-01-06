@@ -25,6 +25,13 @@ type NodeStatusProvider interface {
 	IsSyncing() bool
 }
 
+// Allowed signing purposes for validator operations
+const (
+	PurposeEpochVoting       = "epoch_voting"
+	PurposeWithdrawalSig     = "withdrawal_signature"
+	PurposeGnosisSafeSigning = "gnosis_safe_signing"
+)
+
 // ValidatorSigner provides controlled access to validator signing operations
 // without exposing the raw private key. Extensions can request signatures and
 // obtain derived information (addresses, signers) without accessing raw key bytes.

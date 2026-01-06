@@ -310,7 +310,7 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 	}
 
 	// 2. Sign the message using the validator signer interface
-	signature, err := v.validatorSigner.Sign(ctx, messageHash, "epoch_voting")
+	signature, err := v.validatorSigner.Sign(ctx, messageHash, common.PurposeEpochVoting)
 	if err != nil {
 		return fmt.Errorf("failed to sign message: %w", err)
 	}

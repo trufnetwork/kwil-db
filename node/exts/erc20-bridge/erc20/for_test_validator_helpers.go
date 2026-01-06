@@ -23,6 +23,49 @@ func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, erro
 	return utils.EthGnosisSignDigest(messageHash, privateKey)
 }
 
+// testDBPoolAdapter adapts app.DB (transaction) to DelayedReadTxMaker for tests.
+// In tests, we're already in a transaction context, so we return a wrapper
+// that provides the existing transaction instead of creating new ones.
+type testDBPoolAdapter struct {
+	db sql.DB
+}
+
+func (t *testDBPoolAdapter) BeginDelayedReadTx() sql.OuterReadTx {
+	// In tests, return a wrapper around the existing transaction
+	return &testReadTxWrapper{db: t.db}
+}
+
+// testReadTxWrapper wraps app.DB to implement OuterReadTx for tests
+type testReadTxWrapper struct {
+	db sql.DB
+}
+
+func (t *testReadTxWrapper) Execute(ctx context.Context, query string, args ...interface{}) (*sql.ResultSet, error) {
+	return t.db.Execute(ctx, query, args...)
+}
+
+func (t *testReadTxWrapper) BeginTx(ctx context.Context) (sql.Tx, error) {
+	return t.db.BeginTx(ctx)
+}
+
+func (t *testReadTxWrapper) Rollback(ctx context.Context) error {
+	// No-op for test wrapper since we don't want to rollback the main test transaction
+	return nil
+}
+
+func (t *testReadTxWrapper) Commit(ctx context.Context) error {
+	// No-op for test wrapper since we don't want to commit the main test transaction
+	return nil
+}
+
+func (t *testReadTxWrapper) Subscribe(ctx context.Context) (<-chan string, func(context.Context) error, error) {
+	// For tests, return a no-op subscription since ValidatorSigner doesn't use it
+	ch := make(chan string)
+	close(ch) // Close immediately as we don't send any notices in tests
+	done := func(context.Context) error { return nil }
+	return ch, done, nil
+}
+
 // NewValidatorSigner is a test helper that creates a ValidatorSigner for testing.
 // This provides backward compatibility for existing tests.
 func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecdsa.PrivateKey) *ValidatorSigner {
@@ -34,13 +77,13 @@ func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecd
 	logger := app.Service.Logger
 	logger.Infof("[TEST] Creating validator signer for instance %s", instanceID)
 
-	// Use the Service's DBPool if available
+	// Use the Service's DBPool if available, otherwise adapt app.DB for tests
 	var dbPool sql.DelayedReadTxMaker
 	if app.Service != nil && app.Service.DBPool != nil {
 		dbPool = app.Service.DBPool
 	} else {
-		// In tests without a Service, dbPool will be nil - tests should set it up properly
-		dbPool = nil
+		// In tests, adapt app.DB to provide a DelayedReadTxMaker interface
+		dbPool = &testDBPoolAdapter{db: app.DB}
 	}
 
 	return &ValidatorSigner{

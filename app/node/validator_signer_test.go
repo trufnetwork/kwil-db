@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/common"
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/log"
 )
@@ -36,17 +37,17 @@ func TestValidatorSigner_Sign(t *testing.T) {
 	}{
 		{
 			name:        "valid epoch_voting purpose",
-			purpose:     PurposeEpochVoting,
+			purpose:     common.PurposeEpochVoting,
 			expectError: false,
 		},
 		{
 			name:        "valid withdrawal_signature purpose",
-			purpose:     PurposeWithdrawalSig,
+			purpose:     common.PurposeWithdrawalSig,
 			expectError: false,
 		},
 		{
 			name:        "valid gnosis_safe_signing purpose",
-			purpose:     PurposeGnosisSafeSigning,
+			purpose:     common.PurposeGnosisSafeSigning,
 			expectError: false,
 		},
 		{
@@ -178,7 +179,7 @@ func TestValidatorSigner_SignatureVerification(t *testing.T) {
 	messageHash := crypto.Keccak256([]byte("test message"))
 
 	// Sign the message
-	signature, err := signer.Sign(ctx, messageHash, PurposeEpochVoting)
+	signature, err := signer.Sign(ctx, messageHash, common.PurposeEpochVoting)
 	require.NoError(t, err)
 	require.NotNil(t, signature)
 
