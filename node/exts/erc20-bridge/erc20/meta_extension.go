@@ -15,14 +15,10 @@ package erc20
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
-	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +55,10 @@ const (
 	uint256Precision        = 78
 
 	rewardMerkleTreeLRUSize = 1000
+
+	// EthereumSignedMessagePrefix is the prefix used for EIP-191 compliant message signing.
+	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash() format.
+	EthereumSignedMessagePrefix = "\x19Ethereum Signed Message:\n32"
 )
 
 var (
@@ -409,10 +409,10 @@ func init() {
 								continue
 							}
 
-							// Try to get validator signing key
-							key, err := getValidatorSigningKey(app, instance.ID)
+							// Try to get validator signer
+							signer, err := getValidatorSigner(app, instance.ID)
 							if err != nil {
-								app.Service.Logger.Warnf("failed to get validator signing key for instance %s: %v", instance.ID, err)
+								app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
 								// Clean up tracking maps on error
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
@@ -420,7 +420,7 @@ func init() {
 								runningSignersMu.Unlock()
 								continue
 							}
-							if key != nil {
+							if signer != nil {
 								// Create cancellable context so we can stop the signer when instance is disabled
 								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
 								signerCtx, cancel := context.WithCancel(context.Background())
@@ -431,10 +431,9 @@ func init() {
 								runningSignersMu.Unlock()
 
 								// Start background signer with cancellable context
-								signer := NewValidatorSigner(app, instance.ID, key)
 								go signer.Start(signerCtx)
 							} else {
-								// No key available, clean up tracking maps
+								// No signer available, clean up tracking maps
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
 								delete(runningSignerCancels, instanceIDStr)
@@ -1275,8 +1274,13 @@ func init() {
 									return fmt.Errorf("failed to compute epoch message hash: %w", err)
 								}
 
+								// Add Ethereum signed message prefix to match contract expectation
+								prefix := []byte(EthereumSignedMessagePrefix)
+								ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
 								// Verify signature against caller's address
-								err = utils.EthGnosisVerifyDigest(signature, messageHash, from.Bytes())
+								// Use standard Ethereum signature verification (V=27/28) for OpenZeppelin compatibility
+								err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, from.Bytes())
 								if err != nil {
 									return fmt.Errorf("signature verification failed for address %s: %w", from.Hex(), err)
 								}
@@ -1497,8 +1501,15 @@ func init() {
 		err := getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			defer info.mu.RUnlock()
+
+			// DEBUG: Log entry into end_block check
+			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
+			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
+				id, info.currentEpoch.ID, info.currentEpoch.StartHeight, info.currentEpoch.StartTime, info.userProvidedData.DistributionPeriod, elapsedTime)
+
 			// If the block is greater than or equal to the start time + distribution period: Otherwise, we should do nothing.
 			if block.Timestamp-info.currentEpoch.StartTime < info.userProvidedData.DistributionPeriod {
+				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Not ready to finalize (elapsed %d < period %d)", id, elapsedTime, info.userProvidedData.DistributionPeriod)
 				return nil
 			}
 
@@ -1515,17 +1526,30 @@ func init() {
 				return err
 			}
 
+			// DEBUG: Log previous epoch check result
+			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
+				id, preExists, preConfirmed, info.currentEpoch.StartHeight)
+
 			if !preExists || // first epoch should always be finalized
 				(preExists && preConfirmed) { // previous epoch exists and is confirmed
+				// DEBUG: Log before generating merkle tree
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
+					id, info.currentEpoch.ID, info.EscrowAddress.Hex())
+
 				leafNum, jsonBody, root, total, err := genMerkleTreeForEpoch(ctx, app, info.currentEpoch.ID, info.EscrowAddress.Hex(), block.Hash)
 				if err != nil {
 					return err
 				}
 
 				if leafNum == 0 {
-					app.Service.Logger.Debug("no rewards to distribute, delay finalized current epoch")
+					app.Service.Logger.Warnf("[ENDBLOCK] Instance %s: genMerkleTreeForEpoch returned 0 rewards for epoch ID=%s - delaying finalization",
+						id, info.currentEpoch.ID)
 					return nil
 				}
+
+				// DEBUG: Log successful merkle tree generation
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Generated merkle tree with %d leaves, total=%s, root=%x",
+					id, leafNum, total.String(), root)
 
 				erc20Total, err := erc20ValueFromBigInt(total)
 				if err != nil {
@@ -1539,6 +1563,11 @@ func init() {
 
 				// create a new epoch
 				newEpoch := newPendingEpoch(id, block)
+
+				// DEBUG: Log new epoch creation
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Creating new epoch ID=%s, startHeight=%d, startTime=%d (old epoch ID=%s)",
+					id, newEpoch.ID, newEpoch.StartHeight, newEpoch.StartTime, info.currentEpoch.ID)
+
 				err = createEpoch(ctx, app, newEpoch, id)
 				if err != nil {
 					return err
@@ -1550,11 +1579,13 @@ func init() {
 				mtLRUCache.Put(b32Root, jsonBody)
 
 				newEpochs[*id] = newEpoch
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Successfully finalized epoch and created new epoch", id)
 				return nil
 			}
 
 			// if previous epoch exists and not confirmed, we do nothing.
-			app.Service.Logger.Debug("previous epoch is not confirmed yet, skip finalize current epoch")
+			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
+				id, info.currentEpoch.ID)
 			return nil
 		})
 		if err != nil {
@@ -1566,7 +1597,13 @@ func init() {
 			newEpoch, ok := newEpochs[*id]
 			if ok {
 				info.mu.Lock()
+				oldEpochID := info.currentEpoch.ID
 				info.currentEpoch = newEpoch
+
+				// DEBUG: Log epoch update in memory
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Updated in-memory currentEpoch: %s -> %s",
+					id, oldEpochID, newEpoch.ID)
+
 				info.mu.Unlock()
 			}
 			return nil
@@ -1579,16 +1616,24 @@ func init() {
 
 func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.UUID,
 	escrowAddr string, blockHash [32]byte) (leafNum int, jsonTree []byte, root []byte, total *big.Int, err error) {
+	// DEBUG: Log entry into genMerkleTreeForEpoch
+	app.Service.Logger.Infof("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
+
 	var rewards []*EpochReward
 	err = getRewardsForEpoch(ctx, app, epochID, func(reward *EpochReward) error {
 		rewards = append(rewards, reward)
 		return nil
 	})
 	if err != nil {
+		app.Service.Logger.Errorf("[MERKLE] getRewardsForEpoch failed for epoch ID=%s: %v", epochID, err)
 		return 0, nil, nil, nil, err
 	}
 
+	// DEBUG: Log number of rewards collected
+	app.Service.Logger.Infof("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
+
 	if len(rewards) == 0 { // no rewards, delay finalize current epoch
+		app.Service.Logger.Warnf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
 		return 0, nil, nil, nil, nil // should skip
 	}
 
@@ -1811,13 +1856,20 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 	info.mu.RLock()
 	defer info.mu.RUnlock()
 
+	// DEBUG: Log withdrawal request
+	app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: User %s requesting withdrawal to %s, amount=%s, currentEpoch ID=%s",
+		id, fromAddr.Hex(), recipientAddr.Hex(), amount.String(), info.currentEpoch.ID)
+
 	// we dont need to update the cached data here since we are directly converting
 	// a user balance (which is never cached) into a reward (which is also never cached)
 	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
 	if err != nil {
+		app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: lockAndIssue failed for epoch ID=%s: %v",
+			id, info.currentEpoch.ID, err)
 		return err
 	}
 
+	app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: Successfully added withdrawal to epoch ID=%s", id, info.currentEpoch.ID)
 	return nil
 }
 
@@ -2594,72 +2646,25 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 // Validator Signing for Non-Custodial Withdrawals
 // ============================================================================
 
-// getValidatorSigningKey retrieves the validator's ECDSA private key from configuration.
-// Returns nil if no key is configured (backward compatibility).
-// Uses the existing [erc20_bridge.signer] config structure.
-func getValidatorSigningKey(app *common.App, instanceID *types.UUID) (*ecdsa.PrivateKey, error) {
-	// Get ERC20 bridge configuration from LocalConfig
-	// This uses the existing [erc20_bridge] section
-	if app.Service.LocalConfig == nil {
-		return nil, nil // No config, skip signing
+// getValidatorSigner returns a ValidatorSigner wrapper for the node's validator key.
+// For non-custodial validator voting, this MUST use the node's validator key (not bridge signer key)
+// to ensure signatures map to the validator's registered identity in the validator set.
+// Returns nil if no validator signer is available.
+func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSigner, error) {
+	// Use the ValidatorSigner from Service
+	// This provides controlled access to signing without exposing the raw private key
+	if app.Service.ValidatorSigner == nil {
+		return nil, nil // No validator signer available
 	}
 
-	bridgeConfig := app.Service.LocalConfig.Erc20Bridge
-	if len(bridgeConfig.Signer) == 0 {
-		return nil, nil // No signer config, skip signing
-	}
-
-	// For non-custodial validator signing, we use the same key for all instances
-	// (vs custodial which needs different keys per instance for Safe multisig)
-	//
-	// Deterministic key selection: When multiple keys exist in the config map,
-	// we must consistently select the same key across node restarts to avoid
-	// nonce conflicts and duplicate votes. We sort keys alphabetically and select
-	// the first one. This approach:
-	// 1. Ensures deterministic selection (same key every time)
-	// 2. Maintains backward compatibility (single-key configs work unchanged)
-	// 3. Avoids configuration complexity (no need to specify "primary" key)
-	var keys []string
-	for key := range bridgeConfig.Signer {
-		keys = append(keys, key)
-	}
-	if len(keys) == 0 {
-		return nil, nil // No signer keys configured
-	}
-	sort.Strings(keys) // Sort to ensure deterministic selection
-	signerPath := bridgeConfig.Signer[keys[0]]
-
-	// Check file permissions for security (should be restrictive like 0600)
-	fileInfo, err := os.Stat(signerPath)
+	// Get Ethereum address for the validator
+	addressBytes, err := app.Service.ValidatorSigner.EthereumAddress()
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat private key file %s: %w", signerPath, err)
-	}
-	// Warn if file has overly permissive permissions (readable by group/others)
-	if fileInfo.Mode().Perm()&0077 != 0 {
-		app.Service.Logger.Warnf("private key file %s has insecure permissions %v (should be 0600 or stricter)", signerPath, fileInfo.Mode().Perm())
+		return nil, fmt.Errorf("failed to get validator Ethereum address: %w", err)
 	}
 
-	// Read private key from file
-	rawPkBytes, err := os.ReadFile(signerPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read private key file %s: %w", signerPath, err)
-	}
-
-	// Parse hex-encoded private key
-	pkStr := strings.TrimSpace(string(rawPkBytes))
-	pkStr = strings.TrimPrefix(pkStr, "0x") // Remove 0x prefix if present
-	pkBytes, err := hex.DecodeString(pkStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode private key hex: %w", err)
-	}
-
-	// Convert to ECDSA private key
-	privateKey, err := crypto.ToECDSA(pkBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse ECDSA private key: %w", err)
-	}
-
-	return privateKey, nil
+	// Create ValidatorSigner with the interface
+	return NewValidatorSignerFromInterface(app, instanceID, app.Service.ValidatorSigner, addressBytes), nil
 }
 
 // computeEpochMessageHash computes the message hash that validators sign.
@@ -2700,18 +2705,6 @@ func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error
 	// Keccak256 hash
 	messageHash := crypto.Keccak256(packed)
 	return messageHash, nil
-}
-
-// signMessage signs a message hash using ECDSA (Ethereum-compatible).
-// Returns a 65-byte signature in [R || S || V] format with V = 31 or 32 (Gnosis Safe EIP-191 format).
-func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
-	// Use EthGnosisSignDigest to produce Gnosis Safe compatible signature
-	// This produces a 65-byte signature with V = 31 or 32 (EIP-191 prefixed message)
-	signature, err := utils.EthGnosisSignDigest(messageHash, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign message: %w", err)
-	}
-	return signature, nil
 }
 
 // calculateBFTThreshold calculates the BFT threshold (2/3 of total validator voting power).
@@ -2769,7 +2762,9 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 	// Build a map of validator Ethereum addresses -> power
 	// This requires computing each validator's Ethereum address from their pubkey
 	validatorPowerMap := make(map[string]int64)
+	app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
 	for _, v := range validators {
+		app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
 		// Compute Ethereum address from validator pubkey
 		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
 		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
@@ -2777,12 +2772,14 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 			ethAddr, err := ethAddressFromPubKey(v.Identifier)
 			if err != nil {
 				// Skip validators with invalid keys
-				app.Service.Logger.Warnf("failed to derive Ethereum address for validator: %v", err)
+				app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
 				continue
 			}
+			app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
 			validatorPowerMap[ethAddr.Hex()] = v.Power
 		}
 	}
+	app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
 
 	// Sum voting power for all voters
 	var votingPower int64

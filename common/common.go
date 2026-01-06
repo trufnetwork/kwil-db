@@ -9,6 +9,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
@@ -22,6 +23,40 @@ type NodeStatusProvider interface {
 	// the network (i.e., catching up with blocks). This includes initial
 	// sync, block sync after restart, and snapshot restoration.
 	IsSyncing() bool
+}
+
+// Allowed signing purposes for validator operations
+const (
+	PurposeEpochVoting       = "epoch_voting"
+	PurposeWithdrawalSig     = "withdrawal_signature"
+	PurposeGnosisSafeSigning = "gnosis_safe_signing"
+)
+
+// ValidatorSigner provides controlled access to validator signing operations
+// without exposing the raw private key. Extensions can request signatures and
+// obtain derived information (addresses, signers) without accessing raw key bytes.
+type ValidatorSigner interface {
+	// Sign signs a message hash for validator operations.
+	// The purpose parameter identifies the operation type (e.g., "epoch_voting", "withdrawal_signature").
+	// The implementation validates the message and purpose before signing.
+	// Returns the signature bytes or an error if signing is not permitted.
+	Sign(ctx context.Context, messageHash []byte, purpose string) ([]byte, error)
+
+	// EthereumAddress returns the Ethereum address derived from the validator's
+	// secp256k1 public key. This is needed for bridge operations that need to
+	// identify the validator on Ethereum.
+	// Returns an error if the validator key is not secp256k1.
+	EthereumAddress() ([]byte, error)
+
+	// CreateSecp256k1Signer creates a Kwil transaction signer for this validator.
+	// This allows extensions to sign transactions on behalf of the validator without
+	// accessing the raw private key.
+	// Returns an error if the validator key is not secp256k1.
+	CreateSecp256k1Signer() (auth.Signer, error)
+
+	// Identity returns the validator's public key bytes.
+	// This allows extensions to verify signatures without accessing the private key.
+	Identity() []byte
 }
 
 // Service provides access to general application information to
@@ -38,6 +73,13 @@ type Service struct {
 
 	// Identity is the node/validator identity (pubkey).
 	Identity []byte // maybe this actuall needs to be crypto.PubKey???
+
+	// ValidatorSigner provides controlled access to validator signing for authorized operations.
+	// Extensions can use this to sign messages for validator operations (e.g., epoch voting,
+	// withdrawal signatures) without direct access to the private key.
+	// This prevents key exfiltration while maintaining required functionality.
+	// May be nil if no private key is available (e.g., in read-only nodes).
+	ValidatorSigner ValidatorSigner
 
 	// NodeStatus provides runtime status information about the node.
 	// Extensions can query this to adapt behavior based on node state.
@@ -62,17 +104,18 @@ type Service struct {
 // Returns the transaction hash if successful.
 type BroadcastTxFn func(ctx context.Context, tx *types.Transaction) (types.Hash, error)
 
-// NameLogger returns a new Service with the logger named.
+// NamedLogger returns a new Service with the logger named.
 // Every other field is the same pointer as the original.
 func (s *Service) NamedLogger(name string) *Service {
 	return &Service{
-		Logger:        s.Logger.New(name),
-		GenesisConfig: s.GenesisConfig,
-		LocalConfig:   s.LocalConfig,
-		Identity:      s.Identity,
-		NodeStatus:    s.NodeStatus,
-		BroadcastTxFn: s.BroadcastTxFn,
-		DBPool:        s.DBPool,
+		Logger:          s.Logger.New(name),
+		GenesisConfig:   s.GenesisConfig,
+		LocalConfig:     s.LocalConfig,
+		Identity:        s.Identity,
+		ValidatorSigner: s.ValidatorSigner,
+		NodeStatus:      s.NodeStatus,
+		BroadcastTxFn:   s.BroadcastTxFn,
+		DBPool:          s.DBPool,
 	}
 }
 

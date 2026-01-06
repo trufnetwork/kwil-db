@@ -120,6 +120,18 @@ func EthGnosisVerify(sig []byte, msg []byte, address []byte) error {
 	return EthGnosisVerifyDigest(sig, digest, address)
 }
 
+// EthStandardSignDigest generates a standard Ethereum signature (V=27 or 28).
+// This is compatible with OpenZeppelin's ECDSA.recover() which expects V to be 27 or 28.
+func EthStandardSignDigest(digest []byte, key *ecdsa.PrivateKey) ([]byte, error) {
+	sig, err := ethCrypto.Sign(digest, key)
+	if err != nil {
+		return nil, err
+	}
+
+	sig[len(sig)-1] += 27
+	return sig, nil
+}
+
 func EthGnosisSignDigest(digest []byte, key *ecdsa.PrivateKey) ([]byte, error) {
 	sig, err := ethCrypto.Sign(digest, key)
 	if err != nil {
@@ -128,6 +140,35 @@ func EthGnosisSignDigest(digest []byte, key *ecdsa.PrivateKey) ([]byte, error) {
 
 	sig[len(sig)-1] += 27 + 4
 	return sig, nil
+}
+
+// EthStandardVerifyDigest verifies a standard Ethereum signature (V=27 or 28).
+// This is compatible with OpenZeppelin's ECDSA.recover().
+func EthStandardVerifyDigest(sig []byte, digest []byte, address []byte) error {
+	// signature is 65 bytes, [R || S || V] format
+	if len(sig) != ethCrypto.SignatureLength {
+		return fmt.Errorf("invalid signature length: expected %d, received %d",
+			ethCrypto.SignatureLength, len(sig))
+	}
+
+	if sig[ethCrypto.RecoveryIDOffset] != 27 && sig[ethCrypto.RecoveryIDOffset] != 28 {
+		return fmt.Errorf("invalid signature V: expected 27 or 28, got %d", sig[ethCrypto.RecoveryIDOffset])
+	}
+
+	sig = slices.Clone(sig)
+	sig[ethCrypto.RecoveryIDOffset] -= 27
+
+	pubkeyBytes, err := ethCrypto.Ecrecover(digest, sig)
+	if err != nil {
+		return fmt.Errorf("invalid signature: recover public key failed: %w", err)
+	}
+
+	addr := ethCommon.BytesToAddress(ethCrypto.Keccak256(pubkeyBytes[1:])[12:])
+	if !bytes.Equal(addr.Bytes(), address) {
+		return fmt.Errorf("invalid signature: expected address %x, received %x", address, addr.Bytes())
+	}
+
+	return nil
 }
 
 func EthGnosisVerifyDigest(sig []byte, digest []byte, address []byte) error {

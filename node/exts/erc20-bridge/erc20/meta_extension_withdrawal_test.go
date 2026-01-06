@@ -449,7 +449,7 @@ func TestComputeEpochMessageHash(t *testing.T) {
 	require.NotEqual(t, messageHash, messageHash3)
 }
 
-// TestSignMessage tests ECDSA signing functionality
+// TestSignMessage tests ECDSA signing functionality with Ethereum signed message prefix
 func TestSignMessage(t *testing.T) {
 	// Generate test key
 	privateKey, err := crypto.GenerateKey()
@@ -461,8 +461,16 @@ func TestSignMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, signature, 65, "ECDSA signature should be 65 bytes")
 
-	// Verify the signature
-	pubKey, err := crypto.SigToPub(messageHash, signature)
+	// Verify the signature (signMessage adds Ethereum signed message prefix)
+	prefix := []byte(EthereumSignedMessagePrefix)
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+	// Adjust V for recovery (standard Ethereum V=27/28 -> internal V=0/1)
+	sigForRecovery := make([]byte, len(signature))
+	copy(sigForRecovery, signature)
+	sigForRecovery[64] -= 27
+
+	pubKey, err := crypto.SigToPub(ethSignedMessageHash, sigForRecovery)
 	require.NoError(t, err)
 	require.Equal(t, privateKey.PublicKey, *pubKey)
 }

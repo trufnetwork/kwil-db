@@ -2,7 +2,6 @@ package erc20
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"math/big"
 	"sync"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
-	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
@@ -38,12 +36,12 @@ const (
 // when the background goroutine tries to query the database.
 // Pattern follows /node/exts/erc20-bridge/signersvc/kwil.go.
 type ValidatorSigner struct {
-	app        *common.App            // For Engine, Accounts, Service access
-	dbPool     sql.DelayedReadTxMaker // Database pool for fresh transactions
-	instanceID *types.UUID
-	privateKey *ecdsa.PrivateKey
-	address    ethcommon.Address
-	logger     log.Logger
+	app             *common.App            // For Engine, Accounts, Service access
+	dbPool          sql.DelayedReadTxMaker // Database pool for fresh transactions
+	instanceID      *types.UUID
+	validatorSigner common.ValidatorSigner // Interface for controlled key access
+	address         ethcommon.Address
+	logger          log.Logger
 
 	// Track voted epochs and nonce to avoid duplicate work and nonce conflicts
 	mu          sync.Mutex
@@ -51,9 +49,10 @@ type ValidatorSigner struct {
 	localNonce  uint64          // Local nonce counter for transaction creation
 }
 
-// NewValidatorSigner creates a new validator signer service.
-func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecdsa.PrivateKey) *ValidatorSigner {
-	address := crypto.PubkeyToAddress(privateKey.PublicKey)
+// NewValidatorSignerFromInterface creates a new validator signer service using the ValidatorSigner interface.
+// This prevents direct access to the validator's private key.
+func NewValidatorSignerFromInterface(app *common.App, instanceID *types.UUID, valSigner common.ValidatorSigner, addressBytes []byte) *ValidatorSigner {
+	address := ethcommon.BytesToAddress(addressBytes)
 
 	logger := app.Service.Logger
 	logger.Infof("[VALIDATOR_SIGNER_DEBUG] Creating validator signer for instance %s", instanceID)
@@ -66,13 +65,13 @@ func NewValidatorSigner(app *common.App, instanceID *types.UUID, privateKey *ecd
 	}
 
 	return &ValidatorSigner{
-		app:         app,
-		dbPool:      dbPool,
-		instanceID:  instanceID,
-		privateKey:  privateKey,
-		address:     address,
-		logger:      logger,
-		votedEpochs: make(map[string]bool),
+		app:             app,
+		dbPool:          dbPool,
+		instanceID:      instanceID,
+		validatorSigner: valSigner,
+		address:         address,
+		logger:          logger,
+		votedEpochs:     make(map[string]bool),
 	}
 }
 
@@ -311,8 +310,13 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 		return fmt.Errorf("failed to compute message hash: %w", err)
 	}
 
-	// 2. Sign the message
-	signature, err := signMessage(messageHash, v.privateKey)
+	// 2. Add Ethereum signed message prefix to match contract expectation
+	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash()
+	prefix := []byte(EthereumSignedMessagePrefix)
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+	// 3. Sign the prefixed message using the validator signer interface
+	signature, err := v.validatorSigner.Sign(ctx, ethSignedMessageHash, common.PurposeEpochVoting)
 	if err != nil {
 		return fmt.Errorf("failed to sign message: %w", err)
 	}
@@ -322,7 +326,7 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 		return fmt.Errorf("invalid signature length: %d", len(signature))
 	}
 
-	// 3. Submit vote transaction
+	// 4. Submit vote transaction
 	// NOTE: BroadcastTxFn availability is checked in pollAndSign before calling this function
 
 	// Create transaction calling vote_epoch action
@@ -347,15 +351,11 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 
 // createVoteTransaction creates a signed transaction that calls the vote_epoch action.
 func (v *ValidatorSigner) createVoteTransaction(ctx context.Context, epochID *types.UUID, signature []byte) (*types.Transaction, error) {
-	// Convert *ecdsa.PrivateKey to crypto.Secp256k1PrivateKey
-	privKeyBytes := crypto.FromECDSA(v.privateKey)
-	kwilPrivKey, err := kwilcrypto.UnmarshalSecp256k1PrivateKey(privKeyBytes)
+	// Get transaction signer from validator signer interface
+	signer, err := v.validatorSigner.CreateSecp256k1Signer()
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert private key: %w", err)
+		return nil, fmt.Errorf("failed to create transaction signer: %w", err)
 	}
-
-	// Create ECDSA signer
-	signer := &auth.EthPersonalSigner{Key: *kwilPrivKey}
 
 	// Get current account nonce with concurrency-safe local counter
 	// Use double-check pattern to avoid holding mutex during GetAccount call

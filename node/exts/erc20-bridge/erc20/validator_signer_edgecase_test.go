@@ -429,10 +429,23 @@ func TestSignMessageDeterminism(t *testing.T) {
 	require.Len(t, sig1, 65)
 	require.Len(t, sig2, 65)
 
-	pubKey1, err := crypto.SigToPub(messageHash, sig1)
+	// signMessage adds Ethereum signed message prefix, so we need to add it for recovery too
+	prefix := []byte(EthereumSignedMessagePrefix)
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+	// Adjust V for recovery (standard Ethereum V=27/28 -> internal V=0/1)
+	sig1ForRecovery := make([]byte, len(sig1))
+	copy(sig1ForRecovery, sig1)
+	sig1ForRecovery[64] -= 27
+
+	sig2ForRecovery := make([]byte, len(sig2))
+	copy(sig2ForRecovery, sig2)
+	sig2ForRecovery[64] -= 27
+
+	pubKey1, err := crypto.SigToPub(ethSignedMessageHash, sig1ForRecovery)
 	require.NoError(t, err)
 
-	pubKey2, err := crypto.SigToPub(messageHash, sig2)
+	pubKey2, err := crypto.SigToPub(ethSignedMessageHash, sig2ForRecovery)
 	require.NoError(t, err)
 
 	require.Equal(t, privateKey.PublicKey, *pubKey1)
