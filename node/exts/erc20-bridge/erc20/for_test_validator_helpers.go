@@ -16,15 +16,15 @@ import (
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
-// signMessage is a test helper that signs a message hash using Gnosis Safe EIP-191 format.
+// signMessage is a test helper that signs a message hash using standard Ethereum EIP-191 format.
 // This replaces the old signMessage function that was removed during the ValidatorSigner refactoring.
 func signMessage(messageHash []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
 	// Add Ethereum signed message prefix to match contract expectation
 	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
-	// Use the same Gnosis Safe signature format as the production code
-	return utils.EthGnosisSignDigest(ethSignedMessageHash, privateKey)
+	// Use standard Ethereum signature format (V=27/28) for OpenZeppelin compatibility
+	return utils.EthStandardSignDigest(ethSignedMessageHash, privateKey)
 }
 
 // testDBPoolAdapter adapts app.DB (transaction) to DelayedReadTxMaker for tests.
@@ -110,7 +110,8 @@ type testValidatorSignerImpl struct {
 
 func (t *testValidatorSignerImpl) Sign(ctx context.Context, messageHash []byte, purpose string) ([]byte, error) {
 	// For tests, we don't validate purpose - sign anything
-	return utils.EthGnosisSignDigest(messageHash, t.privateKey)
+	// Use standard Ethereum signatures (V=27/28) for OpenZeppelin compatibility
+	return utils.EthStandardSignDigest(messageHash, t.privateKey)
 }
 
 func (t *testValidatorSignerImpl) EthereumAddress() ([]byte, error) {

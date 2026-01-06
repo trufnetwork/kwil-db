@@ -433,14 +433,14 @@ func TestSignMessageDeterminism(t *testing.T) {
 	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
-	// Adjust V for recovery (Gnosis Safe V=31/32 -> standard V=0/1)
+	// Adjust V for recovery (standard Ethereum V=27/28 -> internal V=0/1)
 	sig1ForRecovery := make([]byte, len(sig1))
 	copy(sig1ForRecovery, sig1)
-	sig1ForRecovery[64] -= 31
+	sig1ForRecovery[64] -= 27
 
 	sig2ForRecovery := make([]byte, len(sig2))
 	copy(sig2ForRecovery, sig2)
-	sig2ForRecovery[64] -= 31
+	sig2ForRecovery[64] -= 27
 
 	pubKey1, err := crypto.SigToPub(ethSignedMessageHash, sig1ForRecovery)
 	require.NoError(t, err)

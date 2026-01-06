@@ -1279,7 +1279,8 @@ func init() {
 								ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 								// Verify signature against caller's address
-								err = utils.EthGnosisVerifyDigest(signature, ethSignedMessageHash, from.Bytes())
+								// Use standard Ethereum signature verification (V=27/28) for OpenZeppelin compatibility
+								err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, from.Bytes())
 								if err != nil {
 									return fmt.Errorf("signature verification failed for address %s: %w", from.Hex(), err)
 								}
