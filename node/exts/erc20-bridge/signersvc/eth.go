@@ -71,22 +71,21 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 	if err != nil {
 		client.Close()
 		// Distinguish "method not found" errors (indicating non-custodial bridge)
-		// from real RPC/contract errors (network failures, invalid responses)
+		// from real RPC/contract errors (network failures, invalid responses, contract misconfigurations)
 		errStr := err.Error()
 
-		// Check for ABI method-not-found indicators
+		// Only treat explicit ABI method-not-found indicators as non-custodial
+		// Errors like "execution reverted" or "no contract code" indicate real issues
 		isMethodNotFound := strings.Contains(errStr, "abi: cannot locate method") ||
 			strings.Contains(errStr, "no method") ||
-			strings.Contains(errStr, "method not found") ||
-			strings.Contains(errStr, "execution reverted") ||
-			strings.Contains(errStr, "no contract code at given address")
+			strings.Contains(errStr, "method not found")
 
 		if isMethodNotFound {
 			// Expected for non-custodial bridges (e.g., TrufNetworkBridge)
 			return nil, ErrNonCustodialBridge
 		}
 
-		// Real error (network failure, invalid response, etc.) - propagate it
+		// Real error (network failure, contract misconfiguration, etc.) - propagate it
 		return nil, fmt.Errorf("get safe address: %w", err)
 	}
 

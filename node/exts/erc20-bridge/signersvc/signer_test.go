@@ -182,6 +182,11 @@ func TestMessageFormatMatching(t *testing.T) {
 	// 1. TrufNetworkBridge contract expects
 	// 2. Kwil vote_epoch action expects (via validator_signer.go computeEpochMessageHash)
 
+	// Generate test key
+	pk, err := ethCrypto.GenerateKey()
+	require.NoError(t, err)
+	expectedAddr := ethCrypto.PubkeyToAddress(pk.PublicKey)
+
 	// Example from your finalized epoch
 	merkleRoot := "9e37a3ed4da4b0a974c0ae853353946da4211d94782ade884f2264af02dfa800"
 	blockHash := "c15484750dce64508eb6f83027440dd8e6489eca8b841468f9618dae5ac0baa9"
@@ -197,21 +202,47 @@ func TestMessageFormatMatching(t *testing.T) {
 	copy(packed[32:64], blockHashBytes)
 
 	// Step 2: Hash the packed data - THIS IS CRITICAL!
-	// This matches meta_extension.go computeEpochMessageHash() line ~1449
+	// This matches signer.go line 199 and validator_signer.go computeEpochMessageHash
 	messageHash := ethCrypto.Keccak256(packed)
 	require.Equal(t, 32, len(messageHash), "messageHash should be 32 bytes")
+
+	// Step 3-5: Sign the hash (matching signer.go line 203)
+	// EthZeppelinSign will:
+	//   1. Add prefix: "\x19Ethereum Signed Message:\n32"
+	//   2. Hash again: keccak256(prefix + messageHash)
+	//   3. Sign the final hash with ECDSA
+	sig, err := utils.EthZeppelinSign(messageHash, pk)
+	require.NoError(t, err)
+	require.Equal(t, 65, len(sig), "signature should be 65 bytes")
+
+	// Verify signature by recovering the signer address
+	// This simulates what the contract/validator does on verification
+	ethSignedMessageHash := ethCrypto.Keccak256([]byte("\x19Ethereum Signed Message:\n32"), messageHash)
+
+	// Normalize V value for ecrecover (convert 27/28 to 0/1)
+	sigForRecovery := make([]byte, 65)
+	copy(sigForRecovery, sig)
+	if sigForRecovery[64] >= 27 {
+		sigForRecovery[64] -= 27
+	}
+
+	recoveredPubKey, err := ethCrypto.SigToPub(ethSignedMessageHash, sigForRecovery)
+	require.NoError(t, err)
+	recoveredAddr := ethCrypto.PubkeyToAddress(*recoveredPubKey)
+
+	// ASSERTION: Recovered address must match the original signer
+	assert.Equal(t, expectedAddr, recoveredAddr, "signature verification failed: recovered address does not match signer")
 
 	t.Logf("Merkle root: 0x%s", merkleRoot)
 	t.Logf("Block hash: 0x%s", blockHash)
 	t.Logf("Packed (abi.encode): 0x%s [64 bytes]", hex.EncodeToString(packed))
 	t.Logf("MessageHash (keccak256): 0x%s [32 bytes]", hex.EncodeToString(messageHash))
-	t.Logf("")
-	t.Logf("Next step: EthZeppelinSign will:")
-	t.Logf("  1. Add prefix: \\x19Ethereum Signed Message:\\n32")
-	t.Logf("  2. Hash again: keccak256(prefix + messageHash)")
-	t.Logf("  3. Sign the final hash")
+	t.Logf("Signature: 0x%s [65 bytes]", hex.EncodeToString(sig))
+	t.Logf("Expected signer: %s", expectedAddr.String())
+	t.Logf("Recovered signer: %s", recoveredAddr.String())
 	t.Logf("")
 	t.Logf("This matches:")
+	t.Logf("  - signer.go vote() implementation (lines 193-203)")
 	t.Logf("  - validator_signer.go computeEpochMessageHash()")
 	t.Logf("  - TrufNetworkBridge.withdraw() verification")
 	t.Logf("  - vote_epoch action signature verification")

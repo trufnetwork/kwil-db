@@ -418,6 +418,7 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 
 	var err error
 	var signers []*bridgeSigner
+	retryCount := 0
 	// To be able to run with docker, we need to apply a retry logic, because kwild
 	// won't have erc20 instance when boot
 	for { // naive way to keep retrying the init, on any error
@@ -433,10 +434,16 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 			break
 		}
 
-		// Log at debug level - initialization may fail during startup when bridge instances
+		retryCount++
+		// Log at debug level initially - initialization may fail during startup when bridge instances
 		// are not yet registered, or when Safe metadata is temporarily unavailable.
+		// Escalate to warning level after several retries to help identify persistent issues.
 		// The implementation supports both Safe-based (custodial) and non-custodial bridges.
-		m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer))
+		if retryCount <= 5 {
+			m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount)
+		} else {
+			m.logger.Warn("failed to initialize erc20 bridge signer after multiple retries", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount)
+		}
 		select {
 		case <-time.After(time.Second * 30):
 		case <-ctx.Done():
