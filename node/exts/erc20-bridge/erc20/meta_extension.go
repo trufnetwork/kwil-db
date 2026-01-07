@@ -405,14 +405,18 @@ func init() {
 							runningSignersMu.Unlock()
 
 							if alreadyRunning {
-								app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
+								}
 								continue
 							}
 
 							// Try to get validator signer
 							signer, err := getValidatorSigner(app, instance.ID)
 							if err != nil {
-								app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
+								}
 								// Clean up tracking maps on error
 								runningSignersMu.Lock()
 								delete(runningSigners, instanceIDStr)
@@ -649,7 +653,9 @@ func init() {
 								cancel() // Signal signer to stop
 								delete(runningSigners, instanceIDStr)
 								delete(runningSignerCancels, instanceIDStr)
-								app.Service.Logger.Debugf("stopped validator signer for instance %s", id)
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("stopped validator signer for instance %s", id)
+								}
 							}
 							runningSignersMu.Unlock()
 
@@ -1286,7 +1292,9 @@ func init() {
 								}
 
 								// Signature is valid - proceed to store vote
-								app.Service.Logger.Debugf("signature verified for epoch %s from validator %s", epochID, from.Hex())
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("signature verified for epoch %s from validator %s", epochID, from.Hex())
+								}
 							}
 
 							// Store the vote (only reached if signature verification passed for nonce=0)
@@ -1301,19 +1309,25 @@ func init() {
 								// Calculate BFT threshold (2/3 of total validator voting power)
 								totalPower, thresholdPower, err := calculateBFTThreshold(app)
 								if err != nil {
-									app.Service.Logger.Errorf("failed to calculate BFT threshold: %v", err)
+									if app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Errorf("failed to calculate BFT threshold: %v", err)
+									}
 									return fmt.Errorf("failed to calculate BFT threshold: %w", err)
 								}
 
 								// Sum voting power of all validators who voted for this epoch
 								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
 								if err != nil {
-									app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
+									if app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
+									}
 									return fmt.Errorf("failed to sum voting power for epoch %s: %w", epochID, err)
 								}
 
-								app.Service.Logger.Debugf("epoch %s: voting_power=%d, threshold=%d, total_power=%d",
-									epochID, votingPower, thresholdPower, totalPower)
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("epoch %s: voting_power=%d, threshold=%d, total_power=%d",
+										epochID, votingPower, thresholdPower, totalPower)
+								}
 
 								// Check if threshold reached (BFT: >= 2/3 of validator voting power)
 								if votingPower >= thresholdPower {
@@ -1323,28 +1337,38 @@ func init() {
 										WHERE id = $1
 									`, epochID)
 									if err != nil {
-										app.Service.Logger.Errorf("failed to get epoch merkle root: %v", err)
+										if app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Errorf("failed to get epoch merkle root: %v", err)
+										}
 										return fmt.Errorf("failed to get epoch merkle root: %w", err)
 									}
 
 									if len(result.Rows) > 0 {
 										// Check for nil merkle root before type assertion
 										if result.Rows[0][0] == nil {
-											app.Service.Logger.Warnf("epoch %s has nil reward_root, cannot confirm", epochID)
+											if app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Warnf("epoch %s has nil reward_root, cannot confirm", epochID)
+											}
 											return fmt.Errorf("epoch %s has nil reward_root, cannot confirm", epochID)
 										}
 										merkleRoot, ok := result.Rows[0][0].([]byte)
 										if !ok {
-											app.Service.Logger.Errorf("epoch %s reward_root is not []byte type", epochID)
+											if app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Errorf("epoch %s reward_root is not []byte type", epochID)
+											}
 											return fmt.Errorf("epoch %s reward_root has invalid type %T", epochID, result.Rows[0][0])
 										}
 										err = confirmEpoch(ctx.TxContext.Ctx, app, merkleRoot)
 										if err != nil {
-											app.Service.Logger.Errorf("failed to confirm epoch %s: %v", epochID, err)
+											if app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Errorf("failed to confirm epoch %s: %v", epochID, err)
+											}
 											return fmt.Errorf("failed to confirm epoch %s: %w", epochID, err)
 										}
-										app.Service.Logger.Infof("epoch %s confirmed with voting_power=%d (threshold=%d)",
-											epochID, votingPower, thresholdPower)
+										if app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Infof("epoch %s confirmed with voting_power=%d (threshold=%d)",
+												epochID, votingPower, thresholdPower)
+										}
 									}
 								}
 							}
@@ -1504,12 +1528,16 @@ func init() {
 
 			// DEBUG: Log entry into end_block check
 			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
-			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
-				id, info.currentEpoch.ID, info.currentEpoch.StartHeight, info.currentEpoch.StartTime, info.userProvidedData.DistributionPeriod, elapsedTime)
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
+					id, info.currentEpoch.ID, info.currentEpoch.StartHeight, info.currentEpoch.StartTime, info.userProvidedData.DistributionPeriod, elapsedTime)
+			}
 
 			// If the block is greater than or equal to the start time + distribution period: Otherwise, we should do nothing.
 			if block.Timestamp-info.currentEpoch.StartTime < info.userProvidedData.DistributionPeriod {
-				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Not ready to finalize (elapsed %d < period %d)", id, elapsedTime, info.userProvidedData.DistributionPeriod)
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Not ready to finalize (elapsed %d < period %d)", id, elapsedTime, info.userProvidedData.DistributionPeriod)
+				}
 				return nil
 			}
 
@@ -1527,14 +1555,18 @@ func init() {
 			}
 
 			// DEBUG: Log previous epoch check result
-			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
-				id, preExists, preConfirmed, info.currentEpoch.StartHeight)
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
+					id, preExists, preConfirmed, info.currentEpoch.StartHeight)
+			}
 
 			if !preExists || // first epoch should always be finalized
 				(preExists && preConfirmed) { // previous epoch exists and is confirmed
 				// DEBUG: Log before generating merkle tree
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
-					id, info.currentEpoch.ID, info.EscrowAddress.Hex())
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
+						id, info.currentEpoch.ID, info.EscrowAddress.Hex())
+				}
 
 				leafNum, jsonBody, root, total, err := genMerkleTreeForEpoch(ctx, app, info.currentEpoch.ID, info.EscrowAddress.Hex(), block.Hash)
 				if err != nil {
@@ -1542,14 +1574,18 @@ func init() {
 				}
 
 				if leafNum == 0 {
-					app.Service.Logger.Warnf("[ENDBLOCK] Instance %s: genMerkleTreeForEpoch returned 0 rewards for epoch ID=%s - delaying finalization",
-						id, info.currentEpoch.ID)
+					if app.Service != nil && app.Service.Logger != nil {
+						app.Service.Logger.Warnf("[ENDBLOCK] Instance %s: genMerkleTreeForEpoch returned 0 rewards for epoch ID=%s - delaying finalization",
+							id, info.currentEpoch.ID)
+					}
 					return nil
 				}
 
 				// DEBUG: Log successful merkle tree generation
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Generated merkle tree with %d leaves, total=%s, root=%x",
-					id, leafNum, total.String(), root)
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Generated merkle tree with %d leaves, total=%s, root=%x",
+						id, leafNum, total.String(), root)
+				}
 
 				erc20Total, err := erc20ValueFromBigInt(total)
 				if err != nil {
@@ -1565,8 +1601,10 @@ func init() {
 				newEpoch := newPendingEpoch(id, block)
 
 				// DEBUG: Log new epoch creation
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Creating new epoch ID=%s, startHeight=%d, startTime=%d (old epoch ID=%s)",
-					id, newEpoch.ID, newEpoch.StartHeight, newEpoch.StartTime, info.currentEpoch.ID)
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Creating new epoch ID=%s, startHeight=%d, startTime=%d (old epoch ID=%s)",
+						id, newEpoch.ID, newEpoch.StartHeight, newEpoch.StartTime, info.currentEpoch.ID)
+				}
 
 				err = createEpoch(ctx, app, newEpoch, id)
 				if err != nil {
@@ -1579,13 +1617,17 @@ func init() {
 				mtLRUCache.Put(b32Root, jsonBody)
 
 				newEpochs[*id] = newEpoch
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Successfully finalized epoch and created new epoch", id)
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Successfully finalized epoch and created new epoch", id)
+				}
 				return nil
 			}
 
 			// if previous epoch exists and not confirmed, we do nothing.
-			app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
-				id, info.currentEpoch.ID)
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
+					id, info.currentEpoch.ID)
+			}
 			return nil
 		})
 		if err != nil {
@@ -1601,8 +1643,10 @@ func init() {
 				info.currentEpoch = newEpoch
 
 				// DEBUG: Log epoch update in memory
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Updated in-memory currentEpoch: %s -> %s",
-					id, oldEpochID, newEpoch.ID)
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Updated in-memory currentEpoch: %s -> %s",
+						id, oldEpochID, newEpoch.ID)
+				}
 
 				info.mu.Unlock()
 			}
@@ -1617,7 +1661,9 @@ func init() {
 func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.UUID,
 	escrowAddr string, blockHash [32]byte) (leafNum int, jsonTree []byte, root []byte, total *big.Int, err error) {
 	// DEBUG: Log entry into genMerkleTreeForEpoch
-	app.Service.Logger.Infof("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
+	}
 
 	var rewards []*EpochReward
 	err = getRewardsForEpoch(ctx, app, epochID, func(reward *EpochReward) error {
@@ -1625,15 +1671,21 @@ func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.
 		return nil
 	})
 	if err != nil {
-		app.Service.Logger.Errorf("[MERKLE] getRewardsForEpoch failed for epoch ID=%s: %v", epochID, err)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[MERKLE] getRewardsForEpoch failed for epoch ID=%s: %v", epochID, err)
+		}
 		return 0, nil, nil, nil, err
 	}
 
 	// DEBUG: Log number of rewards collected
-	app.Service.Logger.Infof("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
+	}
 
 	if len(rewards) == 0 { // no rewards, delay finalize current epoch
-		app.Service.Logger.Warnf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Warnf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
+		}
 		return 0, nil, nil, nil, nil // should skip
 	}
 
@@ -1857,19 +1909,25 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 	defer info.mu.RUnlock()
 
 	// DEBUG: Log withdrawal request
-	app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: User %s requesting withdrawal to %s, amount=%s, currentEpoch ID=%s",
-		id, fromAddr.Hex(), recipientAddr.Hex(), amount.String(), info.currentEpoch.ID)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: User %s requesting withdrawal to %s, amount=%s, currentEpoch ID=%s",
+			id, fromAddr.Hex(), recipientAddr.Hex(), amount.String(), info.currentEpoch.ID)
+	}
 
 	// we dont need to update the cached data here since we are directly converting
 	// a user balance (which is never cached) into a reward (which is also never cached)
 	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
 	if err != nil {
-		app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: lockAndIssue failed for epoch ID=%s: %v",
-			id, info.currentEpoch.ID, err)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: lockAndIssue failed for epoch ID=%s: %v",
+				id, info.currentEpoch.ID, err)
+		}
 		return err
 	}
 
-	app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: Successfully added withdrawal to epoch ID=%s", id, info.currentEpoch.ID)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: Successfully added withdrawal to epoch ID=%s", id, info.currentEpoch.ID)
+	}
 	return nil
 }
 
@@ -2762,9 +2820,13 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 	// Build a map of validator Ethereum addresses -> power
 	// This requires computing each validator's Ethereum address from their pubkey
 	validatorPowerMap := make(map[string]int64)
-	app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
+	}
 	for _, v := range validators {
-		app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
+		}
 		// Compute Ethereum address from validator pubkey
 		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
 		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
@@ -2772,14 +2834,20 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 			ethAddr, err := ethAddressFromPubKey(v.Identifier)
 			if err != nil {
 				// Skip validators with invalid keys
-				app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
+				}
 				continue
 			}
-			app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
+			}
 			validatorPowerMap[ethAddr.Hex()] = v.Power
 		}
 	}
-	app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
+	}
 
 	// Sum voting power for all voters
 	var votingPower int64
