@@ -75,3 +75,50 @@ func TestNewSafeFromEscrow_InvalidRPC(t *testing.T) {
 	assert.Error(t, err, "should return error for invalid RPC")
 	assert.Nil(t, safe, "Safe should be nil on error")
 }
+
+// TestNewSafeFromEscrow_InputValidation tests input validation for NewSafeFromEscrow
+func TestNewSafeFromEscrow_InputValidation(t *testing.T) {
+	validRPC := "http://localhost:8545"
+	validAddr := "0x0000000000000000000000000000000000000000"
+
+	t.Run("empty RPC URL", func(t *testing.T) {
+		safe, err := NewSafeFromEscrow("", validAddr)
+		assert.Error(t, err, "should reject empty RPC URL")
+		assert.Contains(t, err.Error(), "cannot be empty")
+		assert.Nil(t, safe)
+	})
+
+	t.Run("invalid hex address", func(t *testing.T) {
+		safe, err := NewSafeFromEscrow(validRPC, "not-a-hex-address")
+		assert.Error(t, err, "should reject invalid hex address")
+		assert.Contains(t, err.Error(), "invalid escrow address")
+		assert.Nil(t, safe)
+	})
+
+	t.Run("short hex address", func(t *testing.T) {
+		safe, err := NewSafeFromEscrow(validRPC, "0x1234")
+		assert.Error(t, err, "should reject short hex address")
+		assert.Contains(t, err.Error(), "invalid escrow address")
+		assert.Nil(t, safe)
+	})
+}
+
+// TestNewSafe_InputValidation tests input validation for NewSafe
+func TestNewSafe_InputValidation(t *testing.T) {
+	validRPC := "http://localhost:8545"
+	validAddr := "0x0000000000000000000000000000000000000000"
+
+	t.Run("empty RPC URL", func(t *testing.T) {
+		safe, err := NewSafe("", validAddr)
+		assert.Error(t, err, "should reject empty RPC URL")
+		assert.Contains(t, err.Error(), "cannot be empty")
+		assert.Nil(t, safe)
+	})
+
+	t.Run("invalid hex address", func(t *testing.T) {
+		safe, err := NewSafe(validRPC, "invalid-address")
+		assert.Error(t, err, "should reject invalid hex address")
+		assert.Contains(t, err.Error(), "invalid safe address")
+		assert.Nil(t, safe)
+	})
+}

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -13,6 +15,11 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/samber/lo"
 	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
+)
+
+const (
+	// rpcTimeout is the timeout for RPC operations to prevent indefinite hangs
+	rpcTimeout = 30 * time.Second
 )
 
 var (
@@ -46,22 +53,41 @@ type Safe struct {
 // Returns ErrNonCustodialBridge for non-custodial bridges (e.g., TrufNetworkBridge) that don't use GnosisSafe.
 // Returns populated Safe for custodial bridges (e.g., RewardDistributor) that use GnosisSafe.
 func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
+	// Validate RPC URL
+	if _, err := url.Parse(rpc); err != nil {
+		return nil, fmt.Errorf("invalid RPC URL '%s': %w", rpc, err)
+	}
+	if rpc == "" {
+		return nil, fmt.Errorf("RPC URL cannot be empty")
+	}
+
+	// Validate escrow address
+	if !common.IsHexAddress(escrowAddr) {
+		return nil, fmt.Errorf("invalid escrow address '%s': must be a valid hex address", escrowAddr)
+	}
+	escrowAddress := common.HexToAddress(escrowAddr)
+
 	client, err := ethclient.Dial(rpc)
 	if err != nil {
 		return nil, fmt.Errorf("create eth client: %w", err)
 	}
 
-	chainID, err := client.ChainID(context.Background())
+	// Use timeout context for chain ID query
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+
+	chainID, err := client.ChainID(ctx)
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
-	escrowAddress := common.HexToAddress(escrowAddr)
-
 	// STEP 1: Verify contract exists at the address
 	// This distinguishes "wrong address/network" (no code) from "method not found" (code exists)
-	code, err := client.CodeAt(context.Background(), escrowAddress, nil)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel2()
+
+	code, err := client.CodeAt(ctx2, escrowAddress, nil)
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("check contract code: %w", err)
@@ -80,7 +106,13 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 		return nil, fmt.Errorf("bind to escrow contract: %w", err)
 	}
 
-	safeAddr, err := rd.Safe(nil)
+	ctx3, cancel3 := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel3()
+
+	callOpts := &bind.CallOpts{
+		Context: ctx3,
+	}
+	safeAddr, err := rd.Safe(callOpts)
 	if err != nil {
 		client.Close()
 		errStr := err.Error()
@@ -120,12 +152,29 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 }
 
 func NewSafe(rpc string, addr string) (*Safe, error) {
+	// Validate RPC URL
+	if _, err := url.Parse(rpc); err != nil {
+		return nil, fmt.Errorf("invalid RPC URL '%s': %w", rpc, err)
+	}
+	if rpc == "" {
+		return nil, fmt.Errorf("RPC URL cannot be empty")
+	}
+
+	// Validate Safe address
+	if !common.IsHexAddress(addr) {
+		return nil, fmt.Errorf("invalid safe address '%s': must be a valid hex address", addr)
+	}
+
 	client, err := ethclient.Dial(rpc)
 	if err != nil {
 		return nil, fmt.Errorf("create eth client: %w", err)
 	}
 
-	chainID, err := client.ChainID(context.Background())
+	// Use timeout context for chain ID query
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+
+	chainID, err := client.ChainID(ctx)
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("get chain ID: %w", err)

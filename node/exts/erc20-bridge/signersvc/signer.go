@@ -21,6 +21,7 @@ import (
 
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto"
@@ -28,6 +29,13 @@ import (
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+)
+
+const (
+	// maxInitRetries is the maximum number of times to retry initialization
+	// before failing. This prevents indefinite retries on persistent configuration errors.
+	// At 30s intervals, 100 retries = 50 minutes of retry attempts.
+	maxInitRetries = 100
 )
 
 // StateFilePath returns the state file.
@@ -306,7 +314,7 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 		// Auto-detect validator key if not configured or "validator" keyword is used
 		// This is the default behavior - most validators sign with their validator key
 		if pkPath == "" || pkPath == "validator" {
-			pkPath = filepath.Join(rootDir, "nodekey.json")
+			pkPath = config.NodeKeyFilePath(rootDir)
 			logger.Info("using validator key for bridge signer", "target", target, "path", pkPath)
 		}
 
@@ -326,6 +334,11 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 				Type string `json:"type"`
 			}
 			if err := json.Unmarshal([]byte(pkStr), &nodeKey); err == nil && nodeKey.Key != "" {
+				// Validate key type
+				if nodeKey.Type != "" && nodeKey.Type != "secp256k1" {
+					return nil, fmt.Errorf("unsupported key type '%s' (expected 'secp256k1') in %s", nodeKey.Type, pkPath)
+				}
+
 				// Successfully parsed JSON - use the key field
 				pkBytes, err = hex.DecodeString(nodeKey.Key)
 				if err != nil {
@@ -377,7 +390,6 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 		if err != nil {
 			// Check if this is a non-custodial bridge (expected for TrufNetworkBridge)
 			if errors.Is(err, ErrNonCustodialBridge) {
-				logger.Info("non-custodial bridge detected (direct signing)", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
 				safe = nil
 			} else {
 				// Real error (network failure, invalid config, etc.)
@@ -386,17 +398,39 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 			}
 		}
 
-		// Validate chainID if Safe is present (custodial bridge)
-		if safe != nil {
-			logger.Info("custodial bridge detected (Safe-based)", "target", target, "chain", instanceInfo.Chain, "safe_addr", safe.addr.String())
-
-			chainInfo, ok := chains.GetChainInfo(chains.Chain(instanceInfo.Chain))
-			if !ok {
+		// Validate chainID matches configuration (for both custodial and non-custodial bridges)
+		chainInfo, ok := chains.GetChainInfo(chains.Chain(instanceInfo.Chain))
+		if !ok {
+			if safe != nil {
 				return nil, fmt.Errorf("chain '%s' not found in supported chains (detected chainID: %s)", instanceInfo.Chain, safe.chainID.String())
 			}
+			return nil, fmt.Errorf("chain '%s' not found in supported chains", instanceInfo.Chain)
+		}
+
+		if safe != nil {
+			// Custodial bridge - validate Safe's chainID
+			logger.Info("custodial bridge detected (Safe-based)", "target", target, "chain", instanceInfo.Chain, "safe_addr", safe.addr.String())
 
 			if safe.chainID.String() != chainInfo.ID {
 				return nil, fmt.Errorf("chainID mismatch: configured %s != target %s", safe.chainID.String(), chainInfo.ID)
+			}
+		} else {
+			// Non-custodial bridge - validate RPC chainID to catch configuration errors early
+			logger.Info("non-custodial bridge detected (direct signing)", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
+
+			// Connect to RPC to verify chainID matches configuration
+			client, err := ethclient.Dial(chainRpc)
+			if err != nil {
+				return nil, fmt.Errorf("verify chain RPC for %s: %w", instanceInfo.Chain, err)
+			}
+			rpcChainID, err := client.ChainID(context.Background())
+			client.Close()
+			if err != nil {
+				return nil, fmt.Errorf("get chainID from RPC for %s: %w", instanceInfo.Chain, err)
+			}
+
+			if rpcChainID.String() != chainInfo.ID {
+				return nil, fmt.Errorf("chainID mismatch for %s: RPC reports %s but expected %s (check erc20_bridge.rpc config)", instanceInfo.Chain, rpcChainID.String(), chainInfo.ID)
 			}
 		}
 
@@ -466,14 +500,20 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 		}
 
 		retryCount++
+
+		// Check if we've exceeded maximum retries
+		if retryCount >= maxInitRetries {
+			return fmt.Errorf("failed to initialize erc20 bridge signer after %d retries (check configuration and network connectivity): %w", maxInitRetries, err)
+		}
+
 		// Log at debug level initially - initialization may fail during startup when bridge instances
 		// are not yet registered, or when Safe metadata is temporarily unavailable.
 		// Escalate to warning level after several retries to help identify persistent issues.
 		// The implementation supports both Safe-based (custodial) and non-custodial bridges.
 		if retryCount <= 5 {
-			m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount)
+			m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount, "max_retries", maxInitRetries)
 		} else {
-			m.logger.Warn("failed to initialize erc20 bridge signer after multiple retries", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount)
+			m.logger.Warn("failed to initialize erc20 bridge signer after multiple retries", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount, "max_retries", maxInitRetries)
 		}
 		select {
 		case <-time.After(time.Second * 30):
