@@ -177,26 +177,30 @@ func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMet
 	} else {
 		// Non-custodial bridge - sign merkle root + block hash directly
 		//
-		// This matches TrufNetworkBridge.withdraw() signature verification where:
-		//   messageHash = _hash(root, kwilBlockHash).toEthSignedMessageHash()
-		//   where _hash(v0, v1) = keccak256(abi.encode(v0, v1))
+		// This matches TrufNetworkBridge.withdraw() signature verification AND
+		// the Kwil vote_epoch action verification (both expect the same format).
 		//
-		// Process:
-		// 1. Create raw 64-byte concatenation: epoch.RewardRoot || epoch.EndBlockHash
-		//    (equivalent to abi.encode(bytes32, bytes32) which just concatenates)
-		// 2. EthZeppelinSign applies "\x19Ethereum Signed Message:\n64" prefix
-		// 3. EthZeppelinSign then hashes with keccak256
-		// 4. EthZeppelinSign creates recoverable ECDSA signature (65 bytes: r,s,v)
+		// Process (matching validator_signer.go:308-319 and meta_extension.go computeEpochMessageHash):
+		// 1. ABI encode: packed = abi.encode(merkleRoot, blockHash)  [64 bytes]
+		// 2. Hash: messageHash = keccak256(packed)  [32 bytes]
+		// 3. Add prefix: "\x19Ethereum Signed Message:\n32" + messageHash
+		// 4. Hash again: ethSignedMessageHash = keccak256(prefix + messageHash)
+		// 5. Sign: ECDSA signature of ethSignedMessageHash
 		//
-		// This matches OpenZeppelin's ECDSA.toEthSignedMessageHash() behavior.
+		// NOTE: For bytes32 types, abi.encode() is just concatenation, but we MUST
+		// hash it before signing to match the expected format.
 
-		// Step 1: Create raw 64-byte message (not pre-hashed)
+		// Step 1: ABI encode (simple concatenation for bytes32 types)
 		message := make([]byte, 64)
 		copy(message[0:32], epoch.RewardRoot)
 		copy(message[32:64], epoch.EndBlockHash)
 
-		// Step 2-4: EthZeppelinSign handles prefixing, hashing, and signing
-		sig, err = utils.EthZeppelinSign(message, s.signerPk)
+		// Step 2: Hash the encoded message (CRITICAL: this was missing!)
+		messageHash := ethCrypto.Keccak256(message)
+
+		// Steps 3-5: EthZeppelinSign adds "\x19Ethereum Signed Message:\n32" prefix,
+		// hashes again, and signs (this matches OpenZeppelin's ECDSA.toEthSignedMessageHash)
+		sig, err = utils.EthZeppelinSign(messageHash, s.signerPk)
 		if err != nil {
 			return err
 		}

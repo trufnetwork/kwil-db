@@ -131,21 +131,25 @@ func TestDirectSignature(t *testing.T) {
 	merkleRoot := ethCommon.Hex2Bytes("9e37a3ed4da4b0a974c0ae853353946da4211d94782ade884f2264af02dfa800")
 	blockHash := ethCommon.Hex2Bytes("c15484750dce64508eb6f83027440dd8e6489eca8b841468f9618dae5ac0baa9")
 
-	// Create message matching TrufNetworkBridge format:
-	// keccak256(abi.encode(merkleRoot, blockHash))
+	// Step 1: ABI encode (concatenation for bytes32)
 	message := make([]byte, 64)
 	copy(message[0:32], merkleRoot)
 	copy(message[32:64], blockHash)
 
-	// Sign using standard Ethereum signature (matches OpenZeppelin ECDSA.recover)
-	sig, err := utils.EthZeppelinSign(message, pk)
+	// Step 2: Hash the encoded message (CRITICAL: matches validator_signer.go)
+	messageHash := ethCrypto.Keccak256(message)
+	require.Equal(t, 32, len(messageHash), "messageHash should be 32 bytes")
+
+	// Step 3: Sign the 32-byte hash (EthZeppelinSign adds prefix and signs)
+	sig, err := utils.EthZeppelinSign(messageHash, pk)
 	require.NoError(t, err)
 	require.Equal(t, 65, len(sig), "signature should be 65 bytes")
 
 	// Verify signature format
 	assert.True(t, sig[64] == 27 || sig[64] == 28, "V should be 27 or 28 for standard Ethereum signatures")
 
-	t.Logf("Signed message: %s", hex.EncodeToString(message))
+	t.Logf("Message (root||blockHash): %s", hex.EncodeToString(message))
+	t.Logf("MessageHash (keccak256): %s", hex.EncodeToString(messageHash))
 	t.Logf("Signature: %s", hex.EncodeToString(sig))
 	t.Logf("Signer address: %s", ethCrypto.PubkeyToAddress(pk.PublicKey).String())
 }
@@ -172,9 +176,11 @@ func TestSafeSignature(t *testing.T) {
 	t.Logf("Signer address: %s", ethCrypto.PubkeyToAddress(pk.PublicKey).String())
 }
 
-// TestMessageFormatMatching tests that our signing matches the contract expectation
+// TestMessageFormatMatching tests that our signing matches the contract and vote_epoch action expectation
 func TestMessageFormatMatching(t *testing.T) {
-	// This test validates that our message format matches what TrufNetworkBridge expects
+	// This test validates that our message format matches what both:
+	// 1. TrufNetworkBridge contract expects
+	// 2. Kwil vote_epoch action expects (via validator_signer.go computeEpochMessageHash)
 
 	// Example from your finalized epoch
 	merkleRoot := "9e37a3ed4da4b0a974c0ae853353946da4211d94782ade884f2264af02dfa800"
@@ -185,19 +191,28 @@ func TestMessageFormatMatching(t *testing.T) {
 	blockHashBytes, err := hex.DecodeString(blockHash)
 	require.NoError(t, err)
 
-	// Construct message same as TrufNetworkBridge: keccak256(abi.encode(root, blockHash))
-	message := make([]byte, 64)
-	copy(message[0:32], merkleRootBytes)
-	copy(message[32:64], blockHashBytes)
+	// Step 1: ABI encode (abi.encode(bytes32, bytes32) is just concatenation)
+	packed := make([]byte, 64)
+	copy(packed[0:32], merkleRootBytes)
+	copy(packed[32:64], blockHashBytes)
 
-	// Compute what the contract will hash
-	expectedDigest := ethCrypto.Keccak256(message)
+	// Step 2: Hash the packed data - THIS IS CRITICAL!
+	// This matches meta_extension.go computeEpochMessageHash() line ~1449
+	messageHash := ethCrypto.Keccak256(packed)
+	require.Equal(t, 32, len(messageHash), "messageHash should be 32 bytes")
 
 	t.Logf("Merkle root: 0x%s", merkleRoot)
 	t.Logf("Block hash: 0x%s", blockHash)
-	t.Logf("Message (root||blockHash): 0x%s", hex.EncodeToString(message))
-	t.Logf("Expected digest: 0x%s", hex.EncodeToString(expectedDigest))
-
-	// This digest will be wrapped with "\x19Ethereum Signed Message:\n32" prefix by EthZeppelinSign
-	// which matches OpenZeppelin's ECDSA.toEthSignedMessageHash()
+	t.Logf("Packed (abi.encode): 0x%s [64 bytes]", hex.EncodeToString(packed))
+	t.Logf("MessageHash (keccak256): 0x%s [32 bytes]", hex.EncodeToString(messageHash))
+	t.Logf("")
+	t.Logf("Next step: EthZeppelinSign will:")
+	t.Logf("  1. Add prefix: \\x19Ethereum Signed Message:\\n32")
+	t.Logf("  2. Hash again: keccak256(prefix + messageHash)")
+	t.Logf("  3. Sign the final hash")
+	t.Logf("")
+	t.Logf("This matches:")
+	t.Logf("  - validator_signer.go computeEpochMessageHash()")
+	t.Logf("  - TrufNetworkBridge.withdraw() verification")
+	t.Logf("  - vote_epoch action signature verification")
 }
