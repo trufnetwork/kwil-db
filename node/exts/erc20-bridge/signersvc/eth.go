@@ -57,36 +57,50 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
-	// Try to detect if this is a custodial bridge with Safe (RewardDistributor)
-	// or a non-custodial bridge without Safe (TrufNetworkBridge)
-	rd, err := abigen.NewRewardDistributor(common.HexToAddress(escrowAddr), client)
+	escrowAddress := common.HexToAddress(escrowAddr)
+
+	// STEP 1: Verify contract exists at the address
+	// This distinguishes "wrong address/network" (no code) from "method not found" (code exists)
+	code, err := client.CodeAt(context.Background(), escrowAddress, nil)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("check contract code: %w", err)
+	}
+	if len(code) == 0 {
+		client.Close()
+		return nil, fmt.Errorf("no contract code at address %s (wrong address or network?)", escrowAddr)
+	}
+
+	// STEP 2: Try to detect bridge type by calling Safe() method
+	// Custodial bridges (RewardDistributor) implement Safe() and return an address
+	// Non-custodial bridges (TrufNetworkBridge) don't implement Safe() and will revert
+	rd, err := abigen.NewRewardDistributor(escrowAddress, client)
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("bind to escrow contract: %w", err)
 	}
 
-	// Try to get Safe address - this will fail for non-custodial bridges
-	// that don't implement the Safe() method
 	safeAddr, err := rd.Safe(nil)
 	if err != nil {
 		client.Close()
-		// Distinguish "method not found" errors (indicating non-custodial bridge)
-		// from real RPC/contract errors (network failures, invalid responses, contract misconfigurations)
 		errStr := err.Error()
 
-		// Only treat explicit ABI method-not-found indicators as non-custodial
-		// Errors like "execution reverted" or "no contract code" indicate real issues
-		isMethodNotFound := strings.Contains(errStr, "abi: cannot locate method") ||
-			strings.Contains(errStr, "no method") ||
-			strings.Contains(errStr, "method not found")
-
-		if isMethodNotFound {
-			// Expected for non-custodial bridges (e.g., TrufNetworkBridge)
+		// Since we verified contract code exists, "execution reverted" likely means
+		// the Safe() method doesn't exist → non-custodial bridge
+		// Other errors (network timeout, RPC failure) are treated as real errors
+		if strings.Contains(errStr, "execution reverted") {
+			// Contract exists but Safe() reverted → likely non-custodial
 			return nil, ErrNonCustodialBridge
 		}
 
-		// Real error (network failure, contract misconfiguration, etc.) - propagate it
+		// Real error (network failure, RPC issue, etc.)
 		return nil, fmt.Errorf("get safe address: %w", err)
+	}
+
+	// Check if Safe address is zero address (some contracts might return 0x0 for "no safe")
+	if safeAddr == (common.Address{}) {
+		client.Close()
+		return nil, ErrNonCustodialBridge
 	}
 
 	// Custodial bridge (e.g., RewardDistributor) - initialize Safe
