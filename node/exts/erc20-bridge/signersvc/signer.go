@@ -69,24 +69,32 @@ func newBridgeSigner(kwil bridgeSignerClient, safe *Safe, target string, txSigne
 }
 
 // canSkip returns true if:
-// - signer is not one of the safe owners
-// - signer has voted this epoch with the same nonce as current safe nonce
+// - For Safe-based bridges: signer is not one of the safe owners OR already voted with current nonce
+// - For non-custodial bridges: already voted this epoch
 func (s *bridgeSigner) canSkip(epoch *Epoch, safeMeta *safeMetadata) bool {
-	if !slices.Contains(safeMeta.owners, s.signerAddr) {
-		s.logger.Info("skip voting epoch: signer is not safe owner", "id", epoch.ID.String(),
-			"signer", s.signerAddr.String(), "owners", safeMeta.owners)
-		return true
+	// For Safe-based bridges, check Safe ownership
+	if safeMeta != nil {
+		if !slices.Contains(safeMeta.owners, s.signerAddr) {
+			s.logger.Info("skip voting epoch: signer is not safe owner", "id", epoch.ID.String(),
+				"signer", s.signerAddr.String(), "owners", safeMeta.owners)
+			return true
+		}
 	}
 
 	if epoch.Voters == nil {
 		return false
 	}
 
+	// Check if already voted
 	for i, voter := range epoch.Voters {
-		if voter == s.signerAddr.String() &&
-			safeMeta.nonce.Cmp(big.NewInt(epoch.VoteNonces[i])) == 0 {
-			s.logger.Info("skip voting epoch: already voted", "id", epoch.ID.String(), "nonce", safeMeta.nonce)
-			return true
+		if voter == s.signerAddr.String() {
+			// For Safe-based: check nonce match
+			// For non-custodial: any vote means skip (nonce is always 0)
+			if safeMeta == nil || safeMeta.nonce.Cmp(big.NewInt(epoch.VoteNonces[i])) == 0 {
+				s.logger.Info("skip voting epoch: already voted", "id", epoch.ID.String(),
+					"nonce", epoch.VoteNonces[i], "hasSafe", safeMeta != nil)
+				return true
+			}
 		}
 	}
 
@@ -133,26 +141,57 @@ func (s *bridgeSigner) verify(ctx context.Context, epoch *Epoch, escrowAddr stri
 }
 
 // vote votes an epoch reward, and updates the state.
-// It will first fetch metadata from ETH, then generate the safeTx, then vote.
+// For Safe-based bridges: generates GnosisSafe transaction and signs it
+// For non-custodial bridges: signs merkle root + block hash directly
 func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMetadata, total *big.Int) error {
-	safeTxData, err := utils.GenPostRewardTxData(epoch.RewardRoot, total)
-	if err != nil {
-		return err
+	var sig []byte
+	var nonce int64
+	var err error
+
+	if s.safe != nil && safeMeta != nil {
+		// Safe-based bridge (custodial) - use GnosisSafe transaction signing
+		safeTxData, err := utils.GenPostRewardTxData(epoch.RewardRoot, total)
+		if err != nil {
+			return err
+		}
+
+		// safeTxHash is the data that all signers will be signing(using personal_sign)
+		_, safeTxHash, err := utils.GenGnosisSafeTx(s.escrowAddr.String(), s.safe.addr.String(),
+			0, safeTxData, s.safe.chainID.Int64(), safeMeta.nonce.Int64())
+		if err != nil {
+			return err
+		}
+
+		sig, err = utils.EthGnosisSign(safeTxHash, s.signerPk)
+		if err != nil {
+			return err
+		}
+
+		nonce = safeMeta.nonce.Int64()
+		s.logger.Info("signed epoch with Safe", "id", epoch.ID.String(), "nonce", nonce)
+	} else {
+		// Non-custodial bridge - sign merkle root + block hash directly
+		// This matches TrufNetworkBridge.withdraw() signature verification:
+		// messageHash = _hash(root, kwilBlockHash).toEthSignedMessageHash()
+		// where _hash(v0, v1) = keccak256(abi.encode(v0, v1))
+
+		// Create message: keccak256(abi.encode(merkleRoot, blockHash))
+		message := make([]byte, 64)
+		copy(message[0:32], epoch.RewardRoot)
+		copy(message[32:64], epoch.EndBlockHash)
+
+		sig, err = utils.EthZeppelinSign(message, s.signerPk)
+		if err != nil {
+			return err
+		}
+
+		nonce = 0 // Non-custodial bridges don't use nonce
+		s.logger.Info("signed epoch directly (non-custodial)", "id", epoch.ID.String(),
+			"root", hex.EncodeToString(epoch.RewardRoot),
+			"blockHash", hex.EncodeToString(epoch.EndBlockHash))
 	}
 
-	// safeTxHash is the data that all signers will be signing(using personal_sign)
-	_, safeTxHash, err := utils.GenGnosisSafeTx(s.escrowAddr.String(), s.safe.addr.String(),
-		0, safeTxData, s.safe.chainID.Int64(), safeMeta.nonce.Int64())
-	if err != nil {
-		return err
-	}
-
-	sig, err := utils.EthGnosisSign(safeTxHash, s.signerPk)
-	if err != nil {
-		return err
-	}
-
-	h, err := s.kwil.VoteEpoch(ctx, s.target, s.txSigner, epoch.ID, safeMeta.nonce.Int64(), sig)
+	h, err := s.kwil.VoteEpoch(ctx, s.target, s.txSigner, epoch.ID, nonce, sig)
 	if err != nil {
 		return err
 	}
@@ -163,14 +202,13 @@ func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMet
 		Epoch:      epoch.ID.String(),
 		RewardRoot: epoch.RewardRoot,
 		TxHash:     h.String(),
-		SafeNonce:  safeMeta.nonce.Uint64(),
+		SafeNonce:  uint64(nonce),
 	})
 	if err != nil {
 		return err
 	}
 
-	s.logger.Info("vote epoch", "tx", h, "id", epoch.ID.String(),
-		"nonce", safeMeta.nonce.Int64())
+	s.logger.Info("vote epoch", "tx", h, "id", epoch.ID.String(), "nonce", nonce)
 
 	return nil
 }
@@ -207,10 +245,14 @@ func (s *bridgeSigner) sync(ctx context.Context) {
 
 	finalizedEpoch := epochs[0]
 
-	safeMeta, err := s.safe.latestMetadata(ctx)
-	if err != nil {
-		s.logger.Warn("fetch safe metadata", "error", err.Error())
-		return
+	// Fetch Safe metadata only if this is a Safe-based bridge
+	var safeMeta *safeMetadata
+	if s.safe != nil {
+		safeMeta, err = s.safe.latestMetadata(ctx)
+		if err != nil {
+			s.logger.Warn("fetch safe metadata", "error", err.Error())
+			return
+		}
 	}
 
 	if s.canSkip(finalizedEpoch, safeMeta) {
@@ -276,6 +318,8 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 			return nil, fmt.Errorf("get reward metadata failed: %w", err)
 		}
 
+		logger.Debug("initializing bridge signer", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
+
 		chainRpc, ok := cfg.RPC[strings.ToLower(instanceInfo.Chain)]
 		if !ok {
 			return nil, fmt.Errorf("target '%s' chain '%s' not found in erc20_bridge.rpc config", target, instanceInfo.Chain)
@@ -283,16 +327,25 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 
 		safe, err := NewSafeFromEscrow(chainRpc, instanceInfo.Escrow)
 		if err != nil {
+			logger.Debug("safe initialization failed", "target", target, "chain", instanceInfo.Chain, "error", err.Error())
 			return nil, fmt.Errorf("create safe failed: %w", err)
 		}
 
-		chainInfo, ok := chains.GetChainInfo(chains.Chain(instanceInfo.Chain))
-		if !ok {
-			return nil, fmt.Errorf("chainID %s not supported", safe.chainID.String())
-		}
+		// Validate chainID if Safe is present (custodial bridge)
+		if safe != nil {
+			logger.Info("custodial bridge detected (Safe-based)", "target", target, "chain", instanceInfo.Chain, "safe_addr", safe.addr.String())
 
-		if safe.chainID.String() != chainInfo.ID {
-			return nil, fmt.Errorf("chainID mismatch: configured %s != target %s", safe.chainID.String(), chainInfo.ID)
+			chainInfo, ok := chains.GetChainInfo(chains.Chain(instanceInfo.Chain))
+			if !ok {
+				return nil, fmt.Errorf("chainID %s not supported", safe.chainID.String())
+			}
+
+			if safe.chainID.String() != chainInfo.ID {
+				return nil, fmt.Errorf("chainID mismatch: configured %s != target %s", safe.chainID.String(), chainInfo.ID)
+			}
+		} else {
+			// Non-custodial bridge (e.g., TrufNetworkBridge)
+			logger.Info("non-custodial bridge detected (direct signing)", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
 		}
 
 		// wilRpc, target, chainRpc, strings.TrimSpace(string(pkBytes))
@@ -356,7 +409,9 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 			break
 		}
 
-		m.logger.Warn("failed to initialize erc20 bridge signer, will retry", "error", err.Error())
+		// Log at debug level - this is expected for non-custodial bridges (e.g., Hoodi)
+		// that don't use GnosisSafe. The code currently only supports Safe-based voting.
+		m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer))
 		select {
 		case <-time.After(time.Second * 30):
 		case <-ctx.Done():

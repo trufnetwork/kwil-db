@@ -37,27 +37,36 @@ type Safe struct {
 	eth     *ethclient.Client
 }
 
+// NewSafeFromEscrow attempts to initialize a Safe from an escrow contract.
+// Returns nil Safe for non-custodial bridges (e.g., TrufNetworkBridge) that don't use GnosisSafe.
+// Returns populated Safe for custodial bridges (e.g., RewardDistributor) that use GnosisSafe.
 func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 	client, err := ethclient.Dial(rpc)
 	if err != nil {
-		return nil, fmt.Errorf("create eth cliet: %w", err)
+		return nil, fmt.Errorf("create eth client: %w", err)
 	}
 
 	chainID, err := client.ChainID(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("create eth chainID: %w", err)
+		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
+	// Try to detect if this is a custodial bridge with Safe (RewardDistributor)
+	// or a non-custodial bridge without Safe (TrufNetworkBridge)
 	rd, err := abigen.NewRewardDistributor(common.HexToAddress(escrowAddr), client)
 	if err != nil {
-		return nil, fmt.Errorf("create reward distributor: %w", err)
+		return nil, fmt.Errorf("bind to escrow contract: %w", err)
 	}
 
+	// Try to get Safe address - this will fail for non-custodial bridges
 	safeAddr, err := rd.Safe(nil)
 	if err != nil {
-		return nil, fmt.Errorf("get safe address: %w", err)
+		// Non-custodial bridge (e.g., TrufNetworkBridge) - no Safe needed
+		// Return nil Safe to indicate direct signing should be used
+		return nil, nil
 	}
 
+	// Custodial bridge (e.g., RewardDistributor) - initialize Safe
 	safe, err := abigen.NewSafe(safeAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("create safe: %w", err)
