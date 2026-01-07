@@ -122,16 +122,18 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 func NewSafe(rpc string, addr string) (*Safe, error) {
 	client, err := ethclient.Dial(rpc)
 	if err != nil {
-		return nil, fmt.Errorf("create eth cliet: %w", err)
+		return nil, fmt.Errorf("create eth client: %w", err)
 	}
 
 	chainID, err := client.ChainID(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("create eth chainID: %w", err)
+		client.Close()
+		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
 	safe, err := abigen.NewSafe(common.HexToAddress(addr), client)
 	if err != nil {
+		client.Close()
 		return nil, fmt.Errorf("create safe: %w", err)
 	}
 
