@@ -2,6 +2,7 @@ package signersvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -20,6 +21,10 @@ var (
 	nonceCallData     = lo.Must(safeABI.Pack("nonce"))        // nonce()
 	thresholdCallData = lo.Must(safeABI.Pack("getThreshold")) // getThreshold()
 	ownersCallData    = lo.Must(safeABI.Pack("getOwners"))    // getOwners()
+
+	// ErrNonCustodialBridge indicates the contract is a non-custodial bridge
+	// that does not use GnosisSafe (e.g., TrufNetworkBridge).
+	ErrNonCustodialBridge = errors.New("non-custodial bridge detected")
 )
 
 type safeMetadata struct {
@@ -38,7 +43,7 @@ type Safe struct {
 }
 
 // NewSafeFromEscrow attempts to initialize a Safe from an escrow contract.
-// Returns nil Safe for non-custodial bridges (e.g., TrufNetworkBridge) that don't use GnosisSafe.
+// Returns ErrNonCustodialBridge for non-custodial bridges (e.g., TrufNetworkBridge) that don't use GnosisSafe.
 // Returns populated Safe for custodial bridges (e.g., RewardDistributor) that use GnosisSafe.
 func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 	client, err := ethclient.Dial(rpc)
@@ -48,6 +53,7 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 
 	chainID, err := client.ChainID(context.Background())
 	if err != nil {
+		client.Close()
 		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
@@ -55,20 +61,39 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 	// or a non-custodial bridge without Safe (TrufNetworkBridge)
 	rd, err := abigen.NewRewardDistributor(common.HexToAddress(escrowAddr), client)
 	if err != nil {
+		client.Close()
 		return nil, fmt.Errorf("bind to escrow contract: %w", err)
 	}
 
 	// Try to get Safe address - this will fail for non-custodial bridges
+	// that don't implement the Safe() method
 	safeAddr, err := rd.Safe(nil)
 	if err != nil {
-		// Non-custodial bridge (e.g., TrufNetworkBridge) - no Safe needed
-		// Return nil Safe to indicate direct signing should be used
-		return nil, nil
+		client.Close()
+		// Distinguish "method not found" errors (indicating non-custodial bridge)
+		// from real RPC/contract errors (network failures, invalid responses)
+		errStr := err.Error()
+
+		// Check for ABI method-not-found indicators
+		isMethodNotFound := strings.Contains(errStr, "abi: cannot locate method") ||
+			strings.Contains(errStr, "no method") ||
+			strings.Contains(errStr, "method not found") ||
+			strings.Contains(errStr, "execution reverted") ||
+			strings.Contains(errStr, "no contract code at given address")
+
+		if isMethodNotFound {
+			// Expected for non-custodial bridges (e.g., TrufNetworkBridge)
+			return nil, ErrNonCustodialBridge
+		}
+
+		// Real error (network failure, invalid response, etc.) - propagate it
+		return nil, fmt.Errorf("get safe address: %w", err)
 	}
 
 	// Custodial bridge (e.g., RewardDistributor) - initialize Safe
 	safe, err := abigen.NewSafe(safeAddr, client)
 	if err != nil {
+		client.Close()
 		return nil, fmt.Errorf("create safe: %w", err)
 	}
 

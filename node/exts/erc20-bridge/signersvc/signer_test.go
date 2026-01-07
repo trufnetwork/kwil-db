@@ -1,7 +1,6 @@
 package signersvc
 
 import (
-	"crypto/ecdsa"
 	"encoding/hex"
 	"math/big"
 	"testing"
@@ -202,12 +201,3 @@ func TestMessageFormatMatching(t *testing.T) {
 	// This digest will be wrapped with "\x19Ethereum Signed Message:\n32" prefix by EthZeppelinSign
 	// which matches OpenZeppelin's ECDSA.toEthSignedMessageHash()
 }
-
-// Helper function to create a test private key
-func testPrivateKey(t *testing.T) *ecdsa.PrivateKey {
-	// Use a fixed seed for reproducible tests
-	pk, err := ethCrypto.HexToECDSA("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
-	require.NoError(t, err)
-	return pk
-}
-

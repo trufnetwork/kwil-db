@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -148,8 +149,12 @@ func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMet
 	var nonce int64
 	var err error
 
-	if s.safe != nil && safeMeta != nil {
+	if s.safe != nil {
 		// Safe-based bridge (custodial) - use GnosisSafe transaction signing
+		if safeMeta == nil {
+			return fmt.Errorf("safe metadata required for custodial bridge")
+		}
+
 		safeTxData, err := utils.GenPostRewardTxData(epoch.RewardRoot, total)
 		if err != nil {
 			return err
@@ -171,15 +176,26 @@ func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMet
 		s.logger.Info("signed epoch with Safe", "id", epoch.ID.String(), "nonce", nonce)
 	} else {
 		// Non-custodial bridge - sign merkle root + block hash directly
-		// This matches TrufNetworkBridge.withdraw() signature verification:
-		// messageHash = _hash(root, kwilBlockHash).toEthSignedMessageHash()
-		// where _hash(v0, v1) = keccak256(abi.encode(v0, v1))
+		//
+		// This matches TrufNetworkBridge.withdraw() signature verification where:
+		//   messageHash = _hash(root, kwilBlockHash).toEthSignedMessageHash()
+		//   where _hash(v0, v1) = keccak256(abi.encode(v0, v1))
+		//
+		// Process:
+		// 1. Create raw 64-byte concatenation: epoch.RewardRoot || epoch.EndBlockHash
+		//    (equivalent to abi.encode(bytes32, bytes32) which just concatenates)
+		// 2. EthZeppelinSign applies "\x19Ethereum Signed Message:\n64" prefix
+		// 3. EthZeppelinSign then hashes with keccak256
+		// 4. EthZeppelinSign creates recoverable ECDSA signature (65 bytes: r,s,v)
+		//
+		// This matches OpenZeppelin's ECDSA.toEthSignedMessageHash() behavior.
 
-		// Create message: keccak256(abi.encode(merkleRoot, blockHash))
+		// Step 1: Create raw 64-byte message (not pre-hashed)
 		message := make([]byte, 64)
 		copy(message[0:32], epoch.RewardRoot)
 		copy(message[32:64], epoch.EndBlockHash)
 
+		// Step 2-4: EthZeppelinSign handles prefixing, hashing, and signing
 		sig, err = utils.EthZeppelinSign(message, s.signerPk)
 		if err != nil {
 			return err
@@ -327,8 +343,15 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 
 		safe, err := NewSafeFromEscrow(chainRpc, instanceInfo.Escrow)
 		if err != nil {
-			logger.Debug("safe initialization failed", "target", target, "chain", instanceInfo.Chain, "error", err.Error())
-			return nil, fmt.Errorf("create safe failed: %w", err)
+			// Check if this is a non-custodial bridge (expected for TrufNetworkBridge)
+			if errors.Is(err, ErrNonCustodialBridge) {
+				logger.Info("non-custodial bridge detected (direct signing)", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
+				safe = nil
+			} else {
+				// Real error (network failure, invalid config, etc.)
+				logger.Debug("safe initialization failed", "target", target, "chain", instanceInfo.Chain, "error", err.Error())
+				return nil, fmt.Errorf("create safe failed: %w", err)
+			}
 		}
 
 		// Validate chainID if Safe is present (custodial bridge)
@@ -337,15 +360,12 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 
 			chainInfo, ok := chains.GetChainInfo(chains.Chain(instanceInfo.Chain))
 			if !ok {
-				return nil, fmt.Errorf("chainID %s not supported", safe.chainID.String())
+				return nil, fmt.Errorf("chain '%s' not found in supported chains (detected chainID: %s)", instanceInfo.Chain, safe.chainID.String())
 			}
 
 			if safe.chainID.String() != chainInfo.ID {
 				return nil, fmt.Errorf("chainID mismatch: configured %s != target %s", safe.chainID.String(), chainInfo.ID)
 			}
-		} else {
-			// Non-custodial bridge (e.g., TrufNetworkBridge)
-			logger.Info("non-custodial bridge detected (direct signing)", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
 		}
 
 		// wilRpc, target, chainRpc, strings.TrimSpace(string(pkBytes))
@@ -409,8 +429,9 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 			break
 		}
 
-		// Log at debug level - this is expected for non-custodial bridges (e.g., Hoodi)
-		// that don't use GnosisSafe. The code currently only supports Safe-based voting.
+		// Log at debug level - initialization may fail during startup when bridge instances
+		// are not yet registered, or when Safe metadata is temporarily unavailable.
+		// The implementation supports both Safe-based (custodial) and non-custodial bridges.
 		m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer))
 		select {
 		case <-time.After(time.Second * 30):
