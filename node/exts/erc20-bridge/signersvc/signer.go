@@ -294,7 +294,7 @@ func (s *bridgeSigner) sync(ctx context.Context) {
 }
 
 // getSigners verifies config and returns a list of signerSvc.
-func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *State, logger log.Logger) ([]*bridgeSigner, error) {
+func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *State, rootDir string, logger log.Logger) ([]*bridgeSigner, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -303,7 +303,12 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 
 	signers := make([]*bridgeSigner, 0, len(cfg.Signer))
 	for target, pkPath := range cfg.Signer {
-		// pkPath is validated already
+		// Auto-detect validator key if not configured or "validator" keyword is used
+		// This is the default behavior - most validators sign with their validator key
+		if pkPath == "" || pkPath == "validator" {
+			pkPath = filepath.Join(rootDir, "nodekey.json")
+			logger.Info("using validator key for bridge signer", "target", target, "path", pkPath)
+		}
 
 		// parse signer private key
 		rawPkBytes, err := os.ReadFile(pkPath)
@@ -414,6 +419,7 @@ type ServiceMgr struct {
 	bridgeCfg    config.ERC20BridgeConfig
 	syncInterval time.Duration
 	logger       log.Logger
+	rootDir      string // node's root directory for auto-detecting validator key
 }
 
 func NewServiceMgr(
@@ -424,9 +430,11 @@ func NewServiceMgr(
 	nodeApp nodeApp,
 	cfg config.ERC20BridgeConfig,
 	state *State,
+	rootDir string,
 	logger log.Logger) *ServiceMgr {
 	return &ServiceMgr{
 		kwil:         NewSignerClient(chainID, db, call, bcast, nodeApp),
+		rootDir:      rootDir,
 		state:        state,
 		bridgeCfg:    cfg,
 		logger:       logger,
@@ -452,7 +460,7 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 		default:
 		}
 
-		signers, err = getSigners(m.bridgeCfg, m.kwil, m.state, m.logger)
+		signers, err = getSigners(m.bridgeCfg, m.kwil, m.state, m.rootDir, m.logger)
 		if err == nil {
 			break
 		}
