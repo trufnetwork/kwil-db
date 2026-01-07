@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -311,9 +312,31 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 		}
 
 		pkStr := strings.TrimSpace(string(rawPkBytes))
-		pkBytes, err := hex.DecodeString(pkStr)
-		if err != nil {
-			return nil, fmt.Errorf("parse erc20 bridge signer private key failed: %w", err)
+
+		// Try parsing as JSON first (nodekey.json format: {"key":"...", "type":"secp256k1"})
+		var pkBytes []byte
+		if strings.HasPrefix(pkStr, "{") {
+			var nodeKey struct {
+				Key  string `json:"key"`
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(pkStr), &nodeKey); err == nil && nodeKey.Key != "" {
+				// Successfully parsed JSON - use the key field
+				pkBytes, err = hex.DecodeString(nodeKey.Key)
+				if err != nil {
+					return nil, fmt.Errorf("parse erc20 bridge signer private key from JSON failed: %w", err)
+				}
+				logger.Debug("loaded private key from JSON format", "target", target, "type", nodeKey.Type)
+			} else {
+				return nil, fmt.Errorf("parse erc20 bridge signer private key JSON failed: %w", err)
+			}
+		} else {
+			// Not JSON - treat as raw hex
+			pkBytes, err = hex.DecodeString(pkStr)
+			if err != nil {
+				return nil, fmt.Errorf("parse erc20 bridge signer private key failed: %w", err)
+			}
+			logger.Debug("loaded private key from raw hex format", "target", target)
 		}
 
 		signerPk, err := ethCrypto.ToECDSA(pkBytes)
