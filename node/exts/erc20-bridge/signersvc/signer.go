@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -19,6 +21,7 @@ import (
 
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto"
@@ -26,6 +29,13 @@ import (
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+)
+
+const (
+	// maxInitRetries is the maximum number of times to retry initialization
+	// before failing. This prevents indefinite retries on persistent configuration errors.
+	// At 30s intervals, 100 retries = 50 minutes of retry attempts.
+	maxInitRetries = 100
 )
 
 // StateFilePath returns the state file.
@@ -69,24 +79,32 @@ func newBridgeSigner(kwil bridgeSignerClient, safe *Safe, target string, txSigne
 }
 
 // canSkip returns true if:
-// - signer is not one of the safe owners
-// - signer has voted this epoch with the same nonce as current safe nonce
+// - For Safe-based bridges: signer is not one of the safe owners OR already voted with current nonce
+// - For non-custodial bridges: already voted this epoch
 func (s *bridgeSigner) canSkip(epoch *Epoch, safeMeta *safeMetadata) bool {
-	if !slices.Contains(safeMeta.owners, s.signerAddr) {
-		s.logger.Info("skip voting epoch: signer is not safe owner", "id", epoch.ID.String(),
-			"signer", s.signerAddr.String(), "owners", safeMeta.owners)
-		return true
+	// For Safe-based bridges, check Safe ownership
+	if safeMeta != nil {
+		if !slices.Contains(safeMeta.owners, s.signerAddr) {
+			s.logger.Info("skip voting epoch: signer is not safe owner", "id", epoch.ID.String(),
+				"signer", s.signerAddr.String(), "owners", safeMeta.owners)
+			return true
+		}
 	}
 
 	if epoch.Voters == nil {
 		return false
 	}
 
+	// Check if already voted
 	for i, voter := range epoch.Voters {
-		if voter == s.signerAddr.String() &&
-			safeMeta.nonce.Cmp(big.NewInt(epoch.VoteNonces[i])) == 0 {
-			s.logger.Info("skip voting epoch: already voted", "id", epoch.ID.String(), "nonce", safeMeta.nonce)
-			return true
+		if voter == s.signerAddr.String() {
+			// For Safe-based: check nonce match
+			// For non-custodial: any vote means skip (nonce is always 0)
+			if safeMeta == nil || safeMeta.nonce.Cmp(big.NewInt(epoch.VoteNonces[i])) == 0 {
+				s.logger.Info("skip voting epoch: already voted", "id", epoch.ID.String(),
+					"nonce", epoch.VoteNonces[i], "hasSafe", safeMeta != nil)
+				return true
+			}
 		}
 	}
 
@@ -133,26 +151,76 @@ func (s *bridgeSigner) verify(ctx context.Context, epoch *Epoch, escrowAddr stri
 }
 
 // vote votes an epoch reward, and updates the state.
-// It will first fetch metadata from ETH, then generate the safeTx, then vote.
+// For Safe-based bridges: generates GnosisSafe transaction and signs it
+// For non-custodial bridges: signs merkle root + block hash directly
 func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMetadata, total *big.Int) error {
-	safeTxData, err := utils.GenPostRewardTxData(epoch.RewardRoot, total)
-	if err != nil {
-		return err
+	var sig []byte
+	var nonce int64
+	var err error
+
+	if s.safe != nil {
+		// Safe-based bridge (custodial) - use GnosisSafe transaction signing
+		if safeMeta == nil {
+			return fmt.Errorf("safe metadata required for custodial bridge")
+		}
+
+		safeTxData, err := utils.GenPostRewardTxData(epoch.RewardRoot, total)
+		if err != nil {
+			return err
+		}
+
+		// safeTxHash is the data that all signers will be signing(using personal_sign)
+		_, safeTxHash, err := utils.GenGnosisSafeTx(s.escrowAddr.String(), s.safe.addr.String(),
+			0, safeTxData, s.safe.chainID.Int64(), safeMeta.nonce.Int64())
+		if err != nil {
+			return err
+		}
+
+		sig, err = utils.EthGnosisSign(safeTxHash, s.signerPk)
+		if err != nil {
+			return err
+		}
+
+		nonce = safeMeta.nonce.Int64()
+		s.logger.Info("signed epoch with Safe", "id", epoch.ID.String(), "nonce", nonce)
+	} else {
+		// Non-custodial bridge - sign merkle root + block hash directly
+		//
+		// This matches TrufNetworkBridge.withdraw() signature verification AND
+		// the Kwil vote_epoch action verification (both expect the same format).
+		//
+		// Process (matching validator_signer.go:308-319 and meta_extension.go computeEpochMessageHash):
+		// 1. ABI encode: packed = abi.encode(merkleRoot, blockHash)  [64 bytes]
+		// 2. Hash: messageHash = keccak256(packed)  [32 bytes]
+		// 3. Add prefix: "\x19Ethereum Signed Message:\n32" + messageHash
+		// 4. Hash again: ethSignedMessageHash = keccak256(prefix + messageHash)
+		// 5. Sign: ECDSA signature of ethSignedMessageHash
+		//
+		// NOTE: For bytes32 types, abi.encode() is just concatenation, but we MUST
+		// hash it before signing to match the expected format.
+
+		// Step 1: ABI encode (simple concatenation for bytes32 types)
+		message := make([]byte, 64)
+		copy(message[0:32], epoch.RewardRoot)
+		copy(message[32:64], epoch.EndBlockHash)
+
+		// Step 2: Hash the encoded message (CRITICAL: this was missing!)
+		messageHash := ethCrypto.Keccak256(message)
+
+		// Steps 3-5: EthZeppelinSign adds "\x19Ethereum Signed Message:\n32" prefix,
+		// hashes again, and signs (this matches OpenZeppelin's ECDSA.toEthSignedMessageHash)
+		sig, err = utils.EthZeppelinSign(messageHash, s.signerPk)
+		if err != nil {
+			return err
+		}
+
+		nonce = 0 // Non-custodial bridges don't use nonce
+		s.logger.Info("signed epoch directly (non-custodial)", "id", epoch.ID.String(),
+			"root", hex.EncodeToString(epoch.RewardRoot),
+			"blockHash", hex.EncodeToString(epoch.EndBlockHash))
 	}
 
-	// safeTxHash is the data that all signers will be signing(using personal_sign)
-	_, safeTxHash, err := utils.GenGnosisSafeTx(s.escrowAddr.String(), s.safe.addr.String(),
-		0, safeTxData, s.safe.chainID.Int64(), safeMeta.nonce.Int64())
-	if err != nil {
-		return err
-	}
-
-	sig, err := utils.EthGnosisSign(safeTxHash, s.signerPk)
-	if err != nil {
-		return err
-	}
-
-	h, err := s.kwil.VoteEpoch(ctx, s.target, s.txSigner, epoch.ID, safeMeta.nonce.Int64(), sig)
+	h, err := s.kwil.VoteEpoch(ctx, s.target, s.txSigner, epoch.ID, nonce, sig)
 	if err != nil {
 		return err
 	}
@@ -163,14 +231,13 @@ func (s *bridgeSigner) vote(ctx context.Context, epoch *Epoch, safeMeta *safeMet
 		Epoch:      epoch.ID.String(),
 		RewardRoot: epoch.RewardRoot,
 		TxHash:     h.String(),
-		SafeNonce:  safeMeta.nonce.Uint64(),
+		SafeNonce:  uint64(nonce),
 	})
 	if err != nil {
 		return err
 	}
 
-	s.logger.Info("vote epoch", "tx", h, "id", epoch.ID.String(),
-		"nonce", safeMeta.nonce.Int64())
+	s.logger.Info("vote epoch", "tx", h, "id", epoch.ID.String(), "nonce", nonce)
 
 	return nil
 }
@@ -207,10 +274,14 @@ func (s *bridgeSigner) sync(ctx context.Context) {
 
 	finalizedEpoch := epochs[0]
 
-	safeMeta, err := s.safe.latestMetadata(ctx)
-	if err != nil {
-		s.logger.Warn("fetch safe metadata", "error", err.Error())
-		return
+	// Fetch Safe metadata only if this is a Safe-based bridge
+	var safeMeta *safeMetadata
+	if s.safe != nil {
+		safeMeta, err = s.safe.latestMetadata(ctx)
+		if err != nil {
+			s.logger.Warn("fetch safe metadata", "error", err.Error())
+			return
+		}
 	}
 
 	if s.canSkip(finalizedEpoch, safeMeta) {
@@ -231,7 +302,7 @@ func (s *bridgeSigner) sync(ctx context.Context) {
 }
 
 // getSigners verifies config and returns a list of signerSvc.
-func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *State, logger log.Logger) ([]*bridgeSigner, error) {
+func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *State, rootDir string, logger log.Logger) ([]*bridgeSigner, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -240,7 +311,12 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 
 	signers := make([]*bridgeSigner, 0, len(cfg.Signer))
 	for target, pkPath := range cfg.Signer {
-		// pkPath is validated already
+		// Auto-detect validator key if not configured or "validator" keyword is used
+		// This is the default behavior - most validators sign with their validator key
+		if pkPath == "" || pkPath == "validator" {
+			pkPath = config.NodeKeyFilePath(rootDir)
+			logger.Info("using validator key for bridge signer", "target", target, "path", pkPath)
+		}
 
 		// parse signer private key
 		rawPkBytes, err := os.ReadFile(pkPath)
@@ -249,9 +325,36 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 		}
 
 		pkStr := strings.TrimSpace(string(rawPkBytes))
-		pkBytes, err := hex.DecodeString(pkStr)
-		if err != nil {
-			return nil, fmt.Errorf("parse erc20 bridge signer private key failed: %w", err)
+
+		// Try parsing as JSON first (nodekey.json format: {"key":"...", "type":"secp256k1"})
+		var pkBytes []byte
+		if strings.HasPrefix(pkStr, "{") {
+			var nodeKey struct {
+				Key  string `json:"key"`
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(pkStr), &nodeKey); err == nil && nodeKey.Key != "" {
+				// Validate key type
+				if nodeKey.Type != "" && nodeKey.Type != "secp256k1" {
+					return nil, fmt.Errorf("unsupported key type '%s' (expected 'secp256k1') in %s", nodeKey.Type, pkPath)
+				}
+
+				// Successfully parsed JSON - use the key field
+				pkBytes, err = hex.DecodeString(nodeKey.Key)
+				if err != nil {
+					return nil, fmt.Errorf("parse erc20 bridge signer private key from JSON failed: %w", err)
+				}
+				logger.Debug("loaded private key from JSON format", "target", target, "type", nodeKey.Type)
+			} else {
+				return nil, fmt.Errorf("parse erc20 bridge signer private key JSON failed: %w", err)
+			}
+		} else {
+			// Not JSON - treat as raw hex
+			pkBytes, err = hex.DecodeString(pkStr)
+			if err != nil {
+				return nil, fmt.Errorf("parse erc20 bridge signer private key failed: %w", err)
+			}
+			logger.Debug("loaded private key from raw hex format", "target", target)
 		}
 
 		signerPk, err := ethCrypto.ToECDSA(pkBytes)
@@ -276,6 +379,8 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 			return nil, fmt.Errorf("get reward metadata failed: %w", err)
 		}
 
+		logger.Debug("initializing bridge signer", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
+
 		chainRpc, ok := cfg.RPC[strings.ToLower(instanceInfo.Chain)]
 		if !ok {
 			return nil, fmt.Errorf("target '%s' chain '%s' not found in erc20_bridge.rpc config", target, instanceInfo.Chain)
@@ -283,16 +388,50 @@ func getSigners(cfg config.ERC20BridgeConfig, kwil bridgeSignerClient, state *St
 
 		safe, err := NewSafeFromEscrow(chainRpc, instanceInfo.Escrow)
 		if err != nil {
-			return nil, fmt.Errorf("create safe failed: %w", err)
+			// Check if this is a non-custodial bridge (expected for TrufNetworkBridge)
+			if errors.Is(err, ErrNonCustodialBridge) {
+				safe = nil
+			} else {
+				// Real error (network failure, invalid config, etc.)
+				logger.Debug("safe initialization failed", "target", target, "chain", instanceInfo.Chain, "error", err.Error())
+				return nil, fmt.Errorf("create safe failed: %w", err)
+			}
 		}
 
+		// Validate chainID matches configuration (for both custodial and non-custodial bridges)
 		chainInfo, ok := chains.GetChainInfo(chains.Chain(instanceInfo.Chain))
 		if !ok {
-			return nil, fmt.Errorf("chainID %s not supported", safe.chainID.String())
+			if safe != nil {
+				return nil, fmt.Errorf("chain '%s' not found in supported chains (detected chainID: %s)", instanceInfo.Chain, safe.chainID.String())
+			}
+			return nil, fmt.Errorf("chain '%s' not found in supported chains", instanceInfo.Chain)
 		}
 
-		if safe.chainID.String() != chainInfo.ID {
-			return nil, fmt.Errorf("chainID mismatch: configured %s != target %s", safe.chainID.String(), chainInfo.ID)
+		if safe != nil {
+			// Custodial bridge - validate Safe's chainID
+			logger.Info("custodial bridge detected (Safe-based)", "target", target, "chain", instanceInfo.Chain, "safe_addr", safe.addr.String())
+
+			if safe.chainID.String() != chainInfo.ID {
+				return nil, fmt.Errorf("chainID mismatch: configured %s != target %s", safe.chainID.String(), chainInfo.ID)
+			}
+		} else {
+			// Non-custodial bridge - validate RPC chainID to catch configuration errors early
+			logger.Info("non-custodial bridge detected (direct signing)", "target", target, "chain", instanceInfo.Chain, "escrow", instanceInfo.Escrow)
+
+			// Connect to RPC to verify chainID matches configuration
+			client, err := ethclient.Dial(chainRpc)
+			if err != nil {
+				return nil, fmt.Errorf("verify chain RPC for %s: %w", instanceInfo.Chain, err)
+			}
+			rpcChainID, err := client.ChainID(context.Background())
+			client.Close()
+			if err != nil {
+				return nil, fmt.Errorf("get chainID from RPC for %s: %w", instanceInfo.Chain, err)
+			}
+
+			if rpcChainID.String() != chainInfo.ID {
+				return nil, fmt.Errorf("chainID mismatch for %s: RPC reports %s but expected %s (check erc20_bridge.rpc config)", instanceInfo.Chain, rpcChainID.String(), chainInfo.ID)
+			}
 		}
 
 		// wilRpc, target, chainRpc, strings.TrimSpace(string(pkBytes))
@@ -314,6 +453,7 @@ type ServiceMgr struct {
 	bridgeCfg    config.ERC20BridgeConfig
 	syncInterval time.Duration
 	logger       log.Logger
+	rootDir      string // node's root directory for auto-detecting validator key
 }
 
 func NewServiceMgr(
@@ -324,9 +464,11 @@ func NewServiceMgr(
 	nodeApp nodeApp,
 	cfg config.ERC20BridgeConfig,
 	state *State,
+	rootDir string,
 	logger log.Logger) *ServiceMgr {
 	return &ServiceMgr{
 		kwil:         NewSignerClient(chainID, db, call, bcast, nodeApp),
+		rootDir:      rootDir,
 		state:        state,
 		bridgeCfg:    cfg,
 		logger:       logger,
@@ -341,6 +483,7 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 
 	var err error
 	var signers []*bridgeSigner
+	retryCount := 0
 	// To be able to run with docker, we need to apply a retry logic, because kwild
 	// won't have erc20 instance when boot
 	for { // naive way to keep retrying the init, on any error
@@ -351,12 +494,27 @@ func (m *ServiceMgr) Start(ctx context.Context) error {
 		default:
 		}
 
-		signers, err = getSigners(m.bridgeCfg, m.kwil, m.state, m.logger)
+		signers, err = getSigners(m.bridgeCfg, m.kwil, m.state, m.rootDir, m.logger)
 		if err == nil {
 			break
 		}
 
-		m.logger.Warn("failed to initialize erc20 bridge signer, will retry", "error", err.Error())
+		retryCount++
+
+		// Check if we've exceeded maximum retries
+		if retryCount >= maxInitRetries {
+			return fmt.Errorf("failed to initialize erc20 bridge signer after %d retries (check configuration and network connectivity): %w", maxInitRetries, err)
+		}
+
+		// Log at debug level initially - initialization may fail during startup when bridge instances
+		// are not yet registered, or when Safe metadata is temporarily unavailable.
+		// Escalate to warning level after several retries to help identify persistent issues.
+		// The implementation supports both Safe-based (custodial) and non-custodial bridges.
+		if retryCount <= 5 {
+			m.logger.Debug("failed to initialize erc20 bridge signer, will retry", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount, "max_retries", maxInitRetries)
+		} else {
+			m.logger.Warn("failed to initialize erc20 bridge signer after multiple retries", "error", err.Error(), "configured_targets", len(m.bridgeCfg.Signer), "retry", retryCount, "max_retries", maxInitRetries)
+		}
 		select {
 		case <-time.After(time.Second * 30):
 		case <-ctx.Done():

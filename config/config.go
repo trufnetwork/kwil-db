@@ -635,6 +635,10 @@ func (cfg ERC20BridgeConfig) Validate() error {
 	}
 
 	for _, pkPath := range cfg.Signer {
+		// Skip validation for empty paths or "validator" keyword (auto-detected at runtime)
+		if pkPath == "" || pkPath == "validator" {
+			continue
+		}
 		if !ethCommon.FileExist(pkPath) {
 			return fmt.Errorf("erc20_bridge.signer: private key file %s not found", pkPath)
 		}

@@ -563,7 +563,7 @@ func buildErc20BridgeSignerMgr(d *coreDependencies, db *pg.DB,
 	}
 
 	return signersvc.NewServiceMgr(d.genesisCfg.ChainID, db, engine, node, bp,
-		d.cfg.Erc20Bridge, state, d.logger.New("EVMRW"))
+		d.cfg.Erc20Bridge, state, d.rootDir, d.logger.New("EVMRW"))
 }
 
 func buildNode(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,

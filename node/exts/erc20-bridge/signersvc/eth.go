@@ -2,9 +2,12 @@ package signersvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -14,12 +17,21 @@ import (
 	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
 )
 
+const (
+	// rpcTimeout is the timeout for RPC operations to prevent indefinite hangs
+	rpcTimeout = 30 * time.Second
+)
+
 var (
 	safeABI = lo.Must(abi.JSON(strings.NewReader(abigen.SafeMetaData.ABI)))
 
 	nonceCallData     = lo.Must(safeABI.Pack("nonce"))        // nonce()
 	thresholdCallData = lo.Must(safeABI.Pack("getThreshold")) // getThreshold()
 	ownersCallData    = lo.Must(safeABI.Pack("getOwners"))    // getOwners()
+
+	// ErrNonCustodialBridge indicates the contract is a non-custodial bridge
+	// that does not use GnosisSafe (e.g., TrufNetworkBridge).
+	ErrNonCustodialBridge = errors.New("non-custodial bridge detected")
 )
 
 type safeMetadata struct {
@@ -37,29 +49,96 @@ type Safe struct {
 	eth     *ethclient.Client
 }
 
+// NewSafeFromEscrow attempts to initialize a Safe from an escrow contract.
+// Returns ErrNonCustodialBridge for non-custodial bridges (e.g., TrufNetworkBridge) that don't use GnosisSafe.
+// Returns populated Safe for custodial bridges (e.g., RewardDistributor) that use GnosisSafe.
 func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
+	// Validate RPC URL
+	if _, err := url.Parse(rpc); err != nil {
+		return nil, fmt.Errorf("invalid RPC URL '%s': %w", rpc, err)
+	}
+	if rpc == "" {
+		return nil, fmt.Errorf("RPC URL cannot be empty")
+	}
+
+	// Validate escrow address
+	if !common.IsHexAddress(escrowAddr) {
+		return nil, fmt.Errorf("invalid escrow address '%s': must be a valid hex address", escrowAddr)
+	}
+	escrowAddress := common.HexToAddress(escrowAddr)
+
 	client, err := ethclient.Dial(rpc)
 	if err != nil {
-		return nil, fmt.Errorf("create eth cliet: %w", err)
+		return nil, fmt.Errorf("create eth client: %w", err)
 	}
 
-	chainID, err := client.ChainID(context.Background())
+	// Use timeout context for chain ID query
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+
+	chainID, err := client.ChainID(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("create eth chainID: %w", err)
+		client.Close()
+		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
-	rd, err := abigen.NewRewardDistributor(common.HexToAddress(escrowAddr), client)
+	// STEP 1: Verify contract exists at the address
+	// This distinguishes "wrong address/network" (no code) from "method not found" (code exists)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel2()
+
+	code, err := client.CodeAt(ctx2, escrowAddress, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create reward distributor: %w", err)
+		client.Close()
+		return nil, fmt.Errorf("check contract code: %w", err)
+	}
+	if len(code) == 0 {
+		client.Close()
+		return nil, fmt.Errorf("no contract code at address %s (wrong address or network?)", escrowAddr)
 	}
 
-	safeAddr, err := rd.Safe(nil)
+	// STEP 2: Try to detect bridge type by calling Safe() method
+	// Custodial bridges (RewardDistributor) implement Safe() and return an address
+	// Non-custodial bridges (TrufNetworkBridge) don't implement Safe() and will revert
+	rd, err := abigen.NewRewardDistributor(escrowAddress, client)
 	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("bind to escrow contract: %w", err)
+	}
+
+	ctx3, cancel3 := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel3()
+
+	callOpts := &bind.CallOpts{
+		Context: ctx3,
+	}
+	safeAddr, err := rd.Safe(callOpts)
+	if err != nil {
+		client.Close()
+		errStr := err.Error()
+
+		// Since we verified contract code exists, "execution reverted" likely means
+		// the Safe() method doesn't exist → non-custodial bridge
+		// Other errors (network timeout, RPC failure) are treated as real errors
+		if strings.Contains(errStr, "execution reverted") {
+			// Contract exists but Safe() reverted → likely non-custodial
+			return nil, ErrNonCustodialBridge
+		}
+
+		// Real error (network failure, RPC issue, etc.)
 		return nil, fmt.Errorf("get safe address: %w", err)
 	}
 
+	// Check if Safe address is zero address (some contracts might return 0x0 for "no safe")
+	if safeAddr == (common.Address{}) {
+		client.Close()
+		return nil, ErrNonCustodialBridge
+	}
+
+	// Custodial bridge (e.g., RewardDistributor) - initialize Safe
 	safe, err := abigen.NewSafe(safeAddr, client)
 	if err != nil {
+		client.Close()
 		return nil, fmt.Errorf("create safe: %w", err)
 	}
 
@@ -73,18 +152,37 @@ func NewSafeFromEscrow(rpc string, escrowAddr string) (*Safe, error) {
 }
 
 func NewSafe(rpc string, addr string) (*Safe, error) {
-	client, err := ethclient.Dial(rpc)
-	if err != nil {
-		return nil, fmt.Errorf("create eth cliet: %w", err)
+	// Validate RPC URL
+	if _, err := url.Parse(rpc); err != nil {
+		return nil, fmt.Errorf("invalid RPC URL '%s': %w", rpc, err)
+	}
+	if rpc == "" {
+		return nil, fmt.Errorf("RPC URL cannot be empty")
 	}
 
-	chainID, err := client.ChainID(context.Background())
+	// Validate Safe address
+	if !common.IsHexAddress(addr) {
+		return nil, fmt.Errorf("invalid safe address '%s': must be a valid hex address", addr)
+	}
+
+	client, err := ethclient.Dial(rpc)
 	if err != nil {
-		return nil, fmt.Errorf("create eth chainID: %w", err)
+		return nil, fmt.Errorf("create eth client: %w", err)
+	}
+
+	// Use timeout context for chain ID query
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("get chain ID: %w", err)
 	}
 
 	safe, err := abigen.NewSafe(common.HexToAddress(addr), client)
 	if err != nil {
+		client.Close()
 		return nil, fmt.Errorf("create safe: %w", err)
 	}
 
