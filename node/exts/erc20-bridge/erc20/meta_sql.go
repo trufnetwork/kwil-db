@@ -164,8 +164,10 @@ func getStoredRewardInstances(ctx context.Context, app *common.App) ([]*rewardEx
 		}
 
 		// DEBUG: Log loaded epoch for each instance
-		app.Service.Logger.Infof("[INIT] Loaded instance %s with currentEpoch ID=%s, startHeight=%d, synced=%v, active=%v",
-			reward.ID, epochID, epochCreatedAtBlock, reward.synced, reward.active)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[INIT] Loaded instance %s with currentEpoch ID=%s, startHeight=%d, synced=%v, active=%v",
+				reward.ID, epochID, epochCreatedAtBlock, reward.synced, reward.active)
+		}
 
 		if !reward.synced {
 			rewards = append(rewards, reward)
@@ -298,8 +300,10 @@ func createSchema(ctx context.Context, app *common.App) error {
 // issueReward issues a reward to a user.
 func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, epochID *types.UUID, user ethcommon.Address, amount *types.Decimal) error {
 	// DEBUG: Log before inserting into epoch_rewards
-	app.Service.Logger.Infof("[DB] issueReward: Inserting into epoch_rewards - epoch_id=%s, recipient=%s, amount=%s",
-		epochID, user.Hex(), amount.String())
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] issueReward: Inserting into epoch_rewards - epoch_id=%s, recipient=%s, amount=%s",
+			epochID, user.Hex(), amount.String())
+	}
 
 	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE reward_instances
@@ -365,8 +369,10 @@ func transferTokensFromUserToNetwork(ctx context.Context, app *common.App, rewar
 // lockAndIssue locks balance from a user and issues a reward to the designated recipient.
 func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, epochID *types.UUID, from ethcommon.Address, recipient ethcommon.Address, amount *types.Decimal) error {
 	// DEBUG: Log lockAndIssue operation
-	app.Service.Logger.Infof("[DB] lockAndIssue: reward_id=%s, epoch_id=%s, from=%s, recipient=%s, amount=%s",
-		rewardID, epochID, from.Hex(), recipient.Hex(), amount.String())
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] lockAndIssue: reward_id=%s, epoch_id=%s, from=%s, recipient=%s, amount=%s",
+			rewardID, epochID, from.Hex(), recipient.Hex(), amount.String())
+	}
 
 	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE balances
@@ -385,9 +391,13 @@ func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, ep
 	}, nil)
 
 	if err != nil {
-		app.Service.Logger.Errorf("[DB] lockAndIssue failed for epoch_id=%s: %v", epochID, err)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] lockAndIssue failed for epoch_id=%s: %v", epochID, err)
+		}
 	} else {
-		app.Service.Logger.Infof("[DB] lockAndIssue succeeded - inserted into epoch_rewards for epoch_id=%s", epochID)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[DB] lockAndIssue succeeded - inserted into epoch_rewards for epoch_id=%s", epochID)
+		}
 	}
 
 	return err
@@ -438,7 +448,9 @@ func balanceOf(ctx context.Context, app *common.App, rewardID *types.UUID, user 
 // getRewardsForEpoch gets all rewards for an epoch.
 func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUID, fn func(reward *EpochReward) error) error {
 	// DEBUG: Log which epoch we're querying rewards for
-	app.Service.Logger.Infof("[REWARDS] Querying epoch_rewards for epoch_id=%s", epochID)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[REWARDS] Querying epoch_rewards for epoch_id=%s", epochID)
+	}
 
 	rewardCount := 0
 	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
@@ -465,7 +477,9 @@ func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUI
 	})
 
 	// DEBUG: Log how many rewards were found
-	app.Service.Logger.Infof("[REWARDS] Found %d rewards for epoch_id=%s", rewardCount, epochID)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[REWARDS] Found %d rewards for epoch_id=%s", rewardCount, epochID)
+	}
 	return err
 }
 
