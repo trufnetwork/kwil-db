@@ -2904,9 +2904,10 @@ func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
 
 // getEpochSignatures retrieves all validator signatures for an epoch.
 // Returns array of signatures (65 bytes each: r||s||v format).
+// Only returns signatures with nonce=0 (validator-verified signatures).
 func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUID) ([][]byte, error) {
 	query := `{kwil_erc20_meta}SELECT signature FROM epoch_votes
-	          WHERE epoch_id = $epoch_id
+	          WHERE epoch_id = $epoch_id AND nonce = 0
 	          ORDER BY voter`
 
 	// Initialize as empty slice (not nil) to ensure non-nullable column compatibility
