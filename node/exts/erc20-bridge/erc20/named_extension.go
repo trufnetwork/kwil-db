@@ -308,7 +308,8 @@ func init() {
 							{Name: "param_amount", Type: uint256Numeric},
 							{Name: "param_block_hash", Type: types.ByteaType},
 							{Name: "param_root", Type: types.ByteaType},
-							{Name: "param_proofs", Type: types.ByteaArrayType}},
+							{Name: "param_proofs", Type: types.ByteaArrayType},
+							{Name: "param_signatures", Type: types.ByteaArrayType}}, // Validator signatures
 					},
 					AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
 					Handler:         makeMetaHandler("list_wallet_rewards"),

@@ -1397,6 +1397,7 @@ func init() {
 								{Name: "param_block_hash", Type: types.ByteaType},
 								{Name: "param_root", Type: types.ByteaType},
 								{Name: "param_proofs", Type: types.ByteaArrayType},
+								{Name: "param_signatures", Type: types.ByteaArrayType}, // Validator signatures
 							},
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
@@ -1459,6 +1460,12 @@ func init() {
 									return err
 								}
 
+								// Query validator signatures for this epoch
+								signatures, err := getEpochSignatures(ctx.TxContext.Ctx, app, epoch.ID)
+								if err != nil {
+									return fmt.Errorf("get epoch signatures: %w", err)
+								}
+
 								err = resultFn([]any{info.ChainInfo.Name.String(),
 									info.ChainInfo.ID,
 									info.EscrowAddress.String(),
@@ -1468,6 +1475,7 @@ func init() {
 									bh,
 									epoch.Root,
 									proofs,
+									signatures, // Add validator signatures
 								})
 								if err != nil {
 									return err
@@ -2892,4 +2900,33 @@ func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
 	// Derive Ethereum address from public key
 	address := crypto.PubkeyToAddress(*pubkey)
 	return address, nil
+}
+
+// getEpochSignatures retrieves all validator signatures for an epoch.
+// Returns array of signatures (65 bytes each: r||s||v format).
+func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUID) ([][]byte, error) {
+	query := `{kwil_erc20_meta}SELECT signature FROM epoch_votes
+	          WHERE epoch_id = $epoch_id
+	          ORDER BY voter`
+
+	// Initialize as empty slice (not nil) to ensure non-nullable column compatibility
+	signatures := make([][]byte, 0)
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query, map[string]any{
+		"epoch_id": epochID,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 1 {
+			return nil
+		}
+		sig, ok := row.Values[0].([]byte)
+		if !ok {
+			return fmt.Errorf("signature should be []byte, got %T", row.Values[0])
+		}
+		signatures = append(signatures, sig)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query epoch signatures: %w", err)
+	}
+
+	return signatures, nil
 }
