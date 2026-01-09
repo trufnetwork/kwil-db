@@ -362,3 +362,196 @@ func TestWithdrawalsTableExists(t *testing.T) {
 func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
+
+// TestGetWalletEpochs verifies the getWalletEpochs function correctly filters
+// out claimed withdrawals and returns epochs in deterministic order.
+func TestGetWalletEpochs(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available - this test requires database connection")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) // always rollback
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	// Create a reward instance
+	instanceID := newUUID()
+	chainInfo, _ := chains.GetChainInfoByID("1")
+	testReward := &userProvidedData{
+		ID:                 instanceID,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      zeroHex,
+		DistributionPeriod: 3600,
+	}
+	err = createNewRewardInstance(ctx, app, testReward)
+	require.NoError(t, err)
+
+	// Create test wallet
+	testWallet := ethcommon.HexToAddress("0xF9820f9143699cac6F662B19a4B29E13C9393783")
+
+	// Create 3 epochs with different created_at_block values
+	epoch1 := &PendingEpoch{
+		ID:          newUUID(),
+		StartHeight: 100,
+		StartTime:   1000,
+	}
+	err = createEpoch(ctx, app, epoch1, instanceID)
+	require.NoError(t, err)
+
+	epoch2 := &PendingEpoch{
+		ID:          newUUID(),
+		StartHeight: 200,
+		StartTime:   2000,
+	}
+	err = createEpoch(ctx, app, epoch2, instanceID)
+	require.NoError(t, err)
+
+	epoch3 := &PendingEpoch{
+		ID:          newUUID(),
+		StartHeight: 300,
+		StartTime:   3000,
+	}
+	err = createEpoch(ctx, app, epoch3, instanceID)
+	require.NoError(t, err)
+
+	// Finalize and confirm all epochs
+	root1 := []byte{0x01, 0x01}
+	root2 := []byte{0x02, 0x02}
+	root3 := []byte{0x03, 0x03}
+	amt, _ := erc20ValueFromBigInt(big.NewInt(100))
+
+	err = finalizeEpoch(ctx, app, epoch1.ID, 110, []byte{0x01}, root1, amt)
+	require.NoError(t, err)
+	err = finalizeEpoch(ctx, app, epoch2.ID, 210, []byte{0x02}, root2, amt)
+	require.NoError(t, err)
+	err = finalizeEpoch(ctx, app, epoch3.ID, 310, []byte{0x03}, root3, amt)
+	require.NoError(t, err)
+
+	err = confirmEpoch(ctx, app, root1)
+	require.NoError(t, err)
+	err = confirmEpoch(ctx, app, root2)
+	require.NoError(t, err)
+	err = confirmEpoch(ctx, app, root3)
+	require.NoError(t, err)
+
+	// Add epoch_rewards for the test wallet for all epochs
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO epoch_rewards (epoch_id, recipient, amount)
+		VALUES ($epoch1, $wallet, $amount),
+		       ($epoch2, $wallet, $amount),
+		       ($epoch3, $wallet, $amount)
+	`, map[string]any{
+		"epoch1": epoch1.ID,
+		"epoch2": epoch2.ID,
+		"epoch3": epoch3.ID,
+		"wallet": testWallet.Bytes(),
+		"amount": amt,
+	}, nil)
+	require.NoError(t, err)
+
+	// Test 1: Initially, all 3 epochs should be returned (no withdrawals records)
+	var epochsReturned []*Epoch
+	err = getWalletEpochs(ctx, app, instanceID, testWallet, false, func(e *Epoch) error {
+		epochsReturned = append(epochsReturned, e)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, epochsReturned, 3, "should return all 3 unclaimed epochs")
+
+	// Test 2: Verify deterministic ordering (newest first: epoch3, epoch2, epoch1)
+	require.Equal(t, epoch3.ID.String(), epochsReturned[0].ID.String(), "first epoch should be newest (epoch3)")
+	require.Equal(t, epoch2.ID.String(), epochsReturned[1].ID.String(), "second epoch should be middle (epoch2)")
+	require.Equal(t, epoch1.ID.String(), epochsReturned[2].ID.String(), "third epoch should be oldest (epoch1)")
+
+	// Test 3: Mark epoch2 as 'claimed' in withdrawals table
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, created_at, updated_at, claimed_at)
+		VALUES ($epoch2, $wallet, 'claimed', $now, $now, $now)
+	`, map[string]any{
+		"epoch2": epoch2.ID,
+		"wallet": testWallet.Bytes(),
+		"now":    2000,
+	}, nil)
+	require.NoError(t, err)
+
+	// Test 4: Now only 2 epochs should be returned (epoch3 and epoch1, excluding claimed epoch2)
+	epochsReturned = nil
+	err = getWalletEpochs(ctx, app, instanceID, testWallet, false, func(e *Epoch) error {
+		epochsReturned = append(epochsReturned, e)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, epochsReturned, 2, "should return only 2 unclaimed epochs")
+	require.Equal(t, epoch3.ID.String(), epochsReturned[0].ID.String(), "first should still be epoch3")
+	require.Equal(t, epoch1.ID.String(), epochsReturned[1].ID.String(), "second should be epoch1 (epoch2 filtered out)")
+
+	// Test 5: Mark epoch3 as 'pending' (not claimed) - should still be returned
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, created_at, updated_at)
+		VALUES ($epoch3, $wallet, 'pending', $now, $now)
+	`, map[string]any{
+		"epoch3": epoch3.ID,
+		"wallet": testWallet.Bytes(),
+		"now":    3000,
+	}, nil)
+	require.NoError(t, err)
+
+	// Test 6: Should still return 2 epochs (epoch3 with pending, epoch1 with no record)
+	epochsReturned = nil
+	err = getWalletEpochs(ctx, app, instanceID, testWallet, false, func(e *Epoch) error {
+		epochsReturned = append(epochsReturned, e)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, epochsReturned, 2, "should return 2 epochs (pending and no-record)")
+
+	// Test 7: Mark epoch1 as 'ready' - should still be returned
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, created_at, updated_at)
+		VALUES ($epoch1, $wallet, 'ready', $now, $now)
+	`, map[string]any{
+		"epoch1": epoch1.ID,
+		"wallet": testWallet.Bytes(),
+		"now":    1000,
+	}, nil)
+	require.NoError(t, err)
+
+	// Test 8: Should still return 2 epochs (both have non-claimed status)
+	epochsReturned = nil
+	err = getWalletEpochs(ctx, app, instanceID, testWallet, false, func(e *Epoch) error {
+		epochsReturned = append(epochsReturned, e)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, epochsReturned, 2, "should return 2 epochs with ready/pending status")
+
+	// Test 9: Mark all as claimed - should return 0 epochs
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}UPDATE withdrawals
+		SET status = 'claimed', claimed_at = $now, updated_at = $now
+		WHERE recipient = $wallet
+	`, map[string]any{
+		"wallet": testWallet.Bytes(),
+		"now":    4000,
+	}, nil)
+	require.NoError(t, err)
+
+	// Test 10: Should return 0 epochs (all claimed)
+	epochsReturned = nil
+	err = getWalletEpochs(ctx, app, instanceID, testWallet, false, func(e *Epoch) error {
+		epochsReturned = append(epochsReturned, e)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, epochsReturned, 0, "should return no epochs when all are claimed")
+}

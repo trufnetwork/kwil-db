@@ -229,8 +229,9 @@ func userBalanceID(rewardID *types.UUID, user ethcommon.Address) *types.UUID {
 // updateWithdrawalStatus updates the status of a withdrawal to 'claimed' when a Withdraw event is detected.
 // It matches the withdrawal by recipient and kwilBlockHash to ensure we update the correct epoch's withdrawal.
 //
-// Note: If no rows are updated (withdrawal already claimed or doesn't exist), the operation succeeds silently.
+// Uses UPSERT pattern: Creates the withdrawal record if it doesn't exist, or updates it if it does.
 // This is safe because duplicate Withdraw events for the same withdrawal are idempotent.
+// If the withdrawal is already claimed, the WHERE clause prevents redundant updates.
 func updateWithdrawalStatus(
 	ctx context.Context,
 	app *common.App,
@@ -242,18 +243,27 @@ func updateWithdrawalStatus(
 	claimedAt int64,
 ) error {
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}UPDATE withdrawals
-	SET status = 'claimed',
+	{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, tx_hash, block_number, claimed_at, created_at, updated_at)
+	SELECT
+		e.id,
+		$recipient,
+		'claimed',
+		$tx_hash,
+		$block_number,
+		$claimed_at,
+		$claimed_at,
+		$claimed_at
+	FROM epochs e
+	WHERE e.instance_id = $instance_id
+	  AND e.block_hash = $kwil_block_hash
+	ON CONFLICT (epoch_id, recipient)
+	DO UPDATE SET
+		status = 'claimed',
 		tx_hash = $tx_hash,
 		block_number = $block_number,
 		claimed_at = $claimed_at,
-		updated_at = $updated_at
-	FROM epochs
-	WHERE withdrawals.epoch_id = epochs.id
-		AND epochs.instance_id = $instance_id
-		AND withdrawals.recipient = $recipient
-		AND epochs.block_hash = $kwil_block_hash
-		AND withdrawals.status = 'ready'
+		updated_at = $claimed_at
+	WHERE withdrawals.status != 'claimed'
 	`, map[string]any{
 		"instance_id":     instanceID,
 		"recipient":       recipient.Bytes(),
@@ -261,7 +271,6 @@ func updateWithdrawalStatus(
 		"tx_hash":         txHash,
 		"block_number":    blockNumber,
 		"claimed_at":      claimedAt,
-		"updated_at":      claimedAt,
 	}, nil)
 }
 
@@ -737,10 +746,15 @@ func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUI
 	{kwil_erc20_meta}SELECT e.id, e.created_at_block, e.created_at_unix, e.reward_root, e.reward_amount, e.ended_at, e.block_hash, e.confirmed, ARRAY[]::TEXT[] as votes
 	FROM epoch_rewards AS r
 	JOIN epochs AS e ON r.epoch_id = e.id
-	WHERE recipient = $wallet AND e.instance_id = $instance_id AND e.ended_at IS NOT NULL` // at least finalized
+	LEFT JOIN withdrawals AS w ON w.epoch_id = e.id AND w.recipient = r.recipient
+	WHERE r.recipient = $wallet AND e.instance_id = $instance_id AND e.ended_at IS NOT NULL` // at least finalized
 	if !pending {
 		query += ` AND e.confirmed IS true`
 	}
+	// Filter out claimed withdrawals (already withdrawn on Ethereum)
+	query += ` AND (w.status IS NULL OR w.status != 'claimed')`
+	// Deterministic ordering for consensus + newest epochs first for UX
+	query += ` ORDER BY e.created_at_block DESC`
 
 	query += ";"
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query,

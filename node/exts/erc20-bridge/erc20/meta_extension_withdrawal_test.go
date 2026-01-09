@@ -311,6 +311,137 @@ func TestUpdateWithdrawalStatus_NoMatchingRow(t *testing.T) {
 	require.NoError(t, err, "should be idempotent when no matching withdrawal")
 }
 
+// TestApplyWithdrawalLog_CreatesRecordFromScratch verifies that applyWithdrawalLog creates
+// a withdrawal record when none exists (the production scenario that was previously broken)
+func TestApplyWithdrawalLog_CreatesRecordFromScratch(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available - this test requires database connection")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	// Create test instance
+	id := newUUID()
+	chainInfo, ok := chains.GetChainInfoByID("1")
+	require.True(t, ok)
+
+	testReward := &userProvidedData{
+		ID:                 id,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc"),
+		DistributionPeriod: 3600,
+	}
+
+	require.NoError(t, createNewRewardInstance(ctx, app, testReward))
+	require.NoError(t, setRewardSynced(ctx, app, id, 1, &syncedRewardData{
+		Erc20Address:  ethcommon.HexToAddress("0x00000000000000000000000000000000000000aa"),
+		Erc20Decimals: 18,
+	}))
+
+	// Create epoch with a specific block_hash
+	kwilBlockHash := [32]byte{0xaa, 0xbb, 0xcc}
+	epochID := newUUID()
+
+	pending := &PendingEpoch{
+		ID:          epochID,
+		StartHeight: 10,
+		StartTime:   100,
+	}
+	require.NoError(t, createEpoch(ctx, app, pending, id))
+
+	// Finalize the epoch with the block_hash
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}UPDATE epochs
+		SET ended_at = 200,
+		    block_hash = $block_hash
+		WHERE id = $id
+	`, map[string]any{
+		"id":         epochID,
+		"block_hash": kwilBlockHash[:],
+	}, nil)
+	require.NoError(t, err)
+
+	// CRITICAL: Do NOT create a withdrawal record (this is the production scenario!)
+	// In production, no code creates withdrawal records - the listener should create them
+
+	// Verify withdrawals table is empty for this epoch
+	var count int64
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}SELECT COUNT(*) FROM withdrawals WHERE epoch_id = $epoch_id
+	`, map[string]any{
+		"epoch_id": epochID,
+	}, func(row *common.Row) error {
+		count = row.Values[0].(int64)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(0), count, "withdrawals table should be empty initially")
+
+	// Create mock Withdraw event
+	recipient := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
+	amount := big.NewInt(1_500_000_000_000_000_000)
+	var amountData [32]byte
+	amountBytes := amount.Bytes()
+	copy(amountData[32-len(amountBytes):], amountBytes)
+
+	withdrawLog := ethtypes.Log{
+		Topics: []ethcommon.Hash{
+			withdrawEventID,
+			ethcommon.BytesToHash(recipient.Bytes()),
+			kwilBlockHash,
+		},
+		Data:        amountData[:],
+		BlockNumber: 12345,
+		TxHash:      ethcommon.HexToHash("0xabcd1234"),
+	}
+
+	// Apply the withdrawal log (should CREATE the record from scratch)
+	kwilBlockHeight := int64(250)
+	err = applyWithdrawalLog(ctx, app, id, withdrawLog, kwilBlockHeight)
+	require.NoError(t, err)
+
+	// Verify withdrawal record was CREATED with status='claimed'
+	var status string
+	var claimedAt *int64
+	var txHash []byte
+	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+		{kwil_erc20_meta}SELECT status, claimed_at, tx_hash
+		FROM withdrawals
+		WHERE epoch_id = $epoch_id AND recipient = $recipient
+	`, map[string]any{
+		"epoch_id":  epochID,
+		"recipient": recipient.Bytes(),
+	}, func(row *common.Row) error {
+		status = row.Values[0].(string)
+		if row.Values[1] != nil {
+			val := row.Values[1].(int64)
+			claimedAt = &val
+		}
+		if row.Values[2] != nil {
+			txHash = row.Values[2].([]byte)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claimed", status, "withdrawal should be created with status='claimed'")
+	require.NotNil(t, claimedAt, "claimed_at should be set")
+	require.Equal(t, kwilBlockHeight, *claimedAt)
+	require.NotNil(t, txHash, "tx_hash should be set")
+	require.Equal(t, withdrawLog.TxHash.Bytes(), txHash)
+}
+
 // TestApplyWithdrawalLog_Idempotent verifies that applying the same withdrawal log twice is safe
 func TestApplyWithdrawalLog_Idempotent(t *testing.T) {
 	ctx := context.Background()
