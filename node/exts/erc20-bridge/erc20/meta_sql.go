@@ -737,10 +737,15 @@ func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUI
 	{kwil_erc20_meta}SELECT e.id, e.created_at_block, e.created_at_unix, e.reward_root, e.reward_amount, e.ended_at, e.block_hash, e.confirmed, ARRAY[]::TEXT[] as votes
 	FROM epoch_rewards AS r
 	JOIN epochs AS e ON r.epoch_id = e.id
-	WHERE recipient = $wallet AND e.instance_id = $instance_id AND e.ended_at IS NOT NULL` // at least finalized
+	LEFT JOIN withdrawals AS w ON w.epoch_id = e.id AND w.recipient = r.recipient
+	WHERE r.recipient = $wallet AND e.instance_id = $instance_id AND e.ended_at IS NOT NULL` // at least finalized
 	if !pending {
 		query += ` AND e.confirmed IS true`
 	}
+	// Filter out claimed withdrawals (already withdrawn on Ethereum)
+	query += ` AND (w.status IS NULL OR w.status != 'claimed')`
+	// Deterministic ordering for consensus + newest epochs first for UX
+	query += ` ORDER BY e.created_at_block DESC`
 
 	query += ";"
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query,
