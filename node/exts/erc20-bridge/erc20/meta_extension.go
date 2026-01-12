@@ -1549,6 +1549,57 @@ func init() {
 				return nil
 			}
 
+			// Check beacon chain finality (if applicable)
+			// NOTE: This assumes info.currentEpoch.StartTime (TN block timestamp) correlates
+			// with Ethereum block timestamps. Clock synchronization between chains is required.
+			//
+			// IMPORTANT: If the beacon RPC consistently fails or returns errors, epoch finalization
+			// will be delayed indefinitely (returns nil to wait for next block). This is intentional
+			// to ensure we only finalize epochs when we can verify Ethereum finality. If the beacon
+			// RPC becomes permanently unavailable, operational intervention is required to either:
+			// - Fix the beacon RPC endpoint
+			// - Disable beacon finality checks (set BeaconRPC to empty string)
+			if info.userProvidedData.ChainInfo.BeaconRPC != "" {
+				// Get Ethereum block timestamp when this epoch started
+				ethTimestamp := info.currentEpoch.StartTime
+
+				// Thread-safe lazy initialization of beacon client with network-specific parameters
+				info.beaconClientOnce.Do(func() {
+					info.beaconClient = NewBeaconChainClient(
+						info.userProvidedData.ChainInfo.BeaconRPC,
+						info.userProvidedData.ChainInfo.BeaconGenesisTime,
+						info.userProvidedData.ChainInfo.BeaconSlotDuration,
+					)
+				})
+
+				// Create context with timeout for beacon RPC call to prevent stalling consensus
+				beaconCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+
+				// Check if Ethereum block is finalized on beacon chain
+				finalized, err := info.beaconClient.IsBlockFinalized(beaconCtx, ethTimestamp)
+				if err != nil {
+					// Critical error - log but don't halt consensus
+					if app.Service != nil && app.Service.Logger != nil {
+						app.Service.Logger.Warnf("[BEACON_CHECK] Error checking finality for instance %s: %v", id, err)
+					}
+					return nil // Wait for next block
+				}
+
+				if !finalized {
+					// Not finalized yet - wait for next block
+					if app.Service != nil && app.Service.Logger != nil {
+						app.Service.Logger.Debugf("[BEACON_CHECK] Instance %s: Time elapsed but Ethereum block not finalized (timestamp=%d)", id, ethTimestamp)
+					}
+					return nil // Wait for next block
+				}
+
+				// Finalized! Continue to epoch finalization
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[BEACON_CHECK] Instance %s: Ethereum block finalized (timestamp=%d), proceeding with epoch finalization", id, ethTimestamp)
+				}
+			}
+
 			// There will be always 2 epochs(except the very first epoch):
 			// - finalized epoch: finalized but not confirmed, wait to be confimed
 			// - current epoch: collect all new rewards, wait to be finalized
@@ -2178,11 +2229,13 @@ type rewardExtensionInfo struct {
 	mu sync.RWMutex
 	userProvidedData
 	syncedRewardData
-	synced       bool
-	syncedAt     int64
-	active       bool
-	ownedBalance *types.Decimal // balance owned by DB that can be distributed
-	currentEpoch *PendingEpoch  // current epoch being proposed
+	synced           bool
+	syncedAt         int64
+	active           bool
+	ownedBalance     *types.Decimal     // balance owned by DB that can be distributed
+	currentEpoch     *PendingEpoch      // current epoch being proposed
+	beaconClient     *BeaconChainClient // beacon chain client for finality verification (lazy initialized)
+	beaconClientOnce sync.Once          // ensures beaconClient is initialized exactly once
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
