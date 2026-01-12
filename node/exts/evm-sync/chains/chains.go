@@ -20,6 +20,12 @@ type ChainInfo struct {
 	// Empty string if the chain doesn't have a beacon chain (e.g., L2s).
 	// For Ethereum mainnet and testnets that use beacon chain consensus.
 	BeaconRPC string
+	// BeaconGenesisTime is the beacon chain genesis timestamp in Unix seconds.
+	// Only used if BeaconRPC is set. Each network has its own genesis time.
+	BeaconGenesisTime int64
+	// BeaconSlotDuration is the beacon chain slot duration in seconds.
+	// Defaults to 12 seconds for Ethereum networks. Only used if BeaconRPC is set.
+	BeaconSlotDuration int64
 }
 
 func init() {
@@ -29,24 +35,32 @@ func init() {
 			ID:                    "1",
 			RequiredConfirmations: 12,
 			BeaconRPC:             "https://ethereum-beacon-api.publicnode.com",
+			BeaconGenesisTime:     1606824023, // Dec 1, 2020, 12:00:23 UTC
+			BeaconSlotDuration:    12,
 		},
 		ChainInfo{
 			Name:                  "sepolia",
 			ID:                    "11155111",
 			RequiredConfirmations: 12,
 			BeaconRPC:             "https://ethereum-sepolia-beacon-api.publicnode.com",
+			BeaconGenesisTime:     1655733600, // Jun 20, 2022, 14:00:00 UTC
+			BeaconSlotDuration:    12,
 		},
 		ChainInfo{
 			Name:                  "base-sepolia",
 			ID:                    "84532",
 			RequiredConfirmations: 12,
 			BeaconRPC:             "", // L2, no beacon chain
+			BeaconGenesisTime:     0,
+			BeaconSlotDuration:    0,
 		},
 		ChainInfo{
 			Name:                  "hoodi",
 			ID:                    "560048",
 			RequiredConfirmations: 12,
 			BeaconRPC:             "https://ethereum-hoodi-beacon-api.publicnode.com",
+			BeaconGenesisTime:     1728334800, // Oct 7, 2024, 19:00:00 UTC (Hoodi testnet genesis)
+			BeaconSlotDuration:    12,
 		},
 	)
 	if err != nil {

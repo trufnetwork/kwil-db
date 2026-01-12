@@ -12,6 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	// Test constants for beacon chain parameters (using Ethereum mainnet values)
+	testGenesisTime  = 1606824023 // Dec 1, 2020, 12:00:23 UTC
+	testSlotDuration = 12         // 12 seconds per slot
+)
+
 // TestBeaconChainClient_IsBlockFinalized_Success tests successful finality check
 func TestBeaconChainClient_IsBlockFinalized_Success(t *testing.T) {
 	// Create mock HTTP server
@@ -25,10 +31,10 @@ func TestBeaconChainClient_IsBlockFinalized_Success(t *testing.T) {
 	defer server.Close()
 
 	// Create client pointing to mock server
-	client := NewBeaconChainClient(server.URL)
+	client := NewBeaconChainClient(server.URL, testGenesisTime, testSlotDuration)
 
 	// Test with timestamp (15 minutes after genesis)
-	timestamp := int64(ethereumGenesisTime + 900)
+	timestamp := int64(testGenesisTime + 900)
 	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
 
 	require.NoError(t, err)
@@ -48,10 +54,10 @@ func TestBeaconChainClient_IsBlockFinalized_NotFinalized(t *testing.T) {
 	defer server.Close()
 
 	// Create client pointing to mock server
-	client := NewBeaconChainClient(server.URL)
+	client := NewBeaconChainClient(server.URL, testGenesisTime, testSlotDuration)
 
 	// Test with timestamp
-	timestamp := int64(ethereumGenesisTime + 900)
+	timestamp := int64(testGenesisTime + 900)
 	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
 
 	require.NoError(t, err)
@@ -61,10 +67,10 @@ func TestBeaconChainClient_IsBlockFinalized_NotFinalized(t *testing.T) {
 // TestBeaconChainClient_IsBlockFinalized_NetworkError tests network error handling
 func TestBeaconChainClient_IsBlockFinalized_NetworkError(t *testing.T) {
 	// Create client with invalid URL (will cause network error)
-	client := NewBeaconChainClient("http://invalid-url-that-does-not-exist.local")
+	client := NewBeaconChainClient("http://invalid-url-that-does-not-exist.local", testGenesisTime, testSlotDuration)
 
 	// Test with timestamp
-	timestamp := int64(ethereumGenesisTime + 900)
+	timestamp := int64(testGenesisTime + 900)
 	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
 
 	// Should return false but no error (graceful degradation)
@@ -81,10 +87,10 @@ func TestBeaconChainClient_IsBlockFinalized_APIError(t *testing.T) {
 	defer server.Close()
 
 	// Create client pointing to mock server
-	client := NewBeaconChainClient(server.URL)
+	client := NewBeaconChainClient(server.URL, testGenesisTime, testSlotDuration)
 
 	// Test with timestamp
-	timestamp := int64(ethereumGenesisTime + 900)
+	timestamp := int64(testGenesisTime + 900)
 	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
 
 	// Should return false but no error (graceful degradation)
@@ -101,10 +107,10 @@ func TestBeaconChainClient_IsBlockFinalized_InvalidSlot(t *testing.T) {
 	defer server.Close()
 
 	// Create client
-	client := NewBeaconChainClient(server.URL)
+	client := NewBeaconChainClient(server.URL, testGenesisTime, testSlotDuration)
 
 	// Test with timestamp before genesis
-	timestamp := int64(ethereumGenesisTime - 1000)
+	timestamp := int64(testGenesisTime - 1000)
 	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
 
 	// Should return error for invalid timestamp
@@ -123,25 +129,25 @@ func TestBeaconChainClient_SlotCalculation(t *testing.T) {
 	}{
 		{
 			name:              "Genesis block",
-			timestamp:         ethereumGenesisTime,
+			timestamp:         testGenesisTime,
 			expectedSlot:      0,
 			shouldBeValidSlot: true,
 		},
 		{
 			name:              "15 minutes after genesis",
-			timestamp:         ethereumGenesisTime + 900, // 900 seconds = 15 minutes
-			expectedSlot:      75,                        // 900 / 12 = 75 slots
+			timestamp:         testGenesisTime + 900, // 900 seconds = 15 minutes
+			expectedSlot:      75,                    // 900 / 12 = 75 slots
 			shouldBeValidSlot: true,
 		},
 		{
 			name:              "1 hour after genesis",
-			timestamp:         ethereumGenesisTime + 3600, // 3600 seconds = 1 hour
-			expectedSlot:      300,                        // 3600 / 12 = 300 slots
+			timestamp:         testGenesisTime + 3600, // 3600 seconds = 1 hour
+			expectedSlot:      300,                    // 3600 / 12 = 300 slots
 			shouldBeValidSlot: true,
 		},
 		{
 			name:              "Before genesis",
-			timestamp:         ethereumGenesisTime - 100,
+			timestamp:         testGenesisTime - 100,
 			expectedSlot:      -8, // negative slot
 			shouldBeValidSlot: false,
 		},
@@ -150,7 +156,7 @@ func TestBeaconChainClient_SlotCalculation(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Calculate slot
-			slot := (tc.timestamp - ethereumGenesisTime) / slotDuration
+			slot := (tc.timestamp - testGenesisTime) / testSlotDuration
 
 			// Verify calculation
 			assert.Equal(t, tc.expectedSlot, slot)
@@ -169,7 +175,7 @@ func TestBeaconChainClient_SlotCalculation(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewBeaconChainClient(server.URL)
+			client := NewBeaconChainClient(server.URL, testGenesisTime, testSlotDuration)
 
 			_, err := client.IsBlockFinalized(context.Background(), tc.timestamp)
 
@@ -192,14 +198,14 @@ func TestBeaconChainClient_DecodeError(t *testing.T) {
 	defer server.Close()
 
 	// Create client
-	client := NewBeaconChainClient(server.URL)
+	client := NewBeaconChainClient(server.URL, testGenesisTime, testSlotDuration)
 
 	// Test with timestamp
-	timestamp := int64(ethereumGenesisTime + 900)
+	timestamp := int64(testGenesisTime + 900)
 	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
 
-	// Should return error for JSON decode failure
-	require.Error(t, err)
+	// Should gracefully degrade (return false but no error) for JSON decode failure
+	// This is consistent with network/API error handling to avoid stalling consensus
+	require.NoError(t, err)
 	assert.False(t, finalized)
-	assert.Contains(t, err.Error(), "decode response")
 }

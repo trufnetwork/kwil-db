@@ -1555,13 +1555,21 @@ func init() {
 				// Use TN block timestamp (assumes clocks are synced)
 				ethTimestamp := info.currentEpoch.StartTime
 
-				// Create beacon client if not exists (lazy initialization)
-				if info.beaconClient == nil {
-					info.beaconClient = NewBeaconChainClient(info.userProvidedData.ChainInfo.BeaconRPC)
-				}
+				// Thread-safe lazy initialization of beacon client with network-specific parameters
+				info.beaconClientOnce.Do(func() {
+					info.beaconClient = NewBeaconChainClient(
+						info.userProvidedData.ChainInfo.BeaconRPC,
+						info.userProvidedData.ChainInfo.BeaconGenesisTime,
+						info.userProvidedData.ChainInfo.BeaconSlotDuration,
+					)
+				})
+
+				// Create context with timeout for beacon RPC call to prevent stalling consensus
+				beaconCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
 
 				// Check if Ethereum block is finalized on beacon chain
-				finalized, err := info.beaconClient.IsBlockFinalized(ctx, ethTimestamp)
+				finalized, err := info.beaconClient.IsBlockFinalized(beaconCtx, ethTimestamp)
 				if err != nil {
 					// Critical error - log but don't halt consensus
 					if app.Service != nil && app.Service.Logger != nil {
@@ -2213,12 +2221,13 @@ type rewardExtensionInfo struct {
 	mu sync.RWMutex
 	userProvidedData
 	syncedRewardData
-	synced       bool
-	syncedAt     int64
-	active       bool
-	ownedBalance *types.Decimal     // balance owned by DB that can be distributed
-	currentEpoch *PendingEpoch      // current epoch being proposed
-	beaconClient *BeaconChainClient // beacon chain client for finality verification (lazy initialized)
+	synced           bool
+	syncedAt         int64
+	active           bool
+	ownedBalance     *types.Decimal     // balance owned by DB that can be distributed
+	currentEpoch     *PendingEpoch      // current epoch being proposed
+	beaconClient     *BeaconChainClient // beacon chain client for finality verification (lazy initialized)
+	beaconClientOnce sync.Once          // ensures beaconClient is initialized exactly once
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {

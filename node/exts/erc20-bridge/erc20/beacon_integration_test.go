@@ -3,6 +3,7 @@ package erc20
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+)
+
+// testEthereumGenesisTime is defined for integration tests
+// (testGenesisTime and testSlotDuration are defined in beacon_client_test.go)
+const (
+	testEthereumGenesisTime = testGenesisTime // Use same value as unit tests
 )
 
 // TestBeaconClient_LazyInitialization tests that beacon client is created on first use
@@ -26,12 +33,18 @@ func TestBeaconClient_LazyInitialization(t *testing.T) {
 	// Initially nil
 	assert.Nil(t, info.beaconClient)
 
-	// After creating client
-	info.beaconClient = NewBeaconChainClient(info.userProvidedData.ChainInfo.BeaconRPC)
+	// After creating client (use test constants)
+	info.beaconClient = NewBeaconChainClient(
+		info.userProvidedData.ChainInfo.BeaconRPC,
+		testEthereumGenesisTime,
+		testSlotDuration,
+	)
 
 	// Should be initialized
 	assert.NotNil(t, info.beaconClient)
 	assert.Equal(t, "https://ethereum-beacon-api.publicnode.com", info.beaconClient.beaconRPC)
+	assert.Equal(t, int64(testEthereumGenesisTime), info.beaconClient.genesisTime)
+	assert.Equal(t, int64(testSlotDuration), info.beaconClient.slotDuration)
 }
 
 // TestBeaconClient_SkipCheckForL2 verifies L2 chains skip beacon check
@@ -90,13 +103,13 @@ func TestBeaconClient_SkipCheckForL2(t *testing.T) {
 // TestBeaconClient_MockFinality tests beacon finality check with mock server
 func TestBeaconClient_MockFinality(t *testing.T) {
 	testCases := []struct {
-		name               string
-		serverResponse     BeaconBlockResponse
-		serverStatusCode   int
-		serverError        bool
-		expectedFinalized  bool
-		expectedError      bool
-		epochShouldWait    bool
+		name              string
+		serverResponse    BeaconBlockResponse
+		serverStatusCode  int
+		serverError       bool
+		expectedFinalized bool
+		expectedError     bool
+		epochShouldWait   bool
 	}{
 		{
 			name: "Block finalized - epoch should proceed",
@@ -138,8 +151,8 @@ func TestBeaconClient_MockFinality(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.serverError {
 				// Test network error case - use invalid URL
-				client := NewBeaconChainClient("http://invalid-url.local")
-				finalized, err := client.IsBlockFinalized(context.Background(), ethereumGenesisTime+900)
+				client := NewBeaconChainClient("http://invalid-url.local", testEthereumGenesisTime, testSlotDuration)
+				finalized, err := client.IsBlockFinalized(context.Background(), testEthereumGenesisTime+900)
 
 				assert.Equal(t, tc.expectedFinalized, finalized)
 				if tc.expectedError {
@@ -165,8 +178,8 @@ func TestBeaconClient_MockFinality(t *testing.T) {
 			defer server.Close()
 
 			// Create client and test
-			client := NewBeaconChainClient(server.URL)
-			finalized, err := client.IsBlockFinalized(context.Background(), ethereumGenesisTime+900)
+			client := NewBeaconChainClient(server.URL, testEthereumGenesisTime, testSlotDuration)
+			finalized, err := client.IsBlockFinalized(context.Background(), testEthereumGenesisTime+900)
 
 			assert.Equal(t, tc.expectedFinalized, finalized)
 			if tc.expectedError {
@@ -199,29 +212,46 @@ func TestBeaconClient_TimestampToSlotConversion(t *testing.T) {
 		},
 		{
 			name:                "Epoch just after merge",
-			epochStartTimestamp: ethereumGenesisTime + 3600, // 1 hour after beacon genesis
+			epochStartTimestamp: testEthereumGenesisTime + 3600, // 1 hour after beacon genesis
 			description:         "Should convert to early beacon slot",
 		},
 		{
 			name:                "Current day timestamp",
-			epochStartTimestamp: ethereumGenesisTime + (365 * 24 * 3600 * 5), // ~5 years after genesis
+			epochStartTimestamp: testEthereumGenesisTime + (365 * 24 * 3600 * 5), // ~5 years after genesis
 			description:         "Should convert to recent beacon slot",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Calculate slot
-			slot := (tc.epochStartTimestamp - ethereumGenesisTime) / slotDuration
+			// Calculate expected slot using the beacon client's formula
+			expectedSlot := (tc.epochStartTimestamp - testEthereumGenesisTime) / testSlotDuration
 
 			// Verify slot is valid (positive)
-			assert.Greater(t, slot, int64(0), "Slot should be positive for timestamps after genesis")
+			assert.Greater(t, expectedSlot, int64(0), "Slot should be positive for timestamps after genesis")
 
-			// Verify slot calculation matches what beacon client would use
-			expectedSlot := (tc.epochStartTimestamp - ethereumGenesisTime) / slotDuration
-			assert.Equal(t, expectedSlot, slot, "Slot calculation should match beacon client logic")
+			// Create mock server that verifies the beacon client queries the correct slot
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Extract slot from URL path and verify it matches expected
+				expectedPath := fmt.Sprintf("/eth/v2/beacon/blocks/%d", expectedSlot)
+				assert.Equal(t, expectedPath, r.URL.Path, "Beacon client should query correct slot")
 
-			t.Logf("Timestamp %d -> Slot %d (%s)", tc.epochStartTimestamp, slot, tc.description)
+				response := BeaconBlockResponse{
+					Finalized: true,
+				}
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+
+			// Create client and call IsBlockFinalized to test actual implementation
+			client := NewBeaconChainClient(server.URL, testEthereumGenesisTime, testSlotDuration)
+			finalized, err := client.IsBlockFinalized(context.Background(), tc.epochStartTimestamp)
+
+			assert.NoError(t, err)
+			assert.True(t, finalized)
+
+			t.Logf("Timestamp %d -> Slot %d (%s)", tc.epochStartTimestamp, expectedSlot, tc.description)
 		})
 	}
 }
@@ -254,11 +284,11 @@ func TestBeaconClient_RealEndpointConnectivity(t *testing.T) {
 
 	for _, endpoint := range endpoints {
 		t.Run(endpoint.name, func(t *testing.T) {
-			client := NewBeaconChainClient(endpoint.url)
+			client := NewBeaconChainClient(endpoint.url, testEthereumGenesisTime, testSlotDuration)
 
 			// Try to query genesis (should always exist)
 			genesisURL := endpoint.url + "/eth/v1/beacon/genesis"
-			req, err := http.NewRequest("GET", genesisURL, nil)
+			req, err := http.NewRequest(http.MethodGet, genesisURL, nil)
 			require.NoError(t, err)
 
 			resp, err := client.httpClient.Do(req)
@@ -280,28 +310,28 @@ func TestBeaconClient_RealEndpointConnectivity(t *testing.T) {
 // TestBeaconClient_ChainConfig verifies that chain configuration is correct
 func TestBeaconClient_ChainConfig(t *testing.T) {
 	testCases := []struct {
-		chainName       chains.Chain
-		expectedBeacon  string
+		chainName      chains.Chain
+		expectedBeacon string
 		hasBeaconChain bool
 	}{
 		{
-			chainName:       chains.Ethereum,
-			expectedBeacon:  "https://ethereum-beacon-api.publicnode.com",
+			chainName:      chains.Ethereum,
+			expectedBeacon: "https://ethereum-beacon-api.publicnode.com",
 			hasBeaconChain: true,
 		},
 		{
-			chainName:       chains.Sepolia,
-			expectedBeacon:  "https://ethereum-sepolia-beacon-api.publicnode.com",
+			chainName:      chains.Sepolia,
+			expectedBeacon: "https://ethereum-sepolia-beacon-api.publicnode.com",
 			hasBeaconChain: true,
 		},
 		{
-			chainName:       chains.Hoodi,
-			expectedBeacon:  "https://ethereum-hoodi-beacon-api.publicnode.com",
+			chainName:      chains.Hoodi,
+			expectedBeacon: "https://ethereum-hoodi-beacon-api.publicnode.com",
 			hasBeaconChain: true,
 		},
 		{
-			chainName:       chains.BaseSepolia,
-			expectedBeacon:  "", // L2, no beacon
+			chainName:      chains.BaseSepolia,
+			expectedBeacon: "", // L2, no beacon
 			hasBeaconChain: false,
 		},
 	}
