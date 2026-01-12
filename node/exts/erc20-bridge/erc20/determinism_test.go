@@ -423,8 +423,6 @@ func TestVoteOrderingDeterminism(t *testing.T) {
 	// Create message hash for signing
 	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
 	require.NoError(t, err)
-	prefix := []byte(EthereumSignedMessagePrefix)
-	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 	// Create 5 validators with different addresses (inserted in random order)
 	type validatorVote struct {
@@ -439,7 +437,8 @@ func TestVoteOrderingDeterminism(t *testing.T) {
 		require.NoError(t, err)
 		addr := crypto.PubkeyToAddress(key.PublicKey)
 
-		sig, err := signMessage(ethSignedMessageHash, key)
+		// signMessage handles Ethereum prefix internally
+		sig, err := signMessage(messageHash, key)
 		require.NoError(t, err)
 
 		validators[i] = validatorVote{

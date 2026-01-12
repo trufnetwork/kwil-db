@@ -209,8 +209,6 @@ func TestCrossNodeMerkleConsistency(t *testing.T) {
 // TestCrossNodeSignatureVerification tests that signature verification
 // produces identical results on different nodes
 func TestCrossNodeSignatureVerification(t *testing.T) {
-	ctx := context.Background()
-
 	// Create two separate database connections
 	db1, err := newTestDB()
 	if err != nil {
@@ -241,36 +239,23 @@ func TestCrossNodeSignatureVerification(t *testing.T) {
 	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
 	require.NoError(t, err)
 
+	// Sign with validator (signMessage handles Ethereum prefix internally)
+	signature, err := signMessage(messageHash, validatorKey)
+	require.NoError(t, err)
+
+	// Compute the prefixed hash for verification (must match what signMessage used)
 	prefix := []byte(EthereumSignedMessagePrefix)
 	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
-	// Sign with validator
-	signature, err := signMessage(ethSignedMessageHash, validatorKey)
-	require.NoError(t, err)
-
-	// Node 1: Verify signature
+	// Node 1: Verify signature (cryptographic operation, no DB needed)
 	var node1Valid bool
-	{
-		tx1, err := db1.BeginTx(ctx)
-		require.NoError(t, err)
-		defer tx1.Rollback(ctx)
-
-		// Verify on node 1
-		err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, validatorAddr.Bytes())
-		node1Valid = (err == nil)
-	}
+	err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, validatorAddr.Bytes())
+	node1Valid = (err == nil)
 
 	// Node 2: Verify same signature
 	var node2Valid bool
-	{
-		tx2, err := db2.BeginTx(ctx)
-		require.NoError(t, err)
-		defer tx2.Rollback(ctx)
-
-		// Verify on node 2
-		err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, validatorAddr.Bytes())
-		node2Valid = (err == nil)
-	}
+	err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, validatorAddr.Bytes())
+	node2Valid = (err == nil)
 
 	// CRITICAL VERIFICATION: Both nodes agree on signature validity
 	require.Equal(t, node1Valid, node2Valid, "Both nodes must agree on signature validity")
@@ -285,24 +270,12 @@ func TestCrossNodeSignatureVerification(t *testing.T) {
 	invalidSignature[0] ^= 0xFF // Corrupt first byte
 
 	// Node 1: Verify invalid signature
-	{
-		tx1, err := db1.BeginTx(ctx)
-		require.NoError(t, err)
-		defer tx1.Rollback(ctx)
-
-		err = utils.EthStandardVerifyDigest(invalidSignature, ethSignedMessageHash, validatorAddr.Bytes())
-		node1Valid = (err == nil)
-	}
+	err = utils.EthStandardVerifyDigest(invalidSignature, ethSignedMessageHash, validatorAddr.Bytes())
+	node1Valid = (err == nil)
 
 	// Node 2: Verify invalid signature
-	{
-		tx2, err := db2.BeginTx(ctx)
-		require.NoError(t, err)
-		defer tx2.Rollback(ctx)
-
-		err = utils.EthStandardVerifyDigest(invalidSignature, ethSignedMessageHash, validatorAddr.Bytes())
-		node2Valid = (err == nil)
-	}
+	err = utils.EthStandardVerifyDigest(invalidSignature, ethSignedMessageHash, validatorAddr.Bytes())
+	node2Valid = (err == nil)
 
 	// CRITICAL VERIFICATION: Both nodes reject invalid signature
 	require.Equal(t, node1Valid, node2Valid, "Both nodes must agree on invalid signature")
@@ -500,9 +473,12 @@ func TestSumVotingPowerCommutative(t *testing.T) {
 	results := make([]int, len(orderings))
 
 	for orderIdx, ordering := range orderings {
+		// Reset singleton state for each iteration
+		orderedsync.ForTestingReset()
+		ForTestingResetSingleton()
+
 		tx, err := db.BeginTx(ctx)
 		require.NoError(t, err)
-		defer tx.Rollback(ctx)
 
 		app := setup(t, tx)
 		instanceID := newUUID()
@@ -558,13 +534,12 @@ func TestSumVotingPowerCommutative(t *testing.T) {
 		// Create message hash
 		messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
 		require.NoError(t, err)
-		prefix := []byte(EthereumSignedMessagePrefix)
-		ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
 
 		// Vote in specified order
+		// signMessage handles Ethereum prefix internally
 		const nonCustodialNonce = 0
 		for _, i := range ordering {
-			sig, err := signMessage(ethSignedMessageHash, validators[i])
+			sig, err := signMessage(messageHash, validators[i])
 			require.NoError(t, err)
 
 			err = voteEpoch(ctx, app, epochID, addresses[i], nonCustodialNonce, sig)
@@ -581,6 +556,9 @@ func TestSumVotingPowerCommutative(t *testing.T) {
 		count, ok := result.Rows[0][0].(int64)
 		require.True(t, ok)
 		results[orderIdx] = int(count)
+
+		// Rollback transaction for this iteration
+		tx.Rollback(ctx)
 	}
 
 	// VERIFY: Both orderings resulted in same vote count

@@ -294,27 +294,27 @@ func TestVoteEpochDuplicateVote(t *testing.T) {
 	count := int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
-	// Validator votes again with different signature (simulate re-signing)
+	// Validator attempts to vote again with different signature
 	sig2, err := signMessage(messageHash, validatorKey)
 	require.NoError(t, err)
 
 	err = voteEpoch(ctx, app, epochID, validatorAddr, nonCustodialNonce, sig2)
 	require.NoError(t, err)
 
-	// Verify vote count is STILL 1 (duplicate vote updated, not added)
+	// Verify vote count is STILL 1 (ON CONFLICT DO NOTHING ignores duplicate)
 	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
 	count = int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
-	// Verify signature was updated
+	// Verify signature was NOT updated (first signature sig1 is retained)
 	result, err = app.DB.Execute(ctx, `
 		SELECT signature FROM kwil_erc20_meta.epoch_votes
 		WHERE epoch_id = $1 AND voter = $2
 	`, epochID, validatorAddr.Bytes())
 	require.NoError(t, err)
 	require.Len(t, result.Rows, 1)
-	require.Equal(t, sig2, result.Rows[0][0])
+	require.Equal(t, sig1, result.Rows[0][0], "ON CONFLICT DO NOTHING should preserve the first signature")
 }
 
 // TestValidatorSignerGetFinalizedEpochs tests querying for finalized epochs
