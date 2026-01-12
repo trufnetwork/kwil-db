@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/crypto"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"

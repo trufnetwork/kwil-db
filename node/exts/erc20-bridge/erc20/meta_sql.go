@@ -466,6 +466,7 @@ func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUI
 	{kwil_erc20_meta}SELECT recipient, amount
 	FROM epoch_rewards
 	WHERE epoch_id = $epoch_id
+	ORDER BY recipient ASC, amount ASC
 	`, map[string]any{
 		"epoch_id": epochID,
 	}, func(row *common.Row) error {

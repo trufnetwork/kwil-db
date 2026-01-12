@@ -92,13 +92,17 @@ func TestVoteEpochAction(t *testing.T) {
 	require.Equal(t, signature, result.Rows[0][1])
 
 	// Verify signature is valid by recovering public key
-	// Note: signMessage returns Gnosis Safe format (V=31/32), but crypto.SigToPub expects V=0/1
+	// signMessage adds Ethereum signed message prefix, so we need to add it for recovery too
+	prefix := []byte(EthereumSignedMessagePrefix)
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+	// Note: signMessage returns standard Ethereum format (V=27/28), but crypto.SigToPub expects V=0/1
 	// We need to adjust V for recovery verification
 	sigForRecovery := make([]byte, len(signature))
 	copy(sigForRecovery, signature)
-	sigForRecovery[64] -= 31 // Convert V: 31/32 -> 0/1
+	sigForRecovery[64] -= 27 // Convert V: 27/28 -> 0/1
 
-	recoveredPubKey, err := crypto.SigToPub(messageHash, sigForRecovery)
+	recoveredPubKey, err := crypto.SigToPub(ethSignedMessageHash, sigForRecovery)
 	require.NoError(t, err)
 	require.Equal(t, validatorKey.PublicKey, *recoveredPubKey)
 
@@ -290,27 +294,27 @@ func TestVoteEpochDuplicateVote(t *testing.T) {
 	count := int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
-	// Validator votes again with different signature (simulate re-signing)
+	// Validator attempts to vote again with different signature
 	sig2, err := signMessage(messageHash, validatorKey)
 	require.NoError(t, err)
 
 	err = voteEpoch(ctx, app, epochID, validatorAddr, nonCustodialNonce, sig2)
 	require.NoError(t, err)
 
-	// Verify vote count is STILL 1 (duplicate vote updated, not added)
+	// Verify vote count is STILL 1 (ON CONFLICT DO NOTHING ignores duplicate)
 	result, err = app.DB.Execute(ctx, "SELECT COUNT(*) FROM kwil_erc20_meta.epoch_votes WHERE epoch_id = $1 AND nonce = 0", epochID)
 	require.NoError(t, err)
 	count = int(result.Rows[0][0].(int64))
 	require.Equal(t, 1, count)
 
-	// Verify signature was updated
+	// Verify signature was NOT updated (first signature sig1 is retained)
 	result, err = app.DB.Execute(ctx, `
 		SELECT signature FROM kwil_erc20_meta.epoch_votes
 		WHERE epoch_id = $1 AND voter = $2
 	`, epochID, validatorAddr.Bytes())
 	require.NoError(t, err)
 	require.Len(t, result.Rows, 1)
-	require.Equal(t, sig2, result.Rows[0][0])
+	require.Equal(t, sig1, result.Rows[0][0], "ON CONFLICT DO NOTHING should preserve the first signature")
 }
 
 // TestValidatorSignerGetFinalizedEpochs tests querying for finalized epochs
@@ -524,12 +528,16 @@ func TestValidatorSignerSignAndVote(t *testing.T) {
 	require.Equal(t, 65, len(signature), "signature should be 65 bytes")
 
 	// Verify signature is valid
-	// Adjust V for recovery (Gnosis Safe V=31/32 -> standard V=0/1)
+	// signMessage adds Ethereum signed message prefix, so we need to add it for recovery too
+	prefix := []byte(EthereumSignedMessagePrefix)
+	ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+	// Adjust V for recovery (standard Ethereum V=27/28 -> V=0/1)
 	sigForRecovery2 := make([]byte, len(signature))
 	copy(sigForRecovery2, signature)
-	sigForRecovery2[64] -= 31
+	sigForRecovery2[64] -= 27
 
-	recoveredPubKey, err := crypto.SigToPub(messageHash, sigForRecovery2)
+	recoveredPubKey, err := crypto.SigToPub(ethSignedMessageHash, sigForRecovery2)
 	require.NoError(t, err)
 	require.Equal(t, validatorKey.PublicKey, *recoveredPubKey)
 
