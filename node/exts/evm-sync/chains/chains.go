@@ -16,6 +16,10 @@ type ChainInfo struct {
 	// RequiredConfirmations is the number of confirmations required before an event is considered final.
 	// For example, Ethereum mainnet requires 12 confirmations.
 	RequiredConfirmations int64
+	// BeaconRPC is the beacon chain API base URL for checking finality.
+	// Empty string if the chain doesn't have a beacon chain (e.g., L2s).
+	// For Ethereum mainnet and testnets that use beacon chain consensus.
+	BeaconRPC string
 }
 
 func init() {
@@ -24,21 +28,25 @@ func init() {
 			Name:                  "ethereum",
 			ID:                    "1",
 			RequiredConfirmations: 12,
+			BeaconRPC:             "https://ethereum-beacon-api.publicnode.com",
 		},
 		ChainInfo{
 			Name:                  "sepolia",
 			ID:                    "11155111",
 			RequiredConfirmations: 12,
+			BeaconRPC:             "https://ethereum-sepolia-beacon-api.publicnode.com",
 		},
 		ChainInfo{
 			Name:                  "base-sepolia",
 			ID:                    "84532",
 			RequiredConfirmations: 12,
+			BeaconRPC:             "", // L2, no beacon chain
 		},
 		ChainInfo{
 			Name:                  "hoodi",
 			ID:                    "560048",
 			RequiredConfirmations: 12,
+			BeaconRPC:             "https://ethereum-hoodi-beacon-api.publicnode.com",
 		},
 	)
 	if err != nil {
