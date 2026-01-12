@@ -338,12 +338,13 @@ func TestOrderBySufficiencyForDuplicateAmounts(t *testing.T) {
 	}
 
 	// VERIFY: Order is lexicographic by recipient address (ascending)
+	// Note: Addresses must use EIP-55 checksummed format to match Recipient.Hex() output
 	expectedOrder := []string{
 		"0x1111111111111111111111111111111111111111",
 		"0x5555555555555555555555555555555555555555",
 		"0x9999999999999999999999999999999999999999",
-		"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // lowercase in Ethereum
-		"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		"0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa", // EIP-55 checksummed
+		"0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // EIP-55 checksummed
 	}
 
 	require.Equal(t, expectedOrder, firstOrdering, "Order should be lexicographic by recipient address")

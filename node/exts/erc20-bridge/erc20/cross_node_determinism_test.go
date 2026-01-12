@@ -209,19 +209,6 @@ func TestCrossNodeMerkleConsistency(t *testing.T) {
 // TestCrossNodeSignatureVerification tests that signature verification
 // produces identical results on different nodes
 func TestCrossNodeSignatureVerification(t *testing.T) {
-	// Create two separate database connections
-	db1, err := newTestDB()
-	if err != nil {
-		t.Skip("PostgreSQL not available")
-	}
-	defer db1.Close()
-
-	db2, err := newTestDB()
-	if err != nil {
-		t.Skip("PostgreSQL not available")
-	}
-	defer db2.Close()
-
 	orderedsync.ForTestingReset()
 	defer orderedsync.ForTestingReset()
 	ForTestingResetSingleton()
