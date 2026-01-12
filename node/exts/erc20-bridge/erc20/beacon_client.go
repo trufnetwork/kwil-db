@@ -18,20 +18,9 @@ type BeaconChainClient struct {
 
 // BeaconBlockResponse matches the beacon chain API response structure
 // from GET /eth/v2/beacon/blocks/{block_id}
+// Only the Finalized field is used; other fields are omitted for simplicity
 type BeaconBlockResponse struct {
 	Finalized bool `json:"finalized"`
-	Data      struct {
-		Message struct {
-			Slot string `json:"slot"`
-			Body struct {
-				ExecutionPayload struct {
-					BlockNumber string `json:"block_number"`
-					BlockHash   string `json:"block_hash"`
-					Timestamp   string `json:"timestamp"`
-				} `json:"execution_payload"`
-			} `json:"body"`
-		} `json:"message"`
-	} `json:"data"`
 }
 
 // NewBeaconChainClient creates a new beacon chain client
@@ -54,6 +43,11 @@ func NewBeaconChainClient(beaconRPC string, genesisTime, slotDuration int64) *Be
 //   - false if not finalized or error occurred
 //   - error for critical failures (nil for normal "not finalized yet" case)
 func (b *BeaconChainClient) IsBlockFinalized(ctx context.Context, ethBlockTimestamp int64) (bool, error) {
+	// Validate slot duration to prevent division by zero
+	if b.slotDuration == 0 {
+		return false, fmt.Errorf("invalid beacon client configuration: slotDuration is zero (genesisTime=%d, ethBlockTimestamp=%d)", b.genesisTime, ethBlockTimestamp)
+	}
+
 	// Calculate beacon chain slot from Ethereum block timestamp using network-specific genesis time
 	slot := (ethBlockTimestamp - b.genesisTime) / b.slotDuration
 

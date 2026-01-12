@@ -1550,9 +1550,17 @@ func init() {
 			}
 
 			// Check beacon chain finality (if applicable)
+			// NOTE: This assumes info.currentEpoch.StartTime (TN block timestamp) correlates
+			// with Ethereum block timestamps. Clock synchronization between chains is required.
+			//
+			// IMPORTANT: If the beacon RPC consistently fails or returns errors, epoch finalization
+			// will be delayed indefinitely (returns nil to wait for next block). This is intentional
+			// to ensure we only finalize epochs when we can verify Ethereum finality. If the beacon
+			// RPC becomes permanently unavailable, operational intervention is required to either:
+			// - Fix the beacon RPC endpoint
+			// - Disable beacon finality checks (set BeaconRPC to empty string)
 			if info.userProvidedData.ChainInfo.BeaconRPC != "" {
 				// Get Ethereum block timestamp when this epoch started
-				// Use TN block timestamp (assumes clocks are synced)
 				ethTimestamp := info.currentEpoch.StartTime
 
 				// Thread-safe lazy initialization of beacon client with network-specific parameters

@@ -59,7 +59,7 @@ func init() {
 			ID:                    "560048",
 			RequiredConfirmations: 12,
 			BeaconRPC:             "https://ethereum-hoodi-beacon-api.publicnode.com",
-			BeaconGenesisTime:     1728334800, // Oct 7, 2024, 19:00:00 UTC (Hoodi testnet genesis)
+			BeaconGenesisTime:     1742213400, // Mar 17, 2025, 12:10:00 UTC (Hoodi testnet genesis)
 			BeaconSlotDuration:    12,
 		},
 	)

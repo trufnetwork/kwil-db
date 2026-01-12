@@ -119,6 +119,28 @@ func TestBeaconChainClient_IsBlockFinalized_InvalidSlot(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid slot")
 }
 
+// TestBeaconChainClient_ZeroSlotDuration tests division by zero protection
+func TestBeaconChainClient_ZeroSlotDuration(t *testing.T) {
+	// Create mock HTTP server (won't be called)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("Should not reach server for zero slot duration")
+	}))
+	defer server.Close()
+
+	// Create client with zero slot duration
+	client := NewBeaconChainClient(server.URL, testGenesisTime, 0)
+
+	// Test with any timestamp
+	timestamp := int64(testGenesisTime + 900)
+	finalized, err := client.IsBlockFinalized(context.Background(), timestamp)
+
+	// Should return error for zero slot duration to prevent division by zero
+	require.Error(t, err)
+	assert.False(t, finalized)
+	assert.Contains(t, err.Error(), "slotDuration is zero")
+	assert.Contains(t, err.Error(), "invalid beacon client configuration")
+}
+
 // TestBeaconChainClient_SlotCalculation tests slot calculation accuracy
 func TestBeaconChainClient_SlotCalculation(t *testing.T) {
 	testCases := []struct {
