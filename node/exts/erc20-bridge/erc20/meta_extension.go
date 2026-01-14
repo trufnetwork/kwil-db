@@ -344,7 +344,24 @@ func init() {
 			if err := info.startDepositListener(); err != nil {
 				return err
 			}
-			return info.startWithdrawalListener()
+			err := info.startWithdrawalListener()
+			if err != nil {
+				// Cleanup: If withdrawal listener fails, stop deposit listener
+				instanceIDStr := id.String()
+				cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*id))
+				if cleanupErr != nil {
+					logger := app.Service.Logger
+					if logger != nil {
+						logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+					}
+				}
+				// Remove tracking entry
+				runningListenersMu.Lock()
+				delete(runningDepositListeners, instanceIDStr)
+				runningListenersMu.Unlock()
+				return err
+			}
+			return nil
 		}
 
 		info.mu.Unlock()
@@ -389,6 +406,17 @@ func init() {
 								}
 								err = instance.startWithdrawalListener()
 								if err != nil {
+									// Cleanup: If withdrawal listener fails to start, stop the deposit listener
+									// to avoid orphaned state
+									instanceIDStr := instance.ID.String()
+									cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*instance.ID))
+									if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+									}
+									// Remove tracking entry
+									runningListenersMu.Lock()
+									delete(runningDepositListeners, instanceIDStr)
+									runningListenersMu.Unlock()
 									return err
 								}
 							} else {
@@ -545,16 +573,25 @@ func init() {
 									info.mu.RLock()
 									defer info.mu.RUnlock()
 
-									// an error from startDepositListener is a critical error
-									// in the code, not a user error. Therefore, not too concerned with
-									// rolling back the above changes
+									// Start deposit listener
 									err = info.startDepositListener()
 									if err != nil {
 										return err
 									}
 
+									// Start withdrawal listener
 									err = info.startWithdrawalListener()
 									if err != nil {
+										// Cleanup: If withdrawal listener fails, stop deposit listener
+										instanceIDStr := id.String()
+										cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(id))
+										if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+										}
+										// Remove tracking entry
+										runningListenersMu.Lock()
+										delete(runningDepositListeners, instanceIDStr)
+										runningListenersMu.Unlock()
 										return err
 									}
 
