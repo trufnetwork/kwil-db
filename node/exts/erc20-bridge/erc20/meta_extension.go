@@ -381,54 +381,15 @@ func init() {
 						// deposit listener. Otherwise, we should start the state poller
 						if instance.active {
 							if instance.synced {
-								instanceIDStr := instance.ID.String()
-
-								// Check if deposit listener is already running for this instance
-								runningListenersMu.Lock()
-								depositAlreadyRunning := runningDepositListeners[instanceIDStr]
-								if !depositAlreadyRunning {
-									runningDepositListeners[instanceIDStr] = true
+								// Start both deposit and withdrawal listeners
+								// These methods are idempotent - safe to call multiple times
+								err = instance.startDepositListener()
+								if err != nil {
+									return err
 								}
-								runningListenersMu.Unlock()
-
-								if !depositAlreadyRunning {
-									// Start deposit listener
-									err = instance.startDepositListener()
-									if err != nil {
-										// Clean up tracking on error
-										runningListenersMu.Lock()
-										delete(runningDepositListeners, instanceIDStr)
-										runningListenersMu.Unlock()
-										return err
-									}
-								} else {
-									if app.Service != nil && app.Service.Logger != nil {
-										app.Service.Logger.Debugf("deposit listener already running for instance %s, skipping", instance.ID)
-									}
-								}
-
-								// Check if withdrawal listener is already running for this instance
-								runningListenersMu.Lock()
-								withdrawalAlreadyRunning := runningWithdrawalListeners[instanceIDStr]
-								if !withdrawalAlreadyRunning {
-									runningWithdrawalListeners[instanceIDStr] = true
-								}
-								runningListenersMu.Unlock()
-
-								if !withdrawalAlreadyRunning {
-									// Start withdrawal listener
-									err = instance.startWithdrawalListener()
-									if err != nil {
-										// Clean up tracking on error
-										runningListenersMu.Lock()
-										delete(runningWithdrawalListeners, instanceIDStr)
-										runningListenersMu.Unlock()
-										return err
-									}
-								} else {
-									if app.Service != nil && app.Service.Logger != nil {
-										app.Service.Logger.Debugf("withdrawal listener already running for instance %s, skipping", instance.ID)
-									}
+								err = instance.startWithdrawalListener()
+								if err != nil {
+									return err
 								}
 							} else {
 								err = instance.startStatePoller()
@@ -2370,14 +2331,29 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 
 // startDepositListener starts an event listener that listens for Deposit events on the bridge contract.
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
+// This method is idempotent - calling it multiple times for the same instance is safe.
 func (r *rewardExtensionInfo) startDepositListener() error {
+	// Check if deposit listener is already running for this instance
+	instanceIDStr := r.ID.String()
+	runningListenersMu.Lock()
+	alreadyRunning := runningDepositListeners[instanceIDStr]
+	if !alreadyRunning {
+		runningDepositListeners[instanceIDStr] = true
+	}
+	runningListenersMu.Unlock()
+
+	if alreadyRunning {
+		// Already running, skip registration
+		return nil
+	}
+
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
 	escrowCopy := r.EscrowAddress
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// we now register synchronization of the Deposit event
-	return evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
+	err := evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
@@ -2499,18 +2475,43 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 			return logs, nil
 		},
 	})
+
+	if err != nil {
+		// Registration failed, clean up tracking
+		runningListenersMu.Lock()
+		delete(runningDepositListeners, instanceIDStr)
+		runningListenersMu.Unlock()
+		return err
+	}
+
+	return nil
 }
 
 // startWithdrawalListener starts an event listener that listens for Withdraw events on the contract.
 // The listener is registered for all instances but only processes events if the contract emits them.
 // Old contracts (RewardDistributor) never emit Withdraw events, so the listener remains dormant for those instances.
+// This method is idempotent - calling it multiple times for the same instance is safe.
 func (r *rewardExtensionInfo) startWithdrawalListener() error {
+	// Check if withdrawal listener is already running for this instance
+	instanceIDStr := r.ID.String()
+	runningListenersMu.Lock()
+	alreadyRunning := runningWithdrawalListeners[instanceIDStr]
+	if !alreadyRunning {
+		runningWithdrawalListeners[instanceIDStr] = true
+	}
+	runningListenersMu.Unlock()
+
+	if alreadyRunning {
+		// Already running, skip registration
+		return nil
+	}
+
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// Register withdrawal event listener
-	return evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
+	err := evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
 		UniqueName: withdrawalListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
@@ -2552,6 +2553,16 @@ func (r *rewardExtensionInfo) startWithdrawalListener() error {
 			return logs, nil
 		},
 	})
+
+	if err != nil {
+		// Registration failed, clean up tracking
+		runningListenersMu.Lock()
+		delete(runningWithdrawalListeners, instanceIDStr)
+		runningListenersMu.Unlock()
+		return err
+	}
+
+	return nil
 }
 
 // stopAllListeners stops all event listeners for the reward extension.
