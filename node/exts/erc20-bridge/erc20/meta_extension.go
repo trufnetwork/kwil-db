@@ -341,25 +341,29 @@ func init() {
 			info.mu.Unlock()
 
 			// Start both deposit and withdrawal listeners
-			if err := info.startDepositListener(); err != nil {
-				return err
+			depositErr, depositStarted := info.startDepositListener()
+			if depositErr != nil {
+				return depositErr
 			}
-			err := info.startWithdrawalListener()
-			if err != nil {
-				// Cleanup: If withdrawal listener fails, stop deposit listener
-				instanceIDStr := id.String()
-				cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*id))
-				if cleanupErr != nil {
-					logger := app.Service.Logger
-					if logger != nil {
-						logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+
+			withdrawalErr, _ := info.startWithdrawalListener()
+			if withdrawalErr != nil {
+				// Cleanup: Only unregister deposit listener if WE started it
+				if depositStarted {
+					instanceIDStr := id.String()
+					cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*id))
+					if cleanupErr != nil {
+						logger := app.Service.Logger
+						if logger != nil {
+							logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+						}
 					}
+					// Remove tracking entry
+					runningListenersMu.Lock()
+					delete(runningDepositListeners, instanceIDStr)
+					runningListenersMu.Unlock()
 				}
-				// Remove tracking entry
-				runningListenersMu.Lock()
-				delete(runningDepositListeners, instanceIDStr)
-				runningListenersMu.Unlock()
-				return err
+				return withdrawalErr
 			}
 			return nil
 		}
@@ -400,24 +404,26 @@ func init() {
 							if instance.synced {
 								// Start both deposit and withdrawal listeners
 								// These methods are idempotent - safe to call multiple times
-								err = instance.startDepositListener()
-								if err != nil {
-									return err
+								depositErr, depositStarted := instance.startDepositListener()
+								if depositErr != nil {
+									return depositErr
 								}
-								err = instance.startWithdrawalListener()
-								if err != nil {
-									// Cleanup: If withdrawal listener fails to start, stop the deposit listener
-									// to avoid orphaned state
-									instanceIDStr := instance.ID.String()
-									cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*instance.ID))
-									if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
-										app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+
+								withdrawalErr, _ := instance.startWithdrawalListener()
+								if withdrawalErr != nil {
+									// Cleanup: Only unregister deposit listener if WE started it
+									if depositStarted {
+										instanceIDStr := instance.ID.String()
+										cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*instance.ID))
+										if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+										}
+										// Remove tracking entry
+										runningListenersMu.Lock()
+										delete(runningDepositListeners, instanceIDStr)
+										runningListenersMu.Unlock()
 									}
-									// Remove tracking entry
-									runningListenersMu.Lock()
-									delete(runningDepositListeners, instanceIDStr)
-									runningListenersMu.Unlock()
-									return err
+									return withdrawalErr
 								}
 							} else {
 								err = instance.startStatePoller()
@@ -574,25 +580,27 @@ func init() {
 									defer info.mu.RUnlock()
 
 									// Start deposit listener
-									err = info.startDepositListener()
-									if err != nil {
-										return err
+									depositErr, depositStarted := info.startDepositListener()
+									if depositErr != nil {
+										return depositErr
 									}
 
 									// Start withdrawal listener
-									err = info.startWithdrawalListener()
-									if err != nil {
-										// Cleanup: If withdrawal listener fails, stop deposit listener
-										instanceIDStr := id.String()
-										cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(id))
-										if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
-											app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+									withdrawalErr, _ := info.startWithdrawalListener()
+									if withdrawalErr != nil {
+										// Cleanup: Only unregister deposit listener if WE started it
+										if depositStarted {
+											instanceIDStr := id.String()
+											cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(id))
+											if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+											}
+											// Remove tracking entry
+											runningListenersMu.Lock()
+											delete(runningDepositListeners, instanceIDStr)
+											runningListenersMu.Unlock()
 										}
-										// Remove tracking entry
-										runningListenersMu.Lock()
-										delete(runningDepositListeners, instanceIDStr)
-										runningListenersMu.Unlock()
-										return err
+										return withdrawalErr
 									}
 
 									return resultFn([]any{id})
@@ -2369,20 +2377,26 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 // startDepositListener starts an event listener that listens for Deposit events on the bridge contract.
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 // This method is idempotent - calling it multiple times for the same instance is safe.
-func (r *rewardExtensionInfo) startDepositListener() error {
+//
+// Returns (error, wasStarted) where:
+//   - (nil, true): Successfully registered a NEW listener (caller owns cleanup responsibility)
+//   - (nil, false): Listener already existed (caller should NOT clean up)
+//   - (err, false): Registration failed (caller should NOT clean up)
+func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 	// Check if deposit listener is already running for this instance
+	// Keep lock held during registration to prevent race conditions
 	instanceIDStr := r.ID.String()
 	runningListenersMu.Lock()
-	alreadyRunning := runningDepositListeners[instanceIDStr]
-	if !alreadyRunning {
-		runningDepositListeners[instanceIDStr] = true
-	}
-	runningListenersMu.Unlock()
+	defer runningListenersMu.Unlock()
 
-	if alreadyRunning {
+	if runningDepositListeners[instanceIDStr] {
 		// Already running, skip registration
-		return nil
+		return nil, false
 	}
+
+	// Mark as running BEFORE registration to avoid race conditions
+	// Lock is held (deferred unlock above) to ensure atomicity
+	runningDepositListeners[instanceIDStr] = true
 
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
@@ -2515,33 +2529,39 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 
 	if err != nil {
 		// Registration failed, clean up tracking
-		runningListenersMu.Lock()
+		// Lock still held (deferred unlock)
 		delete(runningDepositListeners, instanceIDStr)
-		runningListenersMu.Unlock()
-		return err
+		return err, false
 	}
 
-	return nil
+	// Successfully started a NEW listener - caller owns cleanup responsibility
+	return nil, true
 }
 
 // startWithdrawalListener starts an event listener that listens for Withdraw events on the contract.
 // The listener is registered for all instances but only processes events if the contract emits them.
 // Old contracts (RewardDistributor) never emit Withdraw events, so the listener remains dormant for those instances.
 // This method is idempotent - calling it multiple times for the same instance is safe.
-func (r *rewardExtensionInfo) startWithdrawalListener() error {
+//
+// Returns (error, wasStarted) where:
+//   - (nil, true): Successfully registered a NEW listener (caller owns cleanup responsibility)
+//   - (nil, false): Listener already existed (caller should NOT clean up)
+//   - (err, false): Registration failed (caller should NOT clean up)
+func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 	// Check if withdrawal listener is already running for this instance
+	// Keep lock held during registration to prevent race conditions
 	instanceIDStr := r.ID.String()
 	runningListenersMu.Lock()
-	alreadyRunning := runningWithdrawalListeners[instanceIDStr]
-	if !alreadyRunning {
-		runningWithdrawalListeners[instanceIDStr] = true
-	}
-	runningListenersMu.Unlock()
+	defer runningListenersMu.Unlock()
 
-	if alreadyRunning {
+	if runningWithdrawalListeners[instanceIDStr] {
 		// Already running, skip registration
-		return nil
+		return nil, false
 	}
+
+	// Mark as running BEFORE registration to avoid race conditions
+	// Lock is held (deferred unlock above) to ensure atomicity
+	runningWithdrawalListeners[instanceIDStr] = true
 
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
@@ -2593,13 +2613,13 @@ func (r *rewardExtensionInfo) startWithdrawalListener() error {
 
 	if err != nil {
 		// Registration failed, clean up tracking
-		runningListenersMu.Lock()
+		// Lock still held (deferred unlock)
 		delete(runningWithdrawalListeners, instanceIDStr)
-		runningListenersMu.Unlock()
-		return err
+		return err, false
 	}
 
-	return nil
+	// Successfully started a NEW listener - caller owns cleanup responsibility
+	return nil, true
 }
 
 // stopAllListeners stops all event listeners for the reward extension.
