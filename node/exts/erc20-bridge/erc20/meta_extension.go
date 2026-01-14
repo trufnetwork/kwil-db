@@ -95,6 +95,17 @@ var (
 
 	// runningSignersMu protects both runningSigners and runningSignerCancels maps
 	runningSignersMu sync.Mutex
+
+	// runningDepositListeners tracks which instance IDs have active deposit listeners
+	// to prevent duplicate listeners if OnStart is called multiple times (e.g., when adding a new bridge instance via USE statement)
+	runningDepositListeners = make(map[string]bool)
+
+	// runningWithdrawalListeners tracks which instance IDs have active withdrawal listeners
+	// to prevent duplicate listeners if OnStart is called multiple times
+	runningWithdrawalListeners = make(map[string]bool)
+
+	// runningListenersMu protects both runningDepositListeners and runningWithdrawalListeners maps
+	runningListenersMu sync.Mutex
 )
 
 // generates a deterministic UUID for the chain and escrow
@@ -370,14 +381,54 @@ func init() {
 						// deposit listener. Otherwise, we should start the state poller
 						if instance.active {
 							if instance.synced {
-								// Start both deposit and withdrawal listeners
-								err = instance.startDepositListener()
-								if err != nil {
-									return err
+								instanceIDStr := instance.ID.String()
+
+								// Check if deposit listener is already running for this instance
+								runningListenersMu.Lock()
+								depositAlreadyRunning := runningDepositListeners[instanceIDStr]
+								if !depositAlreadyRunning {
+									runningDepositListeners[instanceIDStr] = true
 								}
-								err = instance.startWithdrawalListener()
-								if err != nil {
-									return err
+								runningListenersMu.Unlock()
+
+								if !depositAlreadyRunning {
+									// Start deposit listener
+									err = instance.startDepositListener()
+									if err != nil {
+										// Clean up tracking on error
+										runningListenersMu.Lock()
+										delete(runningDepositListeners, instanceIDStr)
+										runningListenersMu.Unlock()
+										return err
+									}
+								} else {
+									if app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Debugf("deposit listener already running for instance %s, skipping", instance.ID)
+									}
+								}
+
+								// Check if withdrawal listener is already running for this instance
+								runningListenersMu.Lock()
+								withdrawalAlreadyRunning := runningWithdrawalListeners[instanceIDStr]
+								if !withdrawalAlreadyRunning {
+									runningWithdrawalListeners[instanceIDStr] = true
+								}
+								runningListenersMu.Unlock()
+
+								if !withdrawalAlreadyRunning {
+									// Start withdrawal listener
+									err = instance.startWithdrawalListener()
+									if err != nil {
+										// Clean up tracking on error
+										runningListenersMu.Lock()
+										delete(runningWithdrawalListeners, instanceIDStr)
+										runningListenersMu.Unlock()
+										return err
+									}
+								} else {
+									if app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Debugf("withdrawal listener already running for instance %s, skipping", instance.ID)
+									}
 								}
 							} else {
 								err = instance.startStatePoller()
@@ -658,6 +709,12 @@ func init() {
 								}
 							}
 							runningSignersMu.Unlock()
+
+							// Clean up listener tracking
+							runningListenersMu.Lock()
+							delete(runningDepositListeners, instanceIDStr)
+							delete(runningWithdrawalListeners, instanceIDStr)
+							runningListenersMu.Unlock()
 
 							// stopAllListeners does not require a lock.
 							// Any error returned here suggests some sort of critical bug

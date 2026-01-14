@@ -186,6 +186,12 @@ func ForTestingResetSingleton() {
 	runningSigners = make(map[string]bool)
 	runningSignerCancels = make(map[string]context.CancelFunc)
 	runningSignersMu.Unlock()
+
+	// Clear listener tracking maps for clean test state
+	runningListenersMu.Lock()
+	runningDepositListeners = make(map[string]bool)
+	runningWithdrawalListeners = make(map[string]bool)
+	runningListenersMu.Unlock()
 }
 
 // ===== Additional test-only helpers to minimize coupling and avoid runtime collisions =====
