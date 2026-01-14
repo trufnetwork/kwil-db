@@ -2311,12 +2311,25 @@ func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
 	}
 }
 
+// loggingContext returns a human-readable identifier for logging
+// Format: "chain.escrow_suffix" (e.g., "hoodi.31554e7")
+func (r *rewardExtensionInfo) loggingContext() string {
+	// Use last 7 chars of escrow address for human identification
+	escrowHex := r.EscrowAddress.Hex()
+	if len(escrowHex) >= 7 {
+		escrowSuffix := escrowHex[len(escrowHex)-7:]
+		return fmt.Sprintf("%s.%s", r.ChainInfo.Name, escrowSuffix)
+	}
+	return string(r.ChainInfo.Name)
+}
+
 // startStatePoller starts a state poller for the reward extension.
 func (r *rewardExtensionInfo) startStatePoller() error {
 	synced := r.synced // copy to avoid race conditions
 	escrow := r.EscrowAddress
 	id := *r.ID
 	chainName := r.ChainInfo.Name
+	logContext := r.loggingContext() // capture for use in closure
 
 	return evmsync.StatePoller.RegisterPoll(evmsync.PollConfig{
 		Chain:          chainName,
@@ -2330,7 +2343,7 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 
 			data, err := getSyncedRewardData(ctx, client, escrow)
 			if err != nil {
-				logger := service.Logger.New(statePollerUniqueName(id))
+				logger := service.Logger.New(statePollerUniqueName(id) + "." + logContext)
 				logger.Errorf("failed to get synced reward data: %v", err)
 				return
 			}
@@ -2342,7 +2355,7 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 
 			err = broadcast(ctx, bts)
 			if err != nil {
-				logger := service.Logger.New(statePollerUniqueName(id))
+				logger := service.Logger.New(statePollerUniqueName(id) + "." + logContext)
 				logger.Errorf("failed to get broadcast reward data to network: %v", err)
 				return
 			}
