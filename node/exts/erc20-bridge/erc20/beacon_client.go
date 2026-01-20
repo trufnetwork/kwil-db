@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+const (
+	// slotsPerEpoch is the number of slots in a beacon chain epoch
+	// This is a fixed constant for Ethereum: 32 slots per epoch
+	slotsPerEpoch = 32
+)
+
 // BeaconChainClient queries Ethereum beacon chain for finality status
 type BeaconChainClient struct {
 	beaconRPC    string
@@ -70,6 +76,14 @@ func (b *BeaconChainClient) IsBlockFinalized(ctx context.Context, ethBlockTimest
 	}
 	defer resp.Body.Close()
 
+	// Handle 404 Not Found - this happens for empty slots (no block proposed)
+	// In this case, we need to check if the epoch containing this slot is finalized
+	// rather than checking the specific block
+	if resp.StatusCode == http.StatusNotFound {
+		// Empty slot - query finality checkpoint to see if epoch is finalized
+		return b.isEpochFinalized(ctx, slot)
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		// API error - gracefully degrade, don't fail consensus
 		return false, nil // Return false but no error (retry next block)
@@ -83,4 +97,52 @@ func (b *BeaconChainClient) IsBlockFinalized(ctx context.Context, ethBlockTimest
 	}
 
 	return beaconResp.Finalized, nil
+}
+
+// FinalityCheckpointsResponse matches the beacon chain API response for finality checkpoints
+type FinalityCheckpointsResponse struct {
+	Data struct {
+		Finalized struct {
+			Epoch string `json:"epoch"`
+		} `json:"finalized"`
+	} `json:"data"`
+}
+
+// isEpochFinalized checks if a beacon epoch is finalized by querying the finality checkpoint
+// This is used when a specific slot has no block (empty slot)
+func (b *BeaconChainClient) isEpochFinalized(ctx context.Context, slot int64) (bool, error) {
+	// Calculate beacon epoch from slot
+	epoch := slot / slotsPerEpoch
+
+	// Query finality checkpoint
+	url := fmt.Sprintf("%s/eth/v1/beacon/states/head/finality_checkpoints", b.beaconRPC)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, nil // Gracefully degrade on error
+	}
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return false, nil // Network error - retry later
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, nil // API error - retry later
+	}
+
+	var checkpointResp FinalityCheckpointsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&checkpointResp); err != nil {
+		return false, nil // Decode error - retry later
+	}
+
+	// Parse finalized epoch number
+	var finalizedEpoch int64
+	if _, err := fmt.Sscanf(checkpointResp.Data.Finalized.Epoch, "%d", &finalizedEpoch); err != nil {
+		return false, nil // Parse error - retry later
+	}
+
+	// Slot is finalized if its epoch <= finalized epoch
+	return epoch <= finalizedEpoch, nil
 }

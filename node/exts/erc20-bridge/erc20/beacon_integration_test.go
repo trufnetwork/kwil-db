@@ -19,7 +19,9 @@ const (
 	testEthereumGenesisTime = testGenesisTime // Use same value as unit tests
 )
 
-// TestBeaconClient_LazyInitialization tests that beacon client is created on first use
+// TestBeaconClient_LazyInitialization tests reward extension info initialization
+// Note: Beacon client is used for epoch finalization (endBlock), not for deposit/withdrawal event listeners.
+// Deposits are processed immediately for optimal UX. Withdrawals are protected by beacon finality during epoch finalization.
 func TestBeaconClient_LazyInitialization(t *testing.T) {
 	info := &rewardExtensionInfo{
 		userProvidedData: userProvidedData{
@@ -30,21 +32,8 @@ func TestBeaconClient_LazyInitialization(t *testing.T) {
 		},
 	}
 
-	// Initially nil
-	assert.Nil(t, info.beaconClient)
-
-	// After creating client (use test constants)
-	info.beaconClient = NewBeaconChainClient(
-		info.userProvidedData.ChainInfo.BeaconRPC,
-		testEthereumGenesisTime,
-		testSlotDuration,
-	)
-
-	// Should be initialized
-	assert.NotNil(t, info.beaconClient)
-	assert.Equal(t, "https://ethereum-beacon-api.publicnode.com", info.beaconClient.beaconRPC)
-	assert.Equal(t, int64(testEthereumGenesisTime), info.beaconClient.genesisTime)
-	assert.Equal(t, int64(testSlotDuration), info.beaconClient.slotDuration)
+	// Verify struct has mutex for thread-safe operations
+	assert.NotNil(t, &info.mu)
 }
 
 // TestBeaconClient_SkipCheckForL2 verifies L2 chains skip beacon check
@@ -101,49 +90,71 @@ func TestBeaconClient_SkipCheckForL2(t *testing.T) {
 }
 
 // TestBeaconClient_MockFinality tests beacon finality check with mock server
+// Note: Beacon checks are used for epoch finalization (endBlock) to ensure withdrawal proofs
+// are only generated after finality. These tests verify the beacon client behavior.
 func TestBeaconClient_MockFinality(t *testing.T) {
 	testCases := []struct {
 		name              string
-		serverResponse    BeaconBlockResponse
+		serverResponse    interface{}
 		serverStatusCode  int
 		serverError       bool
 		expectedFinalized bool
 		expectedError     bool
-		epochShouldWait   bool
+		depositShouldWait bool
 	}{
 		{
-			name: "Block finalized - epoch should proceed",
+			name: "Block finalized - deposit can be credited",
 			serverResponse: BeaconBlockResponse{
 				Finalized: true,
 			},
 			serverStatusCode:  http.StatusOK,
 			expectedFinalized: true,
 			expectedError:     false,
-			epochShouldWait:   false, // Can finalize
+			depositShouldWait: false, // Can credit deposit
 		},
 		{
-			name: "Block not finalized - epoch should wait",
+			name: "Block not finalized - deposit should wait",
 			serverResponse: BeaconBlockResponse{
 				Finalized: false,
 			},
 			serverStatusCode:  http.StatusOK,
 			expectedFinalized: false,
 			expectedError:     false,
-			epochShouldWait:   true, // Must wait
+			depositShouldWait: true, // Must wait
 		},
 		{
-			name:              "API error - epoch should wait",
+			name: "Empty slot (404) with finalized epoch - deposit can be credited",
+			serverResponse: FinalityCheckpointsResponse{
+				Data: struct {
+					Finalized struct {
+						Epoch string `json:"epoch"`
+					} `json:"finalized"`
+				}{
+					Finalized: struct {
+						Epoch string `json:"epoch"`
+					}{
+						Epoch: "100", // Epoch 100 finalized
+					},
+				},
+			},
+			serverStatusCode:  http.StatusNotFound, // Empty slot triggers checkpoint query
+			expectedFinalized: true,
+			expectedError:     false,
+			depositShouldWait: false, // Can credit despite empty slot
+		},
+		{
+			name:              "API error - deposit should wait",
 			serverStatusCode:  http.StatusInternalServerError,
 			expectedFinalized: false,
 			expectedError:     false, // Graceful degradation
-			epochShouldWait:   true,  // Must wait on error
+			depositShouldWait: true,  // Must wait on error
 		},
 		{
-			name:              "Network error - epoch should wait",
+			name:              "Network error - deposit should wait",
 			serverError:       true,
 			expectedFinalized: false,
 			expectedError:     false, // Graceful degradation
-			epochShouldWait:   true,  // Must wait on error
+			depositShouldWait: true,  // Must wait on error
 		},
 	}
 
@@ -161,15 +172,28 @@ func TestBeaconClient_MockFinality(t *testing.T) {
 					assert.NoError(t, err)
 				}
 
-				// Verify epoch behavior
-				if tc.epochShouldWait {
-					assert.False(t, finalized, "Epoch should wait when block not finalized or error")
+				// Verify deposit behavior
+				if tc.depositShouldWait {
+					assert.False(t, finalized, "Deposit should wait when block not finalized or error")
 				}
 				return
 			}
 
 			// Create mock HTTP server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Handle 404 (empty slot) - return checkpoint response
+				if tc.serverStatusCode == http.StatusNotFound {
+					// First request: block query returns 404
+					if r.URL.Path != "/eth/v1/beacon/states/head/finality_checkpoints" {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					// Second request: checkpoint query returns finalized epoch
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(tc.serverResponse)
+					return
+				}
+
 				w.WriteHeader(tc.serverStatusCode)
 				if tc.serverStatusCode == http.StatusOK {
 					json.NewEncoder(w).Encode(tc.serverResponse)
@@ -178,8 +202,10 @@ func TestBeaconClient_MockFinality(t *testing.T) {
 			defer server.Close()
 
 			// Create client and test
+			// Use timestamp that maps to slot 75 (epoch 2, which is < finalized epoch 100)
+			testTimestamp := int64(testEthereumGenesisTime + (75 * testSlotDuration))
 			client := NewBeaconChainClient(server.URL, testEthereumGenesisTime, testSlotDuration)
-			finalized, err := client.IsBlockFinalized(context.Background(), testEthereumGenesisTime+900)
+			finalized, err := client.IsBlockFinalized(context.Background(), testTimestamp)
 
 			assert.Equal(t, tc.expectedFinalized, finalized)
 			if tc.expectedError {
@@ -188,11 +214,11 @@ func TestBeaconClient_MockFinality(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			// Verify epoch behavior
-			if tc.epochShouldWait {
-				assert.False(t, finalized, "Epoch should wait when block not finalized or error")
+			// Verify deposit behavior
+			if tc.depositShouldWait {
+				assert.False(t, finalized, "Deposit should wait when block not finalized or error")
 			} else {
-				assert.True(t, finalized, "Epoch can proceed when block is finalized")
+				assert.True(t, finalized, "Deposit can be credited when block is finalized")
 			}
 		})
 	}

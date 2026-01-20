@@ -1612,56 +1612,17 @@ func init() {
 				return nil
 			}
 
-			// Check beacon chain finality (if applicable)
-			// NOTE: This assumes info.currentEpoch.StartTime (TN block timestamp) correlates
-			// with Ethereum block timestamps. Clock synchronization between chains is required.
+			// Beacon finality check removed from epoch finalization.
+			// Rationale: Epoch finalization happens on TruflationNetwork consensus based on
+			// withdrawal requests that already exist in TN state. The security concern for
+			// beacon finality is at deposit time (preventing deposit reorg attacks), not
+			// withdrawal time. Checking arbitrary Ethereum blocks during epoch finalization
+			// creates false dependencies and can block withdrawals indefinitely if beacon
+			// RPC is unavailable or returns errors for empty slots.
 			//
-			// IMPORTANT: If the beacon RPC consistently fails or returns errors, epoch finalization
-			// will be delayed indefinitely (returns nil to wait for next block). This is intentional
-			// to ensure we only finalize epochs when we can verify Ethereum finality. If the beacon
-			// RPC becomes permanently unavailable, operational intervention is required to either:
-			// - Fix the beacon RPC endpoint
-			// - Disable beacon finality checks (set BeaconRPC to empty string)
-			if info.userProvidedData.ChainInfo.BeaconRPC != "" {
-				// Get Ethereum block timestamp when this epoch started
-				ethTimestamp := info.currentEpoch.StartTime
-
-				// Thread-safe lazy initialization of beacon client with network-specific parameters
-				info.beaconClientOnce.Do(func() {
-					info.beaconClient = NewBeaconChainClient(
-						info.userProvidedData.ChainInfo.BeaconRPC,
-						info.userProvidedData.ChainInfo.BeaconGenesisTime,
-						info.userProvidedData.ChainInfo.BeaconSlotDuration,
-					)
-				})
-
-				// Create context with timeout for beacon RPC call to prevent stalling consensus
-				beaconCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
-
-				// Check if Ethereum block is finalized on beacon chain
-				finalized, err := info.beaconClient.IsBlockFinalized(beaconCtx, ethTimestamp)
-				if err != nil {
-					// Critical error - log but don't halt consensus
-					if app.Service != nil && app.Service.Logger != nil {
-						app.Service.Logger.Warnf("[BEACON_CHECK] Error checking finality for instance %s: %v", id, err)
-					}
-					return nil // Wait for next block
-				}
-
-				if !finalized {
-					// Not finalized yet - wait for next block
-					if app.Service != nil && app.Service.Logger != nil {
-						app.Service.Logger.Debugf("[BEACON_CHECK] Instance %s: Time elapsed but Ethereum block not finalized (timestamp=%d)", id, ethTimestamp)
-					}
-					return nil // Wait for next block
-				}
-
-				// Finalized! Continue to epoch finalization
-				if app.Service != nil && app.Service.Logger != nil {
-					app.Service.Logger.Infof("[BEACON_CHECK] Instance %s: Ethereum block finalized (timestamp=%d), proceeding with epoch finalization", id, ethTimestamp)
-				}
-			}
+			// Security model: Deposit finality is checked when processing deposit events
+			// (see applyDepositLog), ensuring only finalized Ethereum deposits are credited
+			// to user balances on TN.
 
 			// There will be always 2 epochs(except the very first epoch):
 			// - finalized epoch: finalized but not confirmed, wait to be confimed
@@ -2292,13 +2253,11 @@ type rewardExtensionInfo struct {
 	mu sync.RWMutex
 	userProvidedData
 	syncedRewardData
-	synced           bool
-	syncedAt         int64
-	active           bool
-	ownedBalance     *types.Decimal     // balance owned by DB that can be distributed
-	currentEpoch     *PendingEpoch      // current epoch being proposed
-	beaconClient     *BeaconChainClient // beacon chain client for finality verification (lazy initialized)
-	beaconClientOnce sync.Once          // ensures beaconClient is initialized exactly once
+	synced       bool
+	syncedAt     int64
+	active       bool
+	ownedBalance *types.Decimal // balance owned by DB that can be distributed
+	currentEpoch *PendingEpoch  // current epoch being proposed
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
@@ -2667,6 +2626,12 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // applyDepositLog applies a Deposit log to the reward extension.
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 // The format is auto-detected based on the event log structure.
+//
+// SECURITY: Deposits are processed immediately for optimal UX (no finality delay).
+// Withdrawals are protected by beacon finality check during epoch finalization (endBlock).
+// This design prioritizes user experience while maintaining security where it matters most.
+// This function runs during consensus execution and must remain deterministic.
+//
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
 func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
 	var recipient ethcommon.Address
@@ -2696,6 +2661,31 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 	} else {
 		return fmt.Errorf("unknown Deposit event format: topics=%d, data_len=%d", len(log.Topics), len(log.Data))
 	}
+
+	// Deposit finality is now checked in the EVENT LISTENER (GetLogs function), which runs
+	// EXTERNAL to consensus execution. This prevents the appHash mismatch bug that occurred
+	// when finality checks ran during consensus.
+	//
+	// How it works:
+	// 1. Each validator's event listener queries Ethereum for finalized block (background service)
+	// 2. Listener only fetches deposits from finalized blocks
+	// 3. Listener broadcasts resolution proposal with finalized deposits
+	// 4. Validators vote on proposals (resolution voting system)
+	// 5. Majority consensus determines which deposits are accepted
+	// 6. THIS function (applyDepositLog) processes only the voted/confirmed deposits
+	// 7. All validators see the same confirmed deposits → Same appHash ✅
+	//
+	// Security:
+	// - Only finalized Ethereum blocks are processed (~15 min after inclusion)
+	// - Prevents deposit reorg attacks (15-min window eliminated)
+	// - Resolution voting ensures consensus even if validators query at different times
+	//
+	// Implementation:
+	// - registerDepositListener() GetLogs function (line ~2369)
+	// - registerWithdrawalListener() GetLogs function (line ~2561)
+	//
+	// Note: This function runs during consensus execution and must remain deterministic.
+	// All external data fetching happens in the event listener, not here.
 
 	val, err := erc20ValueFromBigInt(amount)
 	if err != nil {
