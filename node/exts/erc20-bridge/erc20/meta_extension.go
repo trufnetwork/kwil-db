@@ -2388,10 +2388,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 					endBlock = finalizedBlockNum
 				}
 
-				// If no finalized blocks in range, skip this sync cycle
+				// If startBlock hasn't been finalized yet, return error to prevent checkpoint advancement
+				// evmsync will retry on next sync cycle when more blocks become finalized
 				if startBlock > endBlock {
-					logger.Debugf("[DEPOSIT_FINALITY] No finalized blocks in range [%d, %d], skipping", startBlock, endBlock)
-					return nil, nil
+					logger.Infof("[DEPOSIT_FINALITY] Waiting for block %d to be finalized (currently finalized: %d)", startBlock, finalizedBlockNum)
+					return nil, fmt.Errorf("waiting for block %d to be finalized (finalized: %d)", startBlock, finalizedBlockNum)
 				}
 
 				logger.Debugf("[DEPOSIT_FINALITY] Fetching deposits from finalized blocks [%d, %d]", startBlock, endBlock)
@@ -2581,10 +2582,11 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 					endBlock = finalizedBlockNum
 				}
 
-				// If no finalized blocks in range, skip this sync cycle
+				// If startBlock hasn't been finalized yet, return error to prevent checkpoint advancement
+				// evmsync will retry on next sync cycle when more blocks become finalized
 				if startBlock > endBlock {
-					logger.Debugf("[WITHDRAWAL_FINALITY] No finalized blocks in range [%d, %d], skipping", startBlock, endBlock)
-					return nil, nil
+					logger.Infof("[WITHDRAWAL_FINALITY] Waiting for block %d to be finalized (currently finalized: %d)", startBlock, finalizedBlockNum)
+					return nil, fmt.Errorf("waiting for block %d to be finalized (finalized: %d)", startBlock, finalizedBlockNum)
 				}
 
 				logger.Debugf("[WITHDRAWAL_FINALITY] Fetching withdrawals from finalized blocks [%d, %d]", startBlock, endBlock)
