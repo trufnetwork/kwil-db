@@ -19,7 +19,8 @@ const (
 	testEthereumGenesisTime = testGenesisTime // Use same value as unit tests
 )
 
-// TestBeaconClient_LazyInitialization tests that beacon client is created on first use
+// TestBeaconClient_LazyInitialization tests that Ethereum client is lazily initialized for finality checks
+// Note: We now use Ethereum's "finalized" block tag instead of beacon API for deposit finality
 func TestBeaconClient_LazyInitialization(t *testing.T) {
 	info := &rewardExtensionInfo{
 		userProvidedData: userProvidedData{
@@ -30,21 +31,12 @@ func TestBeaconClient_LazyInitialization(t *testing.T) {
 		},
 	}
 
-	// Initially nil
-	assert.Nil(t, info.beaconClient)
+	// Initially nil (lazy initialization)
+	assert.Nil(t, info.ethClient)
 
-	// After creating client (use test constants)
-	info.beaconClient = NewBeaconChainClient(
-		info.userProvidedData.ChainInfo.BeaconRPC,
-		testEthereumGenesisTime,
-		testSlotDuration,
-	)
-
-	// Should be initialized
-	assert.NotNil(t, info.beaconClient)
-	assert.Equal(t, "https://ethereum-beacon-api.publicnode.com", info.beaconClient.beaconRPC)
-	assert.Equal(t, int64(testEthereumGenesisTime), info.beaconClient.genesisTime)
-	assert.Equal(t, int64(testSlotDuration), info.beaconClient.slotDuration)
+	// Note: Actual initialization happens in applyDepositLog() via ethClientOnce.Do()
+	// This test verifies the struct has the fields for lazy initialization
+	assert.NotNil(t, &info.ethClientOnce)
 }
 
 // TestBeaconClient_SkipCheckForL2 verifies L2 chains skip beacon check

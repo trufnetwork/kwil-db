@@ -2254,15 +2254,13 @@ type rewardExtensionInfo struct {
 	mu sync.RWMutex
 	userProvidedData
 	syncedRewardData
-	synced           bool
-	syncedAt         int64
-	active           bool
-	ownedBalance     *types.Decimal       // balance owned by DB that can be distributed
-	currentEpoch     *PendingEpoch        // current epoch being proposed
-	beaconClient     *BeaconChainClient   // beacon chain client for finality verification (lazy initialized)
-	beaconClientOnce sync.Once            // ensures beaconClient is initialized exactly once
-	ethClient        *ethclient.Client    // ethereum RPC client for finality checks (lazy initialized)
-	ethClientOnce    sync.Once            // ensures ethClient is initialized exactly once
+	synced        bool
+	syncedAt      int64
+	active        bool
+	ownedBalance  *types.Decimal    // balance owned by DB that can be distributed
+	currentEpoch  *PendingEpoch     // current epoch being proposed
+	ethClient     *ethclient.Client // ethereum RPC client for finality checks (lazy initialized)
+	ethClientOnce sync.Once         // ensures ethClient is initialized exactly once
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
