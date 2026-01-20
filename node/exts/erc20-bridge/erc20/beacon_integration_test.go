@@ -19,8 +19,9 @@ const (
 	testEthereumGenesisTime = testGenesisTime // Use same value as unit tests
 )
 
-// TestBeaconClient_LazyInitialization tests that Ethereum client is lazily initialized for finality checks
-// Note: We now use Ethereum's "finalized" block tag instead of beacon API for deposit finality
+// TestBeaconClient_LazyInitialization tests reward extension info initialization
+// Note: Deposit finality checks are now implemented in the event listener layer (GetLogs functions)
+// See meta_extension.go lines 2371-2398 (deposits) and 2564-2591 (withdrawals) for implementation
 func TestBeaconClient_LazyInitialization(t *testing.T) {
 	info := &rewardExtensionInfo{
 		userProvidedData: userProvidedData{
@@ -31,11 +32,7 @@ func TestBeaconClient_LazyInitialization(t *testing.T) {
 		},
 	}
 
-	// Initially nil (lazy initialization with retry on dial failures)
-	assert.Nil(t, info.ethClient)
-
-	// Note: Actual initialization happens in applyDepositLog() using mutex-protected double-check
-	// This allows retry on transient dial failures, unlike sync.Once which would fail forever
+	// Verify struct has mutex for thread-safe operations
 	assert.NotNil(t, &info.mu)
 }
 

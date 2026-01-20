@@ -2257,9 +2257,8 @@ type rewardExtensionInfo struct {
 	synced       bool
 	syncedAt     int64
 	active       bool
-	ownedBalance *types.Decimal    // balance owned by DB that can be distributed
-	currentEpoch *PendingEpoch     // current epoch being proposed
-	ethClient    *ethclient.Client // ethereum RPC client for finality checks (lazily initialized with retry on failure)
+	ownedBalance *types.Decimal // balance owned by DB that can be distributed
+	currentEpoch *PendingEpoch  // current epoch being proposed
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
@@ -2362,6 +2361,7 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
 	escrowCopy := r.EscrowAddress
+	chainInfoCopy := r.ChainInfo
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// we now register synchronization of the Deposit event
@@ -2369,6 +2369,34 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			// FINALITY CHECK: Only fetch deposits from finalized blocks
+			// This prevents deposit reorg attacks by ensuring we only credit finalized deposits.
+			// Each validator queries independently, but resolution voting ensures consensus.
+			if chainInfoCopy.BeaconRPC != "" {
+				finalizedBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
+				if err != nil {
+					logger.Warnf("[DEPOSIT_FINALITY] Failed to query finalized block, skipping deposit sync: %v", err)
+					return nil, nil // Graceful failure - will retry next sync cycle
+				}
+
+				finalizedBlockNum := finalizedBlock.Number().Uint64()
+
+				// Limit sync to finalized blocks only
+				if endBlock > finalizedBlockNum {
+					logger.Infof("[DEPOSIT_FINALITY] Limiting deposit sync to finalized block %d (requested: %d)",
+						finalizedBlockNum, endBlock)
+					endBlock = finalizedBlockNum
+				}
+
+				// If no finalized blocks in range, skip this sync cycle
+				if startBlock > endBlock {
+					logger.Debugf("[DEPOSIT_FINALITY] No finalized blocks in range [%d, %d], skipping", startBlock, endBlock)
+					return nil, nil
+				}
+
+				logger.Debugf("[DEPOSIT_FINALITY] Fetching deposits from finalized blocks [%d, %d]", startBlock, endBlock)
+			}
+
 			var logs []*evmsync.EthLog
 
 			// TODO(migration): Remove RewardDistributor fallback once all deployments migrate to TrufNetworkBridge.
@@ -2526,6 +2554,7 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
+	chainInfoCopy := r.ChainInfo
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// Register withdrawal event listener
@@ -2533,6 +2562,34 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 		UniqueName: withdrawalListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			// FINALITY CHECK: Only fetch withdrawals from finalized blocks
+			// This ensures withdrawal confirmations are based on finalized Ethereum state.
+			// Each validator queries independently, but resolution voting ensures consensus.
+			if chainInfoCopy.BeaconRPC != "" {
+				finalizedBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
+				if err != nil {
+					logger.Warnf("[WITHDRAWAL_FINALITY] Failed to query finalized block, skipping withdrawal sync: %v", err)
+					return nil, nil // Graceful failure - will retry next sync cycle
+				}
+
+				finalizedBlockNum := finalizedBlock.Number().Uint64()
+
+				// Limit sync to finalized blocks only
+				if endBlock > finalizedBlockNum {
+					logger.Infof("[WITHDRAWAL_FINALITY] Limiting withdrawal sync to finalized block %d (requested: %d)",
+						finalizedBlockNum, endBlock)
+					endBlock = finalizedBlockNum
+				}
+
+				// If no finalized blocks in range, skip this sync cycle
+				if startBlock > endBlock {
+					logger.Debugf("[WITHDRAWAL_FINALITY] No finalized blocks in range [%d, %d], skipping", startBlock, endBlock)
+					return nil, nil
+				}
+
+				logger.Debugf("[WITHDRAWAL_FINALITY] Fetching withdrawals from finalized blocks [%d, %d]", startBlock, endBlock)
+			}
+
 			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
 			if err != nil {
 				return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", err)
@@ -2629,10 +2686,9 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 // The format is auto-detected based on the event log structure.
 //
-// SECURITY: This function checks beacon chain finality BEFORE crediting deposits to prevent
-// deposit reorg attacks. If a deposit's Ethereum block is not yet finalized on the beacon chain,
-// the deposit is skipped and will be retried in the next block. This ensures that only deposits
-// from finalized Ethereum blocks are credited to user balances on TruflationNetwork.
+// SECURITY: Finality checks are implemented in the event listener layer (GetLogs functions).
+// Only deposits from finalized Ethereum blocks reach this function via resolution voting.
+// This function runs during consensus execution and must remain deterministic.
 //
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
 func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
@@ -2664,104 +2720,30 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 		return fmt.Errorf("unknown Deposit event format: topics=%d, data_len=%d", len(log.Topics), len(log.Data))
 	}
 
-	// Check Ethereum finality before crediting deposit
-	// This prevents deposit reorg attacks by ensuring deposits are only credited
-	// from finalized Ethereum blocks (~15 minutes after inclusion).
+	// Deposit finality is now checked in the EVENT LISTENER (GetLogs function), which runs
+	// EXTERNAL to consensus execution. This prevents the appHash mismatch bug that occurred
+	// when finality checks ran during consensus.
 	//
-	// Attack scenario prevented:
-	// 1. User deposits on Ethereum (block N)
-	// 2. TN credits deposit immediately
-	// 3. User withdraws on TN
-	// 4. Block N gets reorg'd on Ethereum (deposit never actually happened)
-	// 5. User claims withdrawal on Ethereum (steals funds from bridge)
+	// How it works:
+	// 1. Each validator's event listener queries Ethereum for finalized block (background service)
+	// 2. Listener only fetches deposits from finalized blocks
+	// 3. Listener broadcasts resolution proposal with finalized deposits
+	// 4. Validators vote on proposals (resolution voting system)
+	// 5. Majority consensus determines which deposits are accepted
+	// 6. THIS function (applyDepositLog) processes only the voted/confirmed deposits
+	// 7. All validators see the same confirmed deposits → Same appHash ✅
 	//
-	// Solution: Only credit deposits from finalized blocks (post-merge consensus)
-	info, ok := getSingleton().instances.Get(*id)
-	if !ok {
-		return fmt.Errorf("reward extension with id %s not found", id)
-	}
-
-	// Skip finality check for L2s or chains without beacon finality (empty BeaconRPC)
-	if info.userProvidedData.ChainInfo.BeaconRPC != "" {
-		// Lazy initialization of Ethereum RPC client with retry on dial failures
-		// Using double-checked locking pattern instead of sync.Once to allow retry on transient failures
-		if info.ethClient == nil {
-			info.mu.Lock()
-			// Double-check under lock to prevent race conditions
-			if info.ethClient == nil {
-				// Get Ethereum RPC URL from node configuration
-				if app.Service == nil || app.Service.LocalConfig == nil {
-					info.mu.Unlock()
-					if app.Service != nil && app.Service.Logger != nil {
-						app.Service.Logger.Error("[DEPOSIT_FINALITY] Service or LocalConfig is nil, cannot get RPC URL")
-					}
-					return nil // Return nil to allow retry in next block
-				}
-
-				chainName := info.userProvidedData.ChainInfo.Name.String()
-				rpcURL, ok := app.Service.LocalConfig.Erc20Bridge.RPC[chainName]
-				if !ok {
-					info.mu.Unlock()
-					if app.Service.Logger != nil {
-						app.Service.Logger.Errorf("[DEPOSIT_FINALITY] No RPC URL configured for chain %s", chainName)
-					}
-					return nil // Return nil to allow retry in next block
-				}
-
-				client, err := ethclient.Dial(rpcURL)
-				if err != nil {
-					info.mu.Unlock()
-					// Log error and return nil to allow retry next time (transient network errors)
-					if app.Service.Logger != nil {
-						app.Service.Logger.Warnf("[DEPOSIT_FINALITY] Failed to dial Ethereum RPC %s for instance %s, will retry: %v",
-							rpcURL, id, err)
-					}
-					return nil // Return nil (no error) to allow retrying in next block
-				}
-
-				// Successfully connected - store client
-				info.ethClient = client
-				if app.Service.Logger != nil {
-					app.Service.Logger.Infof("[DEPOSIT_FINALITY] Ethereum RPC client initialized for instance %s (chain: %s)",
-						id, chainName)
-				}
-			}
-			info.mu.Unlock()
-		}
-
-		// Create context with timeout for Ethereum RPC call
-		ethCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		// Query the latest finalized block from Ethereum
-		// Uses EIP-3675 "finalized" block tag (post-merge chains)
-		finalizedBlock, err := info.ethClient.BlockByNumber(ethCtx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
-		if err != nil {
-			// RPC error - log warning but don't credit yet
-			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Warnf("[DEPOSIT_FINALITY] Error querying finalized block for instance %s: %v", id, err)
-			}
-			// Return nil (no error) to allow retrying in next block
-			return nil
-		}
-
-		// Check if deposit block is finalized
-		if log.BlockNumber > finalizedBlock.Number().Uint64() {
-			// Deposit block not finalized yet - skip and retry later
-			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Debugf("[DEPOSIT_FINALITY] Deposit block %d not finalized yet (finalized: %d) for instance %s, will retry",
-					log.BlockNumber, finalizedBlock.Number().Uint64(), id)
-			}
-			// Return nil (no error) to allow retrying in next block
-			return nil
-		}
-
-		// Block is finalized - safe to credit deposit
-		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Infof("[DEPOSIT_FINALITY] Deposit block %d finalized (finalized: %d) for instance %s, crediting %s to %s",
-				log.BlockNumber, finalizedBlock.Number().Uint64(), id, amount.String(), recipient.Hex())
-		}
-	}
+	// Security:
+	// - Only finalized Ethereum blocks are processed (~15 min after inclusion)
+	// - Prevents deposit reorg attacks (15-min window eliminated)
+	// - Resolution voting ensures consensus even if validators query at different times
+	//
+	// Implementation:
+	// - registerDepositListener() GetLogs function (line ~2369)
+	// - registerWithdrawalListener() GetLogs function (line ~2561)
+	//
+	// Note: This function runs during consensus execution and must remain deterministic.
+	// All external data fetching happens in the event listener, not here.
 
 	val, err := erc20ValueFromBigInt(amount)
 	if err != nil {
