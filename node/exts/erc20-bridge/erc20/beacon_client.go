@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+const (
+	// slotsPerEpoch is the number of slots in a beacon chain epoch
+	// This is a fixed constant for Ethereum: 32 slots per epoch
+	slotsPerEpoch = 32
+)
+
 // BeaconChainClient queries Ethereum beacon chain for finality status
 type BeaconChainClient struct {
 	beaconRPC    string
@@ -105,8 +111,8 @@ type FinalityCheckpointsResponse struct {
 // isEpochFinalized checks if a beacon epoch is finalized by querying the finality checkpoint
 // This is used when a specific slot has no block (empty slot)
 func (b *BeaconChainClient) isEpochFinalized(ctx context.Context, slot int64) (bool, error) {
-	// Calculate beacon epoch from slot (32 slots per epoch)
-	epoch := slot / 32
+	// Calculate beacon epoch from slot
+	epoch := slot / slotsPerEpoch
 
 	// Query finality checkpoint
 	url := fmt.Sprintf("%s/eth/v1/beacon/states/head/finality_checkpoints", b.beaconRPC)

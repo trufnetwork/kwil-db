@@ -31,12 +31,12 @@ func TestBeaconClient_LazyInitialization(t *testing.T) {
 		},
 	}
 
-	// Initially nil (lazy initialization)
+	// Initially nil (lazy initialization with retry on dial failures)
 	assert.Nil(t, info.ethClient)
 
-	// Note: Actual initialization happens in applyDepositLog() via ethClientOnce.Do()
-	// This test verifies the struct has the fields for lazy initialization
-	assert.NotNil(t, &info.ethClientOnce)
+	// Note: Actual initialization happens in applyDepositLog() using mutex-protected double-check
+	// This allows retry on transient dial failures, unlike sync.Once which would fail forever
+	assert.NotNil(t, &info.mu)
 }
 
 // TestBeaconClient_SkipCheckForL2 verifies L2 chains skip beacon check

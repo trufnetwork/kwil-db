@@ -2254,13 +2254,12 @@ type rewardExtensionInfo struct {
 	mu sync.RWMutex
 	userProvidedData
 	syncedRewardData
-	synced        bool
-	syncedAt      int64
-	active        bool
-	ownedBalance  *types.Decimal    // balance owned by DB that can be distributed
-	currentEpoch  *PendingEpoch     // current epoch being proposed
-	ethClient     *ethclient.Client // ethereum RPC client for finality checks (lazy initialized)
-	ethClientOnce sync.Once         // ensures ethClient is initialized exactly once
+	synced       bool
+	syncedAt     int64
+	active       bool
+	ownedBalance *types.Decimal    // balance owned by DB that can be distributed
+	currentEpoch *PendingEpoch     // current epoch being proposed
+	ethClient    *ethclient.Client // ethereum RPC client for finality checks (lazily initialized with retry on failure)
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
@@ -2684,42 +2683,50 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 
 	// Skip finality check for L2s or chains without beacon finality (empty BeaconRPC)
 	if info.userProvidedData.ChainInfo.BeaconRPC != "" {
-		// Thread-safe lazy initialization of Ethereum RPC client
-		info.ethClientOnce.Do(func() {
-			// Get Ethereum RPC URL from node configuration
-			if app.Service == nil || app.Service.LocalConfig == nil {
-				if app.Service != nil && app.Service.Logger != nil {
-					app.Service.Logger.Error("[DEPOSIT_FINALITY] Service or LocalConfig is nil, cannot get RPC URL")
-				}
-				return
-			}
-
-			chainName := info.userProvidedData.ChainInfo.Name.String()
-			rpcURL, ok := app.Service.LocalConfig.Erc20Bridge.RPC[chainName]
-			if !ok {
-				if app.Service.Logger != nil {
-					app.Service.Logger.Errorf("[DEPOSIT_FINALITY] No RPC URL configured for chain %s", chainName)
-				}
-				return
-			}
-
-			client, err := ethclient.Dial(rpcURL)
-			if err != nil {
-				// Log error but don't block - will retry next time
-				if app.Service.Logger != nil {
-					app.Service.Logger.Errorf("[DEPOSIT_FINALITY] Failed to connect to Ethereum RPC %s: %v", rpcURL, err)
-				}
-				return
-			}
-			info.ethClient = client
-		})
-
-		// If client initialization failed, retry later
+		// Lazy initialization of Ethereum RPC client with retry on dial failures
+		// Using double-checked locking pattern instead of sync.Once to allow retry on transient failures
 		if info.ethClient == nil {
-			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Warnf("[DEPOSIT_FINALITY] Ethereum client not initialized for instance %s, will retry", id)
+			info.mu.Lock()
+			// Double-check under lock to prevent race conditions
+			if info.ethClient == nil {
+				// Get Ethereum RPC URL from node configuration
+				if app.Service == nil || app.Service.LocalConfig == nil {
+					info.mu.Unlock()
+					if app.Service != nil && app.Service.Logger != nil {
+						app.Service.Logger.Error("[DEPOSIT_FINALITY] Service or LocalConfig is nil, cannot get RPC URL")
+					}
+					return nil // Return nil to allow retry in next block
+				}
+
+				chainName := info.userProvidedData.ChainInfo.Name.String()
+				rpcURL, ok := app.Service.LocalConfig.Erc20Bridge.RPC[chainName]
+				if !ok {
+					info.mu.Unlock()
+					if app.Service.Logger != nil {
+						app.Service.Logger.Errorf("[DEPOSIT_FINALITY] No RPC URL configured for chain %s", chainName)
+					}
+					return nil // Return nil to allow retry in next block
+				}
+
+				client, err := ethclient.Dial(rpcURL)
+				if err != nil {
+					info.mu.Unlock()
+					// Log error and return nil to allow retry next time (transient network errors)
+					if app.Service.Logger != nil {
+						app.Service.Logger.Warnf("[DEPOSIT_FINALITY] Failed to dial Ethereum RPC %s for instance %s, will retry: %v",
+							rpcURL, id, err)
+					}
+					return nil // Return nil (no error) to allow retrying in next block
+				}
+
+				// Successfully connected - store client
+				info.ethClient = client
+				if app.Service.Logger != nil {
+					app.Service.Logger.Infof("[DEPOSIT_FINALITY] Ethereum RPC client initialized for instance %s (chain: %s)",
+						id, chainName)
+				}
 			}
-			return nil // Return nil (no error) to allow retrying in next block
+			info.mu.Unlock()
 		}
 
 		// Create context with timeout for Ethereum RPC call
