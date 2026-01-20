@@ -31,6 +31,7 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/trufnetwork/kwil-db/common"
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
@@ -1612,56 +1613,17 @@ func init() {
 				return nil
 			}
 
-			// Check beacon chain finality (if applicable)
-			// NOTE: This assumes info.currentEpoch.StartTime (TN block timestamp) correlates
-			// with Ethereum block timestamps. Clock synchronization between chains is required.
+			// Beacon finality check removed from epoch finalization.
+			// Rationale: Epoch finalization happens on TruflationNetwork consensus based on
+			// withdrawal requests that already exist in TN state. The security concern for
+			// beacon finality is at deposit time (preventing deposit reorg attacks), not
+			// withdrawal time. Checking arbitrary Ethereum blocks during epoch finalization
+			// creates false dependencies and can block withdrawals indefinitely if beacon
+			// RPC is unavailable or returns errors for empty slots.
 			//
-			// IMPORTANT: If the beacon RPC consistently fails or returns errors, epoch finalization
-			// will be delayed indefinitely (returns nil to wait for next block). This is intentional
-			// to ensure we only finalize epochs when we can verify Ethereum finality. If the beacon
-			// RPC becomes permanently unavailable, operational intervention is required to either:
-			// - Fix the beacon RPC endpoint
-			// - Disable beacon finality checks (set BeaconRPC to empty string)
-			if info.userProvidedData.ChainInfo.BeaconRPC != "" {
-				// Get Ethereum block timestamp when this epoch started
-				ethTimestamp := info.currentEpoch.StartTime
-
-				// Thread-safe lazy initialization of beacon client with network-specific parameters
-				info.beaconClientOnce.Do(func() {
-					info.beaconClient = NewBeaconChainClient(
-						info.userProvidedData.ChainInfo.BeaconRPC,
-						info.userProvidedData.ChainInfo.BeaconGenesisTime,
-						info.userProvidedData.ChainInfo.BeaconSlotDuration,
-					)
-				})
-
-				// Create context with timeout for beacon RPC call to prevent stalling consensus
-				beaconCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
-
-				// Check if Ethereum block is finalized on beacon chain
-				finalized, err := info.beaconClient.IsBlockFinalized(beaconCtx, ethTimestamp)
-				if err != nil {
-					// Critical error - log but don't halt consensus
-					if app.Service != nil && app.Service.Logger != nil {
-						app.Service.Logger.Warnf("[BEACON_CHECK] Error checking finality for instance %s: %v", id, err)
-					}
-					return nil // Wait for next block
-				}
-
-				if !finalized {
-					// Not finalized yet - wait for next block
-					if app.Service != nil && app.Service.Logger != nil {
-						app.Service.Logger.Debugf("[BEACON_CHECK] Instance %s: Time elapsed but Ethereum block not finalized (timestamp=%d)", id, ethTimestamp)
-					}
-					return nil // Wait for next block
-				}
-
-				// Finalized! Continue to epoch finalization
-				if app.Service != nil && app.Service.Logger != nil {
-					app.Service.Logger.Infof("[BEACON_CHECK] Instance %s: Ethereum block finalized (timestamp=%d), proceeding with epoch finalization", id, ethTimestamp)
-				}
-			}
+			// Security model: Deposit finality is checked when processing deposit events
+			// (see applyDepositLog), ensuring only finalized Ethereum deposits are credited
+			// to user balances on TN.
 
 			// There will be always 2 epochs(except the very first epoch):
 			// - finalized epoch: finalized but not confirmed, wait to be confimed
@@ -2295,10 +2257,12 @@ type rewardExtensionInfo struct {
 	synced           bool
 	syncedAt         int64
 	active           bool
-	ownedBalance     *types.Decimal     // balance owned by DB that can be distributed
-	currentEpoch     *PendingEpoch      // current epoch being proposed
-	beaconClient     *BeaconChainClient // beacon chain client for finality verification (lazy initialized)
-	beaconClientOnce sync.Once          // ensures beaconClient is initialized exactly once
+	ownedBalance     *types.Decimal       // balance owned by DB that can be distributed
+	currentEpoch     *PendingEpoch        // current epoch being proposed
+	beaconClient     *BeaconChainClient   // beacon chain client for finality verification (lazy initialized)
+	beaconClientOnce sync.Once            // ensures beaconClient is initialized exactly once
+	ethClient        *ethclient.Client    // ethereum RPC client for finality checks (lazy initialized)
+	ethClientOnce    sync.Once            // ensures ethClient is initialized exactly once
 }
 
 func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
@@ -2667,6 +2631,12 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // applyDepositLog applies a Deposit log to the reward extension.
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 // The format is auto-detected based on the event log structure.
+//
+// SECURITY: This function checks beacon chain finality BEFORE crediting deposits to prevent
+// deposit reorg attacks. If a deposit's Ethereum block is not yet finalized on the beacon chain,
+// the deposit is skipped and will be retried in the next block. This ensures that only deposits
+// from finalized Ethereum blocks are credited to user balances on TruflationNetwork.
+//
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
 func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
 	var recipient ethcommon.Address
@@ -2695,6 +2665,97 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 		amount = rewardData.Amount
 	} else {
 		return fmt.Errorf("unknown Deposit event format: topics=%d, data_len=%d", len(log.Topics), len(log.Data))
+	}
+
+	// Check Ethereum finality before crediting deposit
+	// This prevents deposit reorg attacks by ensuring deposits are only credited
+	// from finalized Ethereum blocks (~15 minutes after inclusion).
+	//
+	// Attack scenario prevented:
+	// 1. User deposits on Ethereum (block N)
+	// 2. TN credits deposit immediately
+	// 3. User withdraws on TN
+	// 4. Block N gets reorg'd on Ethereum (deposit never actually happened)
+	// 5. User claims withdrawal on Ethereum (steals funds from bridge)
+	//
+	// Solution: Only credit deposits from finalized blocks (post-merge consensus)
+	info, ok := getSingleton().instances.Get(*id)
+	if !ok {
+		return fmt.Errorf("reward extension with id %s not found", id)
+	}
+
+	// Skip finality check for L2s or chains without beacon finality (empty BeaconRPC)
+	if info.userProvidedData.ChainInfo.BeaconRPC != "" {
+		// Thread-safe lazy initialization of Ethereum RPC client
+		info.ethClientOnce.Do(func() {
+			// Get Ethereum RPC URL from node configuration
+			if app.Service == nil || app.Service.LocalConfig == nil {
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Error("[DEPOSIT_FINALITY] Service or LocalConfig is nil, cannot get RPC URL")
+				}
+				return
+			}
+
+			chainName := info.userProvidedData.ChainInfo.Name.String()
+			rpcURL, ok := app.Service.LocalConfig.Erc20Bridge.RPC[chainName]
+			if !ok {
+				if app.Service.Logger != nil {
+					app.Service.Logger.Errorf("[DEPOSIT_FINALITY] No RPC URL configured for chain %s", chainName)
+				}
+				return
+			}
+
+			client, err := ethclient.Dial(rpcURL)
+			if err != nil {
+				// Log error but don't block - will retry next time
+				if app.Service.Logger != nil {
+					app.Service.Logger.Errorf("[DEPOSIT_FINALITY] Failed to connect to Ethereum RPC %s: %v", rpcURL, err)
+				}
+				return
+			}
+			info.ethClient = client
+		})
+
+		// If client initialization failed, retry later
+		if info.ethClient == nil {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("[DEPOSIT_FINALITY] Ethereum client not initialized for instance %s, will retry", id)
+			}
+			return nil // Return nil (no error) to allow retrying in next block
+		}
+
+		// Create context with timeout for Ethereum RPC call
+		ethCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		// Query the latest finalized block from Ethereum
+		// Uses EIP-3675 "finalized" block tag (post-merge chains)
+		finalizedBlock, err := info.ethClient.BlockByNumber(ethCtx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
+		if err != nil {
+			// RPC error - log warning but don't credit yet
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("[DEPOSIT_FINALITY] Error querying finalized block for instance %s: %v", id, err)
+			}
+			// Return nil (no error) to allow retrying in next block
+			return nil
+		}
+
+		// Check if deposit block is finalized
+		if log.BlockNumber > finalizedBlock.Number().Uint64() {
+			// Deposit block not finalized yet - skip and retry later
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Debugf("[DEPOSIT_FINALITY] Deposit block %d not finalized yet (finalized: %d) for instance %s, will retry",
+					log.BlockNumber, finalizedBlock.Number().Uint64(), id)
+			}
+			// Return nil (no error) to allow retrying in next block
+			return nil
+		}
+
+		// Block is finalized - safe to credit deposit
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[DEPOSIT_FINALITY] Deposit block %d finalized (finalized: %d) for instance %s, crediting %s to %s",
+				log.BlockNumber, finalizedBlock.Number().Uint64(), id, amount.String(), recipient.Hex())
+		}
 	}
 
 	val, err := erc20ValueFromBigInt(amount)
