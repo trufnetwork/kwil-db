@@ -2375,8 +2375,8 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 			if chainInfoCopy.BeaconRPC != "" {
 				finalizedBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
 				if err != nil {
-					logger.Warnf("[DEPOSIT_FINALITY] Failed to query finalized block, skipping deposit sync: %v", err)
-					return nil, nil // Graceful failure - will retry next sync cycle
+					logger.Warnf("[DEPOSIT_FINALITY] Failed to query finalized block: %v", err)
+					return nil, fmt.Errorf("failed to query finalized block: %w", err)
 				}
 
 				finalizedBlockNum := finalizedBlock.Number().Uint64()
@@ -2569,8 +2569,8 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 			if chainInfoCopy.BeaconRPC != "" {
 				finalizedBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
 				if err != nil {
-					logger.Warnf("[WITHDRAWAL_FINALITY] Failed to query finalized block, skipping withdrawal sync: %v", err)
-					return nil, nil // Graceful failure - will retry next sync cycle
+					logger.Warnf("[WITHDRAWAL_FINALITY] Failed to query finalized block: %v", err)
+					return nil, fmt.Errorf("failed to query finalized block: %w", err)
 				}
 
 				finalizedBlockNum := finalizedBlock.Number().Uint64()
@@ -2688,8 +2688,9 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 // The format is auto-detected based on the event log structure.
 //
-// SECURITY: Finality checks are implemented in the event listener layer (GetLogs functions).
-// Only deposits from finalized Ethereum blocks reach this function via resolution voting.
+// SECURITY: When BeaconRPC is configured for the chain, finality checks are enforced in the
+// event listener layer (GetLogs functions), so only finalized deposits reach this function.
+// For chains without BeaconRPC, this gating does not apply here.
 // This function runs during consensus execution and must remain deterministic.
 //
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
