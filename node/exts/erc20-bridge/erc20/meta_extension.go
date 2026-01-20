@@ -31,7 +31,6 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/trufnetwork/kwil-db/common"
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
@@ -2361,7 +2360,6 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
 	escrowCopy := r.EscrowAddress
-	chainInfoCopy := r.ChainInfo
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// we now register synchronization of the Deposit event
@@ -2369,35 +2367,6 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
-			// FINALITY CHECK: Only fetch deposits from finalized blocks
-			// This prevents deposit reorg attacks by ensuring we only credit finalized deposits.
-			// Each validator queries independently, but resolution voting ensures consensus.
-			if chainInfoCopy.BeaconRPC != "" {
-				finalizedBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
-				if err != nil {
-					logger.Warnf("[DEPOSIT_FINALITY] Failed to query finalized block: %v", err)
-					return nil, fmt.Errorf("failed to query finalized block: %w", err)
-				}
-
-				finalizedBlockNum := finalizedBlock.Number().Uint64()
-
-				// Limit sync to finalized blocks only
-				if endBlock > finalizedBlockNum {
-					logger.Infof("[DEPOSIT_FINALITY] Limiting deposit sync to finalized block %d (requested: %d)",
-						finalizedBlockNum, endBlock)
-					endBlock = finalizedBlockNum
-				}
-
-				// If startBlock hasn't been finalized yet, return error to prevent checkpoint advancement
-				// evmsync will retry on next sync cycle when more blocks become finalized
-				if startBlock > endBlock {
-					logger.Infof("[DEPOSIT_FINALITY] Waiting for block %d to be finalized (currently finalized: %d)", startBlock, finalizedBlockNum)
-					return nil, fmt.Errorf("waiting for block %d to be finalized (finalized: %d)", startBlock, finalizedBlockNum)
-				}
-
-				logger.Debugf("[DEPOSIT_FINALITY] Fetching deposits from finalized blocks [%d, %d]", startBlock, endBlock)
-			}
-
 			var logs []*evmsync.EthLog
 
 			// TODO(migration): Remove RewardDistributor fallback once all deployments migrate to TrufNetworkBridge.
@@ -2555,7 +2524,6 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
-	chainInfoCopy := r.ChainInfo
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// Register withdrawal event listener
@@ -2563,35 +2531,6 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 		UniqueName: withdrawalListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
-			// FINALITY CHECK: Only fetch withdrawals from finalized blocks
-			// This ensures withdrawal confirmations are based on finalized Ethereum state.
-			// Each validator queries independently, but resolution voting ensures consensus.
-			if chainInfoCopy.BeaconRPC != "" {
-				finalizedBlock, err := client.BlockByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
-				if err != nil {
-					logger.Warnf("[WITHDRAWAL_FINALITY] Failed to query finalized block: %v", err)
-					return nil, fmt.Errorf("failed to query finalized block: %w", err)
-				}
-
-				finalizedBlockNum := finalizedBlock.Number().Uint64()
-
-				// Limit sync to finalized blocks only
-				if endBlock > finalizedBlockNum {
-					logger.Infof("[WITHDRAWAL_FINALITY] Limiting withdrawal sync to finalized block %d (requested: %d)",
-						finalizedBlockNum, endBlock)
-					endBlock = finalizedBlockNum
-				}
-
-				// If startBlock hasn't been finalized yet, return error to prevent checkpoint advancement
-				// evmsync will retry on next sync cycle when more blocks become finalized
-				if startBlock > endBlock {
-					logger.Infof("[WITHDRAWAL_FINALITY] Waiting for block %d to be finalized (currently finalized: %d)", startBlock, finalizedBlockNum)
-					return nil, fmt.Errorf("waiting for block %d to be finalized (finalized: %d)", startBlock, finalizedBlockNum)
-				}
-
-				logger.Debugf("[WITHDRAWAL_FINALITY] Fetching withdrawals from finalized blocks [%d, %d]", startBlock, endBlock)
-			}
-
 			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
 			if err != nil {
 				return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", err)
@@ -2688,9 +2627,9 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
 // The format is auto-detected based on the event log structure.
 //
-// SECURITY: When BeaconRPC is configured for the chain, finality checks are enforced in the
-// event listener layer (GetLogs functions), so only finalized deposits reach this function.
-// For chains without BeaconRPC, this gating does not apply here.
+// SECURITY: Deposits are processed immediately for optimal UX (no finality delay).
+// Withdrawals are protected by beacon finality check during epoch finalization (endBlock).
+// This design prioritizes user experience while maintaining security where it matters most.
 // This function runs during consensus execution and must remain deterministic.
 //
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.

@@ -20,8 +20,8 @@ const (
 )
 
 // TestBeaconClient_LazyInitialization tests reward extension info initialization
-// Note: Deposit finality checks are now implemented in the event listener layer (GetLogs functions)
-// See meta_extension.go lines 2371-2398 (deposits) and 2564-2591 (withdrawals) for implementation
+// Note: Beacon client is used for epoch finalization (endBlock), not for deposit/withdrawal event listeners.
+// Deposits are processed immediately for optimal UX. Withdrawals are protected by beacon finality during epoch finalization.
 func TestBeaconClient_LazyInitialization(t *testing.T) {
 	info := &rewardExtensionInfo{
 		userProvidedData: userProvidedData{
@@ -90,8 +90,8 @@ func TestBeaconClient_SkipCheckForL2(t *testing.T) {
 }
 
 // TestBeaconClient_MockFinality tests beacon finality check with mock server
-// Note: Beacon checks are now used for deposit processing (to prevent reorg attacks)
-// rather than epoch finalization. These tests verify the beacon client behavior.
+// Note: Beacon checks are used for epoch finalization (endBlock) to ensure withdrawal proofs
+// are only generated after finality. These tests verify the beacon client behavior.
 func TestBeaconClient_MockFinality(t *testing.T) {
 	testCases := []struct {
 		name              string
