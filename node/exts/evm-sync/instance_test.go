@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -188,6 +189,35 @@ func TestSerializeDeserializeLog(t *testing.T) {
 			// Compare
 			require.EqualValues(t, tt.log, *deserialized)
 		})
+	}
+}
+
+// TestListenerRecoveryConstants tests that the listener recovery constants are sensible.
+func TestListenerRecoveryConstants(t *testing.T) {
+	// Verify that the constants are set to reasonable values
+	require.Equal(t, 5*time.Second, initialRecoveryDelay, "initial delay should be 5 seconds")
+	require.Equal(t, 5*time.Minute, maxRecoveryDelay, "max delay should be 5 minutes")
+	require.Equal(t, 2, recoveryBackoffMultiplier, "backoff multiplier should be 2")
+
+	// Verify that the backoff progression is sensible
+	// 5s -> 10s -> 20s -> 40s -> 80s -> 160s -> 300s (capped at 5 min)
+	delay := initialRecoveryDelay
+	expectedDelays := []time.Duration{
+		5 * time.Second,
+		10 * time.Second,
+		20 * time.Second,
+		40 * time.Second,
+		80 * time.Second,
+		160 * time.Second,
+		maxRecoveryDelay, // 320s would exceed max, so capped at 300s
+	}
+
+	for i, expected := range expectedDelays {
+		require.Equal(t, expected, delay, "delay at iteration %d should be %v", i, expected)
+		delay = delay * time.Duration(recoveryBackoffMultiplier)
+		if delay > maxRecoveryDelay {
+			delay = maxRecoveryDelay
+		}
 	}
 }
 
