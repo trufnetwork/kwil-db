@@ -102,3 +102,32 @@ CREATE TABLE withdrawals (
 CREATE INDEX idx_withdrawals_status ON withdrawals(status);
 CREATE INDEX idx_withdrawals_tx_hash ON withdrawals(tx_hash);
 CREATE INDEX idx_withdrawals_recipient ON withdrawals(recipient);
+
+-- transaction_history tracks all token movements (deposits, withdrawals, transfers)
+-- to provide a unified source of truth for user auditing.
+CREATE TABLE transaction_history (
+    id UUID PRIMARY KEY,
+    instance_id UUID NOT NULL REFERENCES reward_instances(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
+    from_address BYTEA,            -- NULL for external deposits
+    to_address BYTEA,              -- NULL for external withdrawals
+    amount NUMERIC(78, 0) NOT NULL,
+    internal_tx_hash BYTEA,        -- Kwil Tx Hash
+    external_tx_hash BYTEA,        -- External Blockchain Tx Hash
+    status TEXT NOT NULL CHECK (status IN ('completed', 'pending_epoch', 'claimed')),
+    block_height INT8 NOT NULL,
+    block_timestamp INT8 NOT NULL, -- Unix timestamp in seconds
+    external_block_height INT8     -- Optional: Blockchain block number
+);
+
+CREATE INDEX idx_tx_history_from ON transaction_history(from_address);
+
+CREATE INDEX idx_tx_history_to ON transaction_history(to_address);
+
+CREATE INDEX idx_tx_history_ext_hash ON transaction_history(external_tx_hash);
+
+CREATE INDEX idx_tx_history_inst_height ON transaction_history(instance_id, block_height);
+
+
+
+

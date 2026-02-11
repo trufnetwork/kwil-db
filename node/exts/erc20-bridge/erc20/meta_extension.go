@@ -249,7 +249,7 @@ func init() {
 
 		for _, log := range logs {
 			if bytes.Equal(log.Metadata, logTypeDeposit) {
-				err := applyDepositLog(ctx, app, id, *log.Log)
+				err := applyDepositLog(ctx, app, id, *log.Log, block)
 				if err != nil {
 					return err
 				}
@@ -2633,7 +2633,7 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // This function runs during consensus execution and must remain deterministic.
 //
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
-func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
+func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log, block *common.BlockContext) error {
 	var recipient ethcommon.Address
 	var amount *big.Int
 	var err error
@@ -2690,6 +2690,25 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 	val, err := erc20ValueFromBigInt(amount)
 	if err != nil {
 		return fmt.Errorf("failed to convert big.Int to decimal.Decimal: %w", err)
+	}
+
+	// Record transaction history
+	// Include log index to prevent UUID collisions when a single Ethereum tx has multiple Deposit events
+	logIndexBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(logIndexBytes, uint32(log.Index))
+
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, log.TxHash.Bytes()),
+		append([]byte("deposit"), logIndexBytes...))
+
+	_, err = app.DB.Execute(ctx, `
+		INSERT INTO kwil_erc20_meta.transaction_history
+		(id, instance_id, type, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
+		VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', $6, $7, $8)
+		ON CONFLICT (id) DO NOTHING
+	`, txHistoryID, id, recipient.Bytes(), val, log.TxHash.Bytes(), block.Height, block.Timestamp, log.BlockNumber)
+	if err != nil {
+		return fmt.Errorf("failed to record deposit history: %w", err)
 	}
 
 	return creditBalance(ctx, app, id, recipient, val)

@@ -13,6 +13,8 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
@@ -80,15 +82,45 @@ func TestApplyDepositLog(t *testing.T) {
 		Topics: []ethcommon.Hash{
 			depositEventID, // Programmatically derived from ABI
 		},
-		Data: data[:],
+		Data:        data[:],
+		TxHash:      ethcommon.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		BlockNumber: 12345,
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog))
+	block := &common.BlockContext{
+		Height:    100,
+		Timestamp: 1600000000,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block))
 
 	balRecipient, err := balanceOf(ctx, app, id, recipient)
 	require.NoError(t, err)
 	require.NotNil(t, balRecipient)
 	require.Equal(t, amount.String(), balRecipient.String())
+
+	// Verify transaction history
+	res, err := app.DB.Execute(ctx, `
+		SELECT type, amount, external_tx_hash, block_height, block_timestamp, external_block_height 
+		FROM kwil_erc20_meta.transaction_history 
+		WHERE to_address = $1`, recipient.Bytes())
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+
+	row := res.Rows[0]
+	foundType := row[0].(string)
+	foundAmount := row[1].(*types.Decimal).String()
+	foundExtTxHash := row[2].([]byte)
+	foundBlockHeight := row[3].(int64)
+	foundBlockTimestamp := row[4].(int64)
+	foundExtBlockHeight := row[5].(int64)
+
+	require.Equal(t, "deposit", foundType)
+	require.Equal(t, amount.String(), foundAmount)
+	require.Equal(t, depositLog.TxHash.Bytes(), foundExtTxHash)
+	require.Equal(t, int64(100), foundBlockHeight)
+	require.Equal(t, int64(1600000000), foundBlockTimestamp)
+	require.Equal(t, int64(12345), foundExtBlockHeight)
 
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)
@@ -146,15 +178,35 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 			depositEventID,                           // Event signature (same for both contracts)
 			ethcommon.BytesToHash(recipient.Bytes()), // Indexed recipient parameter
 		},
-		Data: data[:],
+		Data:   data[:],
+		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog))
+	block := &common.BlockContext{
+		Height:    200,
+		Timestamp: 1600000200,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block))
 
 	balRecipient, err := balanceOf(ctx, app, id, recipient)
 	require.NoError(t, err)
 	require.NotNil(t, balRecipient)
 	require.Equal(t, amount.String(), balRecipient.String())
+
+	// Verify transaction history
+	res, err := app.DB.Execute(ctx, `
+		SELECT type, amount, external_tx_hash, external_block_height 
+		FROM kwil_erc20_meta.transaction_history 
+		WHERE to_address = $1`, recipient.Bytes())
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+
+	row := res.Rows[0]
+	require.Equal(t, "deposit", row[0].(string))
+	require.Equal(t, amount.String(), row[1].(*types.Decimal).String())
+	require.Equal(t, depositLog.TxHash.Bytes(), row[2].([]byte))
+	require.Equal(t, int64(0), row[3].(int64)) // log.BlockNumber was 0 in this test setup
 
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)
@@ -211,9 +263,15 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 		Address: upd.EscrowAddress,
 		Topics:  []ethcommon.Hash{depositEventID},
 		Data:    data1[:],
+		TxHash:  ethcommon.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog1))
+	block := &common.BlockContext{
+		Height:    300,
+		Timestamp: 1600000300,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog1, block))
 
 	// User 2: TrufNetworkBridge deposit (indexed recipient)
 	recipient2 := ethcommon.HexToAddress("0x00000000000000000000000000000000000002bb")
@@ -228,10 +286,11 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 			depositEventID,
 			ethcommon.BytesToHash(recipient2.Bytes()),
 		},
-		Data: data2[:],
+		Data:   data2[:],
+		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog2))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog2, block))
 
 	// Verify both deposits were processed correctly
 	bal1, err := balanceOf(ctx, app, id, recipient1)
@@ -288,7 +347,9 @@ func TestApplyDepositLog_InvalidFormat(t *testing.T) {
 		Data:    make([]byte, 16),
 	}
 
-	err = applyDepositLog(ctx, app, id, invalidLog1)
+	block := &common.BlockContext{}
+
+	err = applyDepositLog(ctx, app, id, invalidLog1, block)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown Deposit event format")
 
@@ -299,7 +360,7 @@ func TestApplyDepositLog_InvalidFormat(t *testing.T) {
 		Data:    make([]byte, 96),
 	}
 
-	err = applyDepositLog(ctx, app, id, invalidLog2)
+	err = applyDepositLog(ctx, app, id, invalidLog2, block)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown Deposit event format")
 }
