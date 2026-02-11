@@ -605,3 +605,116 @@ func TestSignMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, privateKey.PublicKey, *pubKey)
 }
+
+// TestWithdrawalHistory verifies the full lifecycle of withdrawal logging in transaction_history
+func TestWithdrawalHistory(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	// 1. Setup instance and epoch
+	id := newUUID()
+	chainInfo, ok := chains.GetChainInfoByID("1")
+	require.True(t, ok, "chain 1 should be registered")
+
+	upd := &userProvidedData{
+		ID:                 id,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc"),
+		DistributionPeriod: 3600,
+	}
+	require.NoError(t, createNewRewardInstance(ctx, app, upd))
+	require.NoError(t, setRewardSynced(ctx, app, id, 1, &syncedRewardData{
+		Erc20Address:  ethcommon.HexToAddress("0x00000000000000000000000000000000000000bb"),
+		Erc20Decimals: 18,
+	}))
+
+	epochID := newUUID()
+	pending := &PendingEpoch{
+		ID:          epochID,
+		StartHeight: 10,
+		StartTime:   100,
+	}
+	require.NoError(t, createEpoch(ctx, app, pending, id))
+
+	// Set the singleton's current epoch for the instance
+	getSingleton().instances.Set(*id, &rewardExtensionInfo{
+		userProvidedData: *upd,
+		currentEpoch:     pending,
+		synced:           true,
+		active:           true,
+	})
+
+	// 2. Initiate withdrawal (lockAndIssueTokens)
+	from := ethcommon.HexToAddress("0x0000000000000000000000000000000000000011").Hex()
+	recipient := ethcommon.HexToAddress("0x0000000000000000000000000000000000000022")
+	amount := types.MustParseDecimalExplicit("10.5", 78, 0)
+
+	// Give user balance first
+	require.NoError(t, creditBalance(ctx, app, id, ethcommon.HexToAddress(from), types.MustParseDecimalExplicit("100", 78, 0)))
+
+	block := &common.BlockContext{
+		Height:    500,
+		Timestamp: 1600000500,
+	}
+
+	engCtx := &common.EngineContext{
+		TxContext: &common.TxContext{
+			Ctx:  ctx,
+			TxID: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+		},
+	}
+
+	require.NoError(t, getSingleton().lockAndIssueTokens(engCtx, app, id, from, recipient.Hex(), amount, block))
+
+	// Verify history record created with 'pending_epoch'
+	res, err := app.DB.Execute(ctx, "SELECT status, amount, epoch_id FROM kwil_erc20_meta.transaction_history WHERE instance_id = $1", id)
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+	require.Equal(t, "pending_epoch", res.Rows[0][0])
+	require.Equal(t, amount.String(), res.Rows[0][1].(*types.Decimal).String())
+	require.Equal(t, epochID.String(), res.Rows[0][2].(*types.UUID).String())
+
+	// 3. Finalize epoch (simulating time passing)
+	kwilBlockHash := [32]byte{0xde, 0xad, 0xbe, 0xef}
+	_, err = app.DB.Execute(ctx, "UPDATE kwil_erc20_meta.epochs SET block_hash = $1, ended_at = 600 WHERE id = $2", kwilBlockHash[:], epochID)
+	require.NoError(t, err)
+
+	// 4. Claim withdrawal (applyWithdrawalLog)
+	externalTxHash := ethcommon.HexToHash("0xabc")
+	withdrawLog := ethtypes.Log{
+		Topics: []ethcommon.Hash{
+			withdrawEventID,
+			ethcommon.BytesToHash(recipient.Bytes()),
+			kwilBlockHash,
+		},
+		Data:        make([]byte, 32), // amount not used by update logic
+		BlockNumber: 9999,
+		TxHash:      externalTxHash,
+	}
+
+	err = applyWithdrawalLog(ctx, app, id, withdrawLog, 700)
+	require.NoError(t, err)
+
+	// Verify history record updated to 'claimed'
+	res, err = app.DB.Execute(ctx, "SELECT status, external_tx_hash, external_block_height FROM kwil_erc20_meta.transaction_history WHERE instance_id = $1", id)
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+	require.Equal(t, "claimed", res.Rows[0][0])
+	require.Equal(t, externalTxHash.Bytes(), res.Rows[0][1])
+	require.Equal(t, int64(9999), res.Rows[0][2])
+}

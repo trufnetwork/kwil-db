@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -1065,7 +1066,7 @@ func init() {
 								amount = inputs[2].(*types.Decimal)
 							}
 
-							return getSingleton().lockAndIssueTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, recipient, amount)
+							return getSingleton().lockAndIssueTokens(ctx, app, id, ctx.TxContext.Caller, recipient, amount, ctx.TxContext.BlockContext)
 						},
 					},
 					{
@@ -1942,7 +1943,7 @@ func (e *extensionInfo) issueTokens(ctx context.Context, app *common.App, id *ty
 }
 
 // lockAndIssueTokens locks tokens from the sender and issues them to the desired recipient within the current epoch.
-func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App, id *types.UUID, from string, recipient string, amount *types.Decimal) error {
+func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *common.App, id *types.UUID, from string, recipient string, amount *types.Decimal, block *common.BlockContext) error {
 	if amount == nil {
 		return fmt.Errorf("amount needs to be positive")
 	}
@@ -1961,7 +1962,7 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 		return fmt.Errorf("amount needs to be positive")
 	}
 
-	bal, err := balanceOf(ctx, app, id, fromAddr)
+	bal, err := balanceOf(ctx.TxContext.Ctx, app, id, fromAddr)
 	if err != nil {
 		return err
 	}
@@ -1999,13 +2000,43 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 
 	// we dont need to update the cached data here since we are directly converting
 	// a user balance (which is never cached) into a reward (which is also never cached)
-	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
+	err = lockAndIssue(ctx.TxContext.Ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
 	if err != nil {
 		if app.Service != nil && app.Service.Logger != nil {
 			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: lockAndIssue failed for epoch ID=%s: %v",
 				id, info.currentEpoch.ID, err)
 		}
 		return err
+	}
+
+	// Record transaction history
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
+		append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...))
+
+	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: failed to decode txID %s: %v",
+				id, ctx.TxContext.TxID, err)
+		}
+		// Continue with nil internalTxHash rather than failing the whole balance change
+	}
+
+	_, err = app.DB.Execute(ctx.TxContext.Ctx, `
+		INSERT INTO kwil_erc20_meta.transaction_history
+		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp, epoch_id)
+		VALUES ($1, $2, 'withdrawal', $3, $4, $5, $6, 'pending_epoch', $7, $8, $9)
+		ON CONFLICT (id) DO UPDATE SET
+			amount = kwil_erc20_meta.transaction_history.amount + EXCLUDED.amount,
+			from_address = EXCLUDED.from_address,
+			internal_tx_hash = EXCLUDED.internal_tx_hash,
+			block_height = EXCLUDED.block_height,
+			block_timestamp = EXCLUDED.block_timestamp,
+			epoch_id = EXCLUDED.epoch_id
+	`, txHistoryID, id, fromAddr.Bytes(), recipientAddr.Bytes(), amount, internalTxHash, block.Height, block.Timestamp, info.currentEpoch.ID)
+	if err != nil {
+		return fmt.Errorf("failed to record withdrawal history: %w", err)
 	}
 
 	if app.Service != nil && app.Service.Logger != nil {
