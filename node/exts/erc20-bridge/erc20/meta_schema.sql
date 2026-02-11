@@ -108,13 +108,13 @@ CREATE INDEX idx_withdrawals_recipient ON withdrawals(recipient);
 CREATE TABLE transaction_history (
     id UUID PRIMARY KEY,
     instance_id UUID NOT NULL REFERENCES reward_instances(id) ON UPDATE CASCADE ON DELETE CASCADE,
-    type TEXT NOT NULL,            -- 'deposit', 'withdrawal', 'transfer'
+    type TEXT NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
     from_address BYTEA,            -- NULL for external deposits
     to_address BYTEA,              -- NULL for external withdrawals
     amount NUMERIC(78, 0) NOT NULL,
     internal_tx_hash BYTEA,        -- Kwil Tx Hash
     external_tx_hash BYTEA,        -- External Blockchain Tx Hash
-    status TEXT NOT NULL,          -- 'completed', 'pending_epoch', 'claimed'
+    status TEXT NOT NULL CHECK (status IN ('completed', 'pending_epoch', 'claimed')),
     block_height INT8 NOT NULL,
     block_timestamp INT8 NOT NULL, -- Unix timestamp in seconds
     external_block_height INT8     -- Optional: Blockchain block number

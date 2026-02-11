@@ -371,6 +371,11 @@ func TestTransactionHistoryTableExists(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
 	_ = setup(t, tx) // setup creates the schema
 
 	// 1. Verify table exists

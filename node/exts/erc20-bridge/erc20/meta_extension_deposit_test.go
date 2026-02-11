@@ -100,15 +100,27 @@ func TestApplyDepositLog(t *testing.T) {
 	require.Equal(t, amount.String(), balRecipient.String())
 
 	// Verify transaction history
-	res, err := app.DB.Execute(ctx, "SELECT * FROM kwil_erc20_meta.transaction_history WHERE to_address = $1", recipient.Bytes())
+	res, err := app.DB.Execute(ctx, `
+		SELECT type, amount, external_tx_hash, block_height, block_timestamp, external_block_height 
+		FROM kwil_erc20_meta.transaction_history 
+		WHERE to_address = $1`, recipient.Bytes())
 	require.NoError(t, err)
 	require.Len(t, res.Rows, 1)
-	require.Equal(t, "deposit", res.Rows[0][2]) // type
-	require.Equal(t, amount.String(), res.Rows[0][5].(*types.Decimal).String()) // amount (as *types.Decimal)
-	require.Equal(t, depositLog.TxHash.Bytes(), res.Rows[0][7]) // external_tx_hash
-	require.Equal(t, int64(100), res.Rows[0][9]) // block_height
-	require.Equal(t, int64(1600000000), res.Rows[0][10]) // block_timestamp
-	require.Equal(t, int64(12345), res.Rows[0][11]) // external_block_height
+
+	row := res.Rows[0]
+	foundType := row[0].(string)
+	foundAmount := row[1].(*types.Decimal).String()
+	foundExtTxHash := row[2].([]byte)
+	foundBlockHeight := row[3].(int64)
+	foundBlockTimestamp := row[4].(int64)
+	foundExtBlockHeight := row[5].(int64)
+
+	require.Equal(t, "deposit", foundType)
+	require.Equal(t, amount.String(), foundAmount)
+	require.Equal(t, depositLog.TxHash.Bytes(), foundExtTxHash)
+	require.Equal(t, int64(100), foundBlockHeight)
+	require.Equal(t, int64(1600000000), foundBlockTimestamp)
+	require.Equal(t, int64(12345), foundExtBlockHeight)
 
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)

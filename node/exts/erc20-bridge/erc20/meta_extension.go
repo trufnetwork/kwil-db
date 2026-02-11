@@ -2693,7 +2693,14 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 	}
 
 	// Record transaction history
-	txHistoryID := types.NewUUIDV5WithNamespace(types.NewUUIDV5WithNamespace(*id, log.TxHash.Bytes()), []byte("deposit"))
+	// Include log index to prevent UUID collisions when a single Ethereum tx has multiple Deposit events
+	logIndexBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(logIndexBytes, uint32(log.Index))
+	
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, log.TxHash.Bytes()), 
+		append([]byte("deposit"), logIndexBytes...) )
+		
 	_, err = app.DB.Execute(ctx, `
 		INSERT INTO kwil_erc20_meta.transaction_history
 		(id, instance_id, type, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
