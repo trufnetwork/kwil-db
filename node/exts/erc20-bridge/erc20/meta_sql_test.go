@@ -358,6 +358,92 @@ func TestWithdrawalsTableExists(t *testing.T) {
 	}
 }
 
+// TestTransactionHistoryTableExists verifies that the transaction_history table is created by the schema.
+func TestTransactionHistoryTableExists(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available - this test requires database connection")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	_ = setup(t, tx) // setup creates the schema
+
+	// 1. Verify table exists
+	query := `SELECT COUNT(*) FROM kwil_erc20_meta.transaction_history`
+	result, err := tx.Execute(ctx, query)
+	require.NoError(t, err, "transaction_history table should exist")
+
+	// 2. Verify column presence and types
+	expectedColumns := map[string]string{
+		"id":                    "uuid",
+		"instance_id":           "uuid",
+		"type":                  "text",
+		"from_address":          "bytea",
+		"to_address":            "bytea",
+		"amount":                "numeric",
+		"internal_tx_hash":      "bytea",
+		"external_tx_hash":      "bytea",
+		"status":                "text",
+		"block_height":          "bigint",
+		"block_timestamp":       "bigint",
+		"external_block_height": "bigint",
+	}
+
+	columnsQuery := `
+		SELECT column_name::text, data_type::text
+		FROM information_schema.columns
+		WHERE table_schema = 'kwil_erc20_meta'
+		  AND table_name = 'transaction_history'
+		ORDER BY column_name
+	`
+
+	result, err = tx.Execute(ctx, columnsQuery)
+	require.NoError(t, err)
+
+	foundColumns := make(map[string]string)
+	for _, row := range result.Rows {
+		foundColumns[row[0].(string)] = row[1].(string)
+	}
+
+	for colName, expectedType := range expectedColumns {
+		actualType, exists := foundColumns[colName]
+		require.True(t, exists, "column %s should exist", colName)
+		require.Equal(t, expectedType, actualType, "column %s should have type %s", colName, expectedType)
+	}
+
+	// 3. Verify indexes exist
+	indexQuery := `
+		SELECT indexname::text
+		FROM pg_indexes
+		WHERE schemaname = 'kwil_erc20_meta'
+		  AND tablename = 'transaction_history'
+	`
+
+	result, err = tx.Execute(ctx, indexQuery)
+	require.NoError(t, err)
+
+	expectedIndexes := []string{
+		"idx_tx_history_from",
+		"idx_tx_history_to",
+		"idx_tx_history_inst_id",
+		"idx_tx_history_type",
+	}
+
+	foundIndexes := make(map[string]bool)
+	for _, row := range result.Rows {
+		foundIndexes[row[0].(string)] = true
+	}
+
+	for _, expectedIdx := range expectedIndexes {
+		require.True(t, foundIndexes[expectedIdx], "index %s should exist", expectedIdx)
+	}
+}
+
 // containsIgnoreCase checks if a string contains a substring (case-insensitive)
 func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))

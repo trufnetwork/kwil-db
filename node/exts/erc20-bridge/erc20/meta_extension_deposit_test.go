@@ -13,6 +13,8 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trufnetwork/kwil-db/common"
+	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/abigen"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
@@ -81,14 +83,32 @@ func TestApplyDepositLog(t *testing.T) {
 			depositEventID, // Programmatically derived from ABI
 		},
 		Data: data[:],
+		TxHash: ethcommon.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		BlockNumber: 12345,
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog))
+	block := &common.BlockContext{
+		Height:    100,
+		Timestamp: 1600000000,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block))
 
 	balRecipient, err := balanceOf(ctx, app, id, recipient)
 	require.NoError(t, err)
 	require.NotNil(t, balRecipient)
 	require.Equal(t, amount.String(), balRecipient.String())
+
+	// Verify transaction history
+	res, err := app.DB.Execute(ctx, "SELECT * FROM kwil_erc20_meta.transaction_history WHERE to_address = $1", recipient.Bytes())
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+	require.Equal(t, "deposit", res.Rows[0][2]) // type
+	require.Equal(t, amount.String(), res.Rows[0][5].(*types.Decimal).String()) // amount (as *types.Decimal)
+	require.Equal(t, depositLog.TxHash.Bytes(), res.Rows[0][7]) // external_tx_hash
+	require.Equal(t, int64(100), res.Rows[0][9]) // block_height
+	require.Equal(t, int64(1600000000), res.Rows[0][10]) // block_timestamp
+	require.Equal(t, int64(12345), res.Rows[0][11]) // external_block_height
 
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)
@@ -147,9 +167,15 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 			ethcommon.BytesToHash(recipient.Bytes()), // Indexed recipient parameter
 		},
 		Data: data[:],
+		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog))
+	block := &common.BlockContext{
+		Height:    200,
+		Timestamp: 1600000200,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block))
 
 	balRecipient, err := balanceOf(ctx, app, id, recipient)
 	require.NoError(t, err)
@@ -211,9 +237,15 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 		Address: upd.EscrowAddress,
 		Topics:  []ethcommon.Hash{depositEventID},
 		Data:    data1[:],
+		TxHash:  ethcommon.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog1))
+	block := &common.BlockContext{
+		Height:    300,
+		Timestamp: 1600000300,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog1, block))
 
 	// User 2: TrufNetworkBridge deposit (indexed recipient)
 	recipient2 := ethcommon.HexToAddress("0x00000000000000000000000000000000000002bb")
@@ -229,9 +261,10 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 			ethcommon.BytesToHash(recipient2.Bytes()),
 		},
 		Data: data2[:],
+		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog2))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog2, block))
 
 	// Verify both deposits were processed correctly
 	bal1, err := balanceOf(ctx, app, id, recipient1)
@@ -288,7 +321,9 @@ func TestApplyDepositLog_InvalidFormat(t *testing.T) {
 		Data:    make([]byte, 16),
 	}
 
-	err = applyDepositLog(ctx, app, id, invalidLog1)
+	block := &common.BlockContext{}
+
+	err = applyDepositLog(ctx, app, id, invalidLog1, block)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown Deposit event format")
 
@@ -299,7 +334,7 @@ func TestApplyDepositLog_InvalidFormat(t *testing.T) {
 		Data:    make([]byte, 96),
 	}
 
-	err = applyDepositLog(ctx, app, id, invalidLog2)
+	err = applyDepositLog(ctx, app, id, invalidLog2, block)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown Deposit event format")
 }
