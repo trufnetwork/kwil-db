@@ -118,7 +118,7 @@ CREATE TABLE transaction_history (
     block_height INT8 NOT NULL,
     block_timestamp INT8 NOT NULL, -- Unix timestamp in seconds
     external_block_height INT8,    -- Optional: Blockchain block number
-    epoch_id UUID                  -- Optional: For withdrawals
+    epoch_id UUID REFERENCES epochs(id) ON UPDATE RESTRICT ON DELETE SET NULL  -- Optional: For withdrawals
 );
 
 CREATE INDEX idx_tx_history_from ON transaction_history(from_address);
@@ -126,6 +126,8 @@ CREATE INDEX idx_tx_history_from ON transaction_history(from_address);
 CREATE INDEX idx_tx_history_to ON transaction_history(to_address);
 
 CREATE INDEX idx_tx_history_ext_hash ON transaction_history(external_tx_hash);
+
+CREATE INDEX idx_tx_history_epoch_id ON transaction_history(epoch_id);
 
 CREATE INDEX idx_tx_history_inst_height ON transaction_history(instance_id, block_height);
 

@@ -628,7 +628,8 @@ func TestWithdrawalHistory(t *testing.T) {
 
 	// 1. Setup instance and epoch
 	id := newUUID()
-	chainInfo, _ := chains.GetChainInfoByID("1")
+	chainInfo, ok := chains.GetChainInfoByID("1")
+	require.True(t, ok, "chain 1 should be registered")
 
 	upd := &userProvidedData{
 		ID:                 id,

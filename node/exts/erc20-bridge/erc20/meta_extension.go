@@ -2012,11 +2012,15 @@ func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *commo
 	// Record transaction history
 	txHistoryID := types.NewUUIDV5WithNamespace(
 		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
-		append([]byte("withdrawal"), recipientAddr.Bytes()...))
+		append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...))
 
-	var internalTxHash []byte
-	if ctx.TxContext != nil {
-		internalTxHash, _ = hex.DecodeString(ctx.TxContext.TxID)
+	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: failed to decode txID %s: %v",
+				id, ctx.TxContext.TxID, err)
+		}
+		// Continue with nil internalTxHash rather than failing the whole balance change
 	}
 
 	_, err = app.DB.Execute(ctx.TxContext.Ctx, `
@@ -2025,6 +2029,7 @@ func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *commo
 		VALUES ($1, $2, 'withdrawal', $3, $4, $5, $6, 'pending_epoch', $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
 			amount = kwil_erc20_meta.transaction_history.amount + EXCLUDED.amount,
+			from_address = EXCLUDED.from_address,
 			internal_tx_hash = EXCLUDED.internal_tx_hash,
 			block_height = EXCLUDED.block_height,
 			block_timestamp = EXCLUDED.block_timestamp,

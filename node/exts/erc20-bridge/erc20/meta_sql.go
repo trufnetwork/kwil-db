@@ -275,7 +275,8 @@ func updateWithdrawalStatus(
 		WHERE instance_id = $instance_id
 		  AND block_hash = $kwil_block_hash
 		LIMIT 1
-	) AND to_address = $recipient;
+	) AND to_address = $recipient
+	  AND status != 'claimed';
 	`, map[string]any{
 		"instance_id":     instanceID,
 		"recipient":       recipient.Bytes(),
