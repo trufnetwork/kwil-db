@@ -82,8 +82,8 @@ func TestApplyDepositLog(t *testing.T) {
 		Topics: []ethcommon.Hash{
 			depositEventID, // Programmatically derived from ABI
 		},
-		Data: data[:],
-		TxHash: ethcommon.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Data:        data[:],
+		TxHash:      ethcommon.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
 		BlockNumber: 12345,
 	}
 
@@ -178,7 +178,7 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 			depositEventID,                           // Event signature (same for both contracts)
 			ethcommon.BytesToHash(recipient.Bytes()), // Indexed recipient parameter
 		},
-		Data: data[:],
+		Data:   data[:],
 		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
@@ -272,7 +272,7 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 			depositEventID,
 			ethcommon.BytesToHash(recipient2.Bytes()),
 		},
-		Data: data2[:],
+		Data:   data2[:],
 		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
