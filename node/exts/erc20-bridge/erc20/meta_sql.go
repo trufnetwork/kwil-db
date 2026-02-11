@@ -263,7 +263,19 @@ func updateWithdrawalStatus(
 		block_number = $block_number,
 		claimed_at = $claimed_at,
 		updated_at = $claimed_at
-	WHERE withdrawals.status != 'claimed'
+	WHERE withdrawals.status != 'claimed';
+
+	-- Update transaction_history status to 'claimed'
+	{kwil_erc20_meta}UPDATE transaction_history
+	SET status = 'claimed',
+		external_tx_hash = $tx_hash,
+		external_block_height = $block_number
+	WHERE epoch_id = (
+		SELECT id FROM epochs
+		WHERE instance_id = $instance_id
+		  AND block_hash = $kwil_block_hash
+		LIMIT 1
+	) AND to_address = $recipient;
 	`, map[string]any{
 		"instance_id":     instanceID,
 		"recipient":       recipient.Bytes(),

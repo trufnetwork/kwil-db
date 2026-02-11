@@ -117,7 +117,8 @@ CREATE TABLE transaction_history (
     status TEXT NOT NULL CHECK (status IN ('completed', 'pending_epoch', 'claimed')),
     block_height INT8 NOT NULL,
     block_timestamp INT8 NOT NULL, -- Unix timestamp in seconds
-    external_block_height INT8     -- Optional: Blockchain block number
+    external_block_height INT8,    -- Optional: Blockchain block number
+    epoch_id UUID                  -- Optional: For withdrawals
 );
 
 CREATE INDEX idx_tx_history_from ON transaction_history(from_address);
