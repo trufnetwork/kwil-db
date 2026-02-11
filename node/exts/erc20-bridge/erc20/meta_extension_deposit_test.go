@@ -194,6 +194,20 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 	require.NotNil(t, balRecipient)
 	require.Equal(t, amount.String(), balRecipient.String())
 
+	// Verify transaction history
+	res, err := app.DB.Execute(ctx, `
+		SELECT type, amount, external_tx_hash, external_block_height 
+		FROM kwil_erc20_meta.transaction_history 
+		WHERE to_address = $1`, recipient.Bytes())
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+
+	row := res.Rows[0]
+	require.Equal(t, "deposit", row[0].(string))
+	require.Equal(t, amount.String(), row[1].(*types.Decimal).String())
+	require.Equal(t, depositLog.TxHash.Bytes(), row[2].([]byte))
+	require.Equal(t, int64(0), row[3].(int64)) // log.BlockNumber was 0 in this test setup
+
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)
 	require.NoError(t, err)

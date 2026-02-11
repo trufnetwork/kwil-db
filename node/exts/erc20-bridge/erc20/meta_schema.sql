@@ -124,6 +124,10 @@ CREATE INDEX idx_tx_history_from ON transaction_history(from_address);
 
 CREATE INDEX idx_tx_history_to ON transaction_history(to_address);
 
-CREATE INDEX idx_tx_history_inst_id ON transaction_history(instance_id);
+CREATE INDEX idx_tx_history_ext_hash ON transaction_history(external_tx_hash);
 
-CREATE INDEX idx_tx_history_type ON transaction_history(type);
+CREATE INDEX idx_tx_history_inst_height ON transaction_history(instance_id, block_height);
+
+
+
+

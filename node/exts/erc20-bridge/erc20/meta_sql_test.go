@@ -435,8 +435,8 @@ func TestTransactionHistoryTableExists(t *testing.T) {
 	expectedIndexes := []string{
 		"idx_tx_history_from",
 		"idx_tx_history_to",
-		"idx_tx_history_inst_id",
-		"idx_tx_history_type",
+		"idx_tx_history_ext_hash",
+		"idx_tx_history_inst_height",
 	}
 
 	foundIndexes := make(map[string]bool)
