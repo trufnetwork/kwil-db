@@ -397,6 +397,7 @@ func TestTransactionHistoryTableExists(t *testing.T) {
 		"block_height":          "bigint",
 		"block_timestamp":       "bigint",
 		"external_block_height": "bigint",
+		"epoch_id":              "uuid",
 	}
 
 	columnsQuery := `
@@ -435,8 +436,7 @@ func TestTransactionHistoryTableExists(t *testing.T) {
 	expectedIndexes := []string{
 		"idx_tx_history_from",
 		"idx_tx_history_to",
-		"idx_tx_history_ext_hash",
-		"idx_tx_history_inst_height",
+		"idx_tx_history_epoch_id",
 	}
 
 	foundIndexes := make(map[string]bool)
