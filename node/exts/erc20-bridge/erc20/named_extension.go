@@ -314,6 +314,31 @@ func init() {
 					AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
 					Handler:         makeMetaHandler("list_wallet_rewards"),
 				},
+				{
+					Name: "get_history",
+					Parameters: []precompiles.PrecompileValue{
+						{Name: "wallet", Type: types.TextType},
+						{Name: "limit", Type: types.IntType},
+						{Name: "offset", Type: types.IntType},
+					},
+					Returns: &precompiles.MethodReturn{
+						IsTable: true,
+						Fields: []precompiles.PrecompileValue{
+							{Name: "type", Type: types.TextType},
+							{Name: "amount", Type: uint256Numeric},
+							{Name: "from_address", Type: types.ByteaType, Nullable: true},
+							{Name: "to_address", Type: types.ByteaType, Nullable: true},
+							{Name: "internal_tx_hash", Type: types.ByteaType, Nullable: true},
+							{Name: "external_tx_hash", Type: types.ByteaType, Nullable: true},
+							{Name: "status", Type: types.TextType},
+							{Name: "block_height", Type: types.IntType},
+							{Name: "block_timestamp", Type: types.IntType},
+							{Name: "external_block_height", Type: types.IntType, Nullable: true},
+						},
+					},
+					AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
+					Handler:         makeMetaHandler("get_history"),
+				},
 			},
 		}, nil
 	})

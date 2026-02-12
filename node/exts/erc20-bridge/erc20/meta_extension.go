@@ -1549,6 +1549,76 @@ func init() {
 							return nil
 						},
 					},
+					{
+						// get_history returns the transaction history for a given wallet address.
+						Name: "get_history",
+						Parameters: []precompiles.PrecompileValue{
+							{Name: "id", Type: types.UUIDType},
+							{Name: "wallet", Type: types.TextType},
+							{Name: "limit", Type: types.IntType},
+							{Name: "offset", Type: types.IntType},
+						},
+						Returns: &precompiles.MethodReturn{
+							IsTable: true,
+							Fields: []precompiles.PrecompileValue{
+								{Name: "type", Type: types.TextType},
+								{Name: "amount", Type: uint256Numeric},
+								{Name: "from_address", Type: types.ByteaType, Nullable: true},
+								{Name: "to_address", Type: types.ByteaType, Nullable: true},
+								{Name: "internal_tx_hash", Type: types.ByteaType, Nullable: true},
+								{Name: "external_tx_hash", Type: types.ByteaType, Nullable: true},
+								{Name: "status", Type: types.TextType},
+								{Name: "block_height", Type: types.IntType},
+								{Name: "block_timestamp", Type: types.IntType},
+								{Name: "external_block_height", Type: types.IntType, Nullable: true},
+							},
+						},
+						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
+						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+							id := inputs[0].(*types.UUID)
+							wallet := inputs[1].(string)
+							limit := inputs[2].(int64)
+							offset := inputs[3].(int64)
+
+							if limit < 0 {
+								limit = 20
+							}
+							if limit > 1000 {
+								limit = 1000
+							}
+							if offset < 0 {
+								offset = 0
+							}
+
+							walletAddr, err := ethAddressFromHex(wallet)
+							if err != nil {
+								return err
+							}
+
+							return getHistory(ctx.TxContext.Ctx, app, id, walletAddr, limit, offset, func(rec *HistoryRecord) error {
+								var fromBytes []byte
+								if rec.From != nil {
+									fromBytes = rec.From.Bytes()
+								}
+								var toBytes []byte
+								if rec.To != nil {
+									toBytes = rec.To.Bytes()
+								}
+								return resultFn([]any{
+									rec.Type,
+									rec.Amount,
+									fromBytes,
+									toBytes,
+									rec.InternalTxHash,
+									rec.ExternalTxHash,
+									rec.Status,
+									rec.BlockHeight,
+									rec.BlockTimestamp,
+									rec.ExternalBlockHeight,
+								})
+							})
+						},
+					},
 				},
 			}, nil
 		})

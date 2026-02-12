@@ -806,3 +806,73 @@ func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUI
 			return fn(epoch)
 		})
 }
+
+type HistoryRecord struct {
+	Type                string
+	Amount              *types.Decimal
+	From                *ethcommon.Address
+	To                  *ethcommon.Address
+	InternalTxHash      []byte
+	ExternalTxHash      []byte
+	Status              string
+	BlockHeight         int64
+	BlockTimestamp      int64
+	ExternalBlockHeight *int64
+}
+
+// getHistory returns the transaction history for a given wallet address.
+func getHistory(ctx context.Context, app *common.App, instanceID *types.UUID, wallet ethcommon.Address, limit int64, offset int64, fn func(*HistoryRecord) error) error {
+	query := `
+	{kwil_erc20_meta}SELECT type, amount, from_address, to_address, internal_tx_hash, external_tx_hash, status, block_height, block_timestamp, external_block_height
+	FROM transaction_history
+	WHERE instance_id = $instance_id AND (from_address = $wallet OR to_address = $wallet)
+	ORDER BY block_height DESC, block_timestamp DESC
+	LIMIT $limit OFFSET $offset;
+	`
+
+	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query, map[string]any{
+		"instance_id": instanceID,
+		"wallet":      wallet.Bytes(),
+		"limit":       limit,
+		"offset":      offset,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 10 {
+			return fmt.Errorf("expected 10 values, got %d", len(row.Values))
+		}
+
+		rec := &HistoryRecord{
+			Type:           row.Values[0].(string),
+			Amount:         row.Values[1].(*types.Decimal),
+			Status:         row.Values[6].(string),
+			BlockHeight:    row.Values[7].(int64),
+			BlockTimestamp: row.Values[8].(int64),
+		}
+
+		if row.Values[2] != nil {
+			addr, err := bytesToEthAddress(row.Values[2].([]byte))
+			if err != nil {
+				return err
+			}
+			rec.From = &addr
+		}
+		if row.Values[3] != nil {
+			addr, err := bytesToEthAddress(row.Values[3].([]byte))
+			if err != nil {
+				return err
+			}
+			rec.To = &addr
+		}
+		if row.Values[4] != nil {
+			rec.InternalTxHash = row.Values[4].([]byte)
+		}
+		if row.Values[5] != nil {
+			rec.ExternalTxHash = row.Values[5].([]byte)
+		}
+		if row.Values[9] != nil {
+			h := row.Values[9].(int64)
+			rec.ExternalBlockHeight = &h
+		}
+
+		return fn(rec)
+	})
+}
