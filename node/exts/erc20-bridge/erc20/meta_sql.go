@@ -810,14 +810,14 @@ func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUI
 type HistoryRecord struct {
 	Type                string
 	Amount              *types.Decimal
-	From                ethcommon.Address
-	To                  ethcommon.Address
+	From                *ethcommon.Address
+	To                  *ethcommon.Address
 	InternalTxHash      []byte
 	ExternalTxHash      []byte
 	Status              string
 	BlockHeight         int64
 	BlockTimestamp      int64
-	ExternalBlockHeight int64
+	ExternalBlockHeight *int64
 }
 
 // getHistory returns the transaction history for a given wallet address.
@@ -849,10 +849,18 @@ func getHistory(ctx context.Context, app *common.App, instanceID *types.UUID, wa
 		}
 
 		if row.Values[2] != nil {
-			rec.From, _ = bytesToEthAddress(row.Values[2].([]byte))
+			addr, err := bytesToEthAddress(row.Values[2].([]byte))
+			if err != nil {
+				return err
+			}
+			rec.From = &addr
 		}
 		if row.Values[3] != nil {
-			rec.To, _ = bytesToEthAddress(row.Values[3].([]byte))
+			addr, err := bytesToEthAddress(row.Values[3].([]byte))
+			if err != nil {
+				return err
+			}
+			rec.To = &addr
 		}
 		if row.Values[4] != nil {
 			rec.InternalTxHash = row.Values[4].([]byte)
@@ -861,7 +869,8 @@ func getHistory(ctx context.Context, app *common.App, instanceID *types.UUID, wa
 			rec.ExternalTxHash = row.Values[5].([]byte)
 		}
 		if row.Values[9] != nil {
-			rec.ExternalBlockHeight = row.Values[9].(int64)
+			h := row.Values[9].(int64)
+			rec.ExternalBlockHeight = &h
 		}
 
 		return fn(rec)

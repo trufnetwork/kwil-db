@@ -1580,17 +1580,35 @@ func init() {
 							limit := inputs[2].(int64)
 							offset := inputs[3].(int64)
 
+							if limit < 0 {
+								limit = 20
+							}
+							if limit > 1000 {
+								limit = 1000
+							}
+							if offset < 0 {
+								offset = 0
+							}
+
 							walletAddr, err := ethAddressFromHex(wallet)
 							if err != nil {
 								return err
 							}
 
 							return getHistory(ctx.TxContext.Ctx, app, id, walletAddr, limit, offset, func(rec *HistoryRecord) error {
+								var fromBytes []byte
+								if rec.From != nil {
+									fromBytes = rec.From.Bytes()
+								}
+								var toBytes []byte
+								if rec.To != nil {
+									toBytes = rec.To.Bytes()
+								}
 								return resultFn([]any{
 									rec.Type,
 									rec.Amount,
-									rec.From.Bytes(),
-									rec.To.Bytes(),
+									fromBytes,
+									toBytes,
 									rec.InternalTxHash,
 									rec.ExternalTxHash,
 									rec.Status,
