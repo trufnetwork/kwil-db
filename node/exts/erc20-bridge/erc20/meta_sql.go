@@ -374,7 +374,8 @@ func transferTokens(ctx *common.EngineContext, app *common.App, rewardID *types.
 
 	{kwil_erc20_meta}INSERT INTO transaction_history
 		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp)
-	VALUES ($history_id, $reward_id, 'transfer', $from, $to, $amount, $tx_hash, 'completed', $height, $timestamp);
+	VALUES ($history_id, $reward_id, 'transfer', $from, $to, $amount, $tx_hash, 'completed', $height, $timestamp)
+	ON CONFLICT (id) DO NOTHING;
 	`, map[string]any{
 		"reward_id":  rewardID,
 		"from":       from.Bytes(),

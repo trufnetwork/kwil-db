@@ -78,7 +78,7 @@ func TestTransferHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	// 4. Verify History
-	res, err := app.DB.Execute(ctx, "SELECT type, status, amount, from_address, to_address, internal_tx_hash FROM kwil_erc20_meta.transaction_history WHERE instance_id = $1", id)
+	res, err := app.DB.Execute(ctx, "SELECT type, status, amount, from_address, to_address, internal_tx_hash, block_height, block_timestamp FROM kwil_erc20_meta.transaction_history WHERE instance_id = $1", id)
 	require.NoError(t, err)
 	require.Len(t, res.Rows, 1)
 
@@ -89,6 +89,8 @@ func TestTransferHistory(t *testing.T) {
 	fromVal := row[3].([]byte)
 	toVal := row[4].([]byte)
 	txHashVal := row[5].([]byte)
+	heightVal := row[6].(int64)
+	timestampVal := row[7].(int64)
 
 	require.Equal(t, "transfer", typeVal)
 	require.Equal(t, "completed", statusVal)
@@ -98,6 +100,8 @@ func TestTransferHistory(t *testing.T) {
 
 	expectedTxHash, _ := hex.DecodeString(txIDHex)
 	require.Equal(t, expectedTxHash, txHashVal)
+	require.Equal(t, int64(500), heightVal)
+	require.Equal(t, int64(1600000500), timestampVal)
 
 	// 5. Verify Balances
 	senderBal, err := balanceOf(ctx, app, id, sender)
