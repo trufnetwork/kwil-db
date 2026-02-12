@@ -359,9 +359,13 @@ func transferTokens(ctx *common.EngineContext, app *common.App, rewardID *types.
 	}
 
 	// Create unique ID for this transfer event
+	hashInput := make([]byte, 0, len(from.Bytes())+len(to.Bytes())+len(internalTxHash))
+	hashInput = append(hashInput, from.Bytes()...)
+	hashInput = append(hashInput, to.Bytes()...)
+	hashInput = append(hashInput, internalTxHash...)
 	txHistoryID := types.NewUUIDV5WithNamespace(
 		types.NewUUIDV5WithNamespace(*rewardID, []byte("transfer")),
-		append(append(from.Bytes(), to.Bytes()...), internalTxHash...))
+		hashInput)
 
 	return app.Engine.ExecuteWithoutEngineCtx(ctx.TxContext.Ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE balances
@@ -382,7 +386,7 @@ func transferTokens(ctx *common.EngineContext, app *common.App, rewardID *types.
 		"to":         to.Bytes(),
 		"amount":     amount,
 		"to_id":      userBalanceID(rewardID, to),
-		"history_id": txHistoryID,
+		"history_id": &txHistoryID,
 		"tx_hash":    internalTxHash,
 		"height":     ctx.TxContext.BlockContext.Height,
 		"timestamp":  ctx.TxContext.BlockContext.Timestamp,
