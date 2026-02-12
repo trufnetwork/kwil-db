@@ -199,10 +199,7 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 			break
 		}
 
-		toBlock := startBlock + i.chainConf.BlockSyncChunkSize
-		if toBlock > lastConfirmedBlock {
-			toBlock = lastConfirmedBlock
-		}
+		toBlock := min(startBlock+i.chainConf.BlockSyncChunkSize, lastConfirmedBlock)
 
 		err = i.processEvents(ctx, startBlock, toBlock, eventstore, logger)
 		if err != nil {

@@ -214,10 +214,7 @@ func TestListenerRecoveryConstants(t *testing.T) {
 
 	for i, expected := range expectedDelays {
 		require.Equal(t, expected, delay, "delay at iteration %d should be %v", i, expected)
-		delay = delay * time.Duration(recoveryBackoffMultiplier)
-		if delay > maxRecoveryDelay {
-			delay = maxRecoveryDelay
-		}
+		delay = min(delay*time.Duration(recoveryBackoffMultiplier), maxRecoveryDelay)
 	}
 }
 
