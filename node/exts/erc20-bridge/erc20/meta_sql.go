@@ -352,8 +352,22 @@ func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, e
 }
 
 // transferTokens transfers tokens from one user to another.
-func transferTokens(ctx context.Context, app *common.App, rewardID *types.UUID, from, to ethcommon.Address, amount *types.Decimal) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+func transferTokens(ctx *common.EngineContext, app *common.App, rewardID *types.UUID, from, to ethcommon.Address, amount *types.Decimal) error {
+	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
+	if err != nil {
+		return fmt.Errorf("invalid tx id: %w", err)
+	}
+
+	// Create unique ID for this transfer event
+	hashInput := make([]byte, 0, len(from.Bytes())+len(to.Bytes())+len(internalTxHash))
+	hashInput = append(hashInput, from.Bytes()...)
+	hashInput = append(hashInput, to.Bytes()...)
+	hashInput = append(hashInput, internalTxHash...)
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*rewardID, []byte("transfer")),
+		hashInput)
+
+	return app.Engine.ExecuteWithoutEngineCtx(ctx.TxContext.Ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE balances
 	SET balance = balance - $amount
 	WHERE reward_id = $reward_id AND address = $from;
@@ -361,12 +375,21 @@ func transferTokens(ctx context.Context, app *common.App, rewardID *types.UUID, 
 	{kwil_erc20_meta}INSERT INTO balances(id, reward_id, address, balance)
 	VALUES ($to_id, $reward_id, $to, $amount)
 	ON CONFLICT (id) DO UPDATE SET balance = balances.balance + $amount;
+
+	{kwil_erc20_meta}INSERT INTO transaction_history
+		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp)
+	VALUES ($history_id, $reward_id, 'transfer', $from, $to, $amount, $tx_hash, 'completed', $height, $timestamp)
+	ON CONFLICT (id) DO NOTHING;
 	`, map[string]any{
-		"reward_id": rewardID,
-		"from":      from.Bytes(),
-		"to":        to.Bytes(),
-		"amount":    amount,
-		"to_id":     userBalanceID(rewardID, to),
+		"reward_id":  rewardID,
+		"from":       from.Bytes(),
+		"to":         to.Bytes(),
+		"amount":     amount,
+		"to_id":      userBalanceID(rewardID, to),
+		"history_id": &txHistoryID,
+		"tx_hash":    internalTxHash,
+		"height":     ctx.TxContext.BlockContext.Height,
+		"timestamp":  ctx.TxContext.BlockContext.Timestamp,
 	}, nil)
 }
 

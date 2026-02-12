@@ -894,7 +894,7 @@ func init() {
 								return fmt.Errorf("insufficient balance: have %s, need %s", currentBalance, amount)
 							}
 
-							return transferTokens(ctx.TxContext.Ctx, app, id, from, toAddr, amount)
+							return transferTokens(ctx, app, id, from, toAddr, amount)
 						},
 					},
 					{
