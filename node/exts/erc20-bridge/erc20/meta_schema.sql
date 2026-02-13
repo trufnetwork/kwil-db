@@ -121,6 +121,6 @@ CREATE TABLE IF NOT EXISTS transaction_history (
     epoch_id UUID REFERENCES epochs(id) ON UPDATE RESTRICT ON DELETE SET NULL  -- Optional: For withdrawals
 );
 
-CREATE INDEX IF NOT EXISTS idx_tx_history_from ON transaction_history(from_address);
-CREATE INDEX IF NOT EXISTS idx_tx_history_to ON transaction_history(to_address);
+CREATE INDEX IF NOT EXISTS idx_tx_history_instance_from ON transaction_history(instance_id, from_address);
+CREATE INDEX IF NOT EXISTS idx_tx_history_instance_to ON transaction_history(instance_id, to_address);
 CREATE INDEX IF NOT EXISTS idx_tx_history_epoch_id ON transaction_history(epoch_id);

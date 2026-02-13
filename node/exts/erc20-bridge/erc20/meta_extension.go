@@ -388,7 +388,12 @@ func init() {
 				OnStart: func(ctx context.Context, app *common.App) error {
 					// Check version and upgrade if needed (automatic migration)
 					version, notYetSet, err := getVersion(ctx, app)
-					if err == nil && !notYetSet && version < currentVersion {
+					if err != nil {
+						// Only skip if the namespace truly doesn't exist yet
+						if !errors.Is(err, engine.ErrNamespaceNotFound) {
+							return fmt.Errorf("failed to get extension version: %w", err)
+						}
+					} else if !notYetSet && version < currentVersion {
 						// Safe to run createSchema here because it uses IF NOT EXISTS and
 						// we've updated it to be idempotent.
 						err = createSchema(ctx, app)
@@ -2519,9 +2524,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				// Successfully got RewardDistributor events
 				defer depositIter.Close()
 				for depositIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := depositIter.Event.Raw
 					logs = append(logs, &evmsync.EthLog{
 						Metadata: logTypeDeposit,
-						Log:      &depositIter.Event.Raw,
+						Log:      &logCopy,
 					})
 				}
 				iterErr = depositIter.Error()
@@ -2564,9 +2571,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				}
 
 				for bridgeDepositIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := bridgeDepositIter.Event.Raw
 					logs = append(logs, &evmsync.EthLog{
 						Metadata: logTypeDeposit,
-						Log:      &bridgeDepositIter.Event.Raw,
+						Log:      &logCopy,
 					})
 				}
 				if err := bridgeDepositIter.Error(); err != nil {
@@ -2596,9 +2605,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				defer postIter.Close()
 
 				for postIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := postIter.Event.Raw
 					logs = append(logs, &evmsync.EthLog{
 						Metadata: logTypeConfirmedEpoch,
-						Log:      &postIter.Event.Raw,
+						Log:      &logCopy,
 					})
 				}
 				if err := postIter.Error(); err != nil {
@@ -2681,9 +2692,11 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 			defer withdrawIter.Close()
 
 			for withdrawIter.Next() {
+				// Deep copy the log to avoid pointing to the iterator's internal reused struct
+				logCopy := withdrawIter.Event.Raw
 				logs = append(logs, &evmsync.EthLog{
 					Metadata: logTypeWithdrawal,
-					Log:      &withdrawIter.Event.Raw,
+					Log:      &logCopy,
 				})
 			}
 			if err := withdrawIter.Error(); err != nil {
@@ -2838,8 +2851,8 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 
 	_, err = app.DB.Execute(ctx, `
 		INSERT INTO kwil_erc20_meta.transaction_history
-		(id, instance_id, type, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
-		VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', $6, $7, $8)
+		(id, instance_id, type, from_address, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
+		VALUES ($1, $2, 'deposit', NULL, $3, $4, $5, 'completed', $6, $7, $8)
 		ON CONFLICT (id) DO NOTHING
 	`, txHistoryID, id, recipient.Bytes(), val, log.TxHash.Bytes(), block.Height, block.Timestamp, log.BlockNumber)
 	if err != nil {

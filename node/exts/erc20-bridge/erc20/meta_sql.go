@@ -734,21 +734,20 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 	case 1:
 		return version, false, nil
 	default:
-		return 0, false, errors.New("expected only one value for version table, got")
+		return 0, false, fmt.Errorf("expected only one value for version table, got %d", count)
 	}
 }
 
 var currentVersion = int64(2)
 
-// setVersion sets the version of the meta extension.
-// setVersion sets the version of the meta extension.
+// setVersionToCurrent sets the version of the meta extension to currentVersion.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {
 	if app.Service != nil && app.Service.Logger != nil {
 		app.Service.Logger.Infof("[DB] setVersionToCurrent: Updating version to %d", currentVersion)
 	}
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version)
-	ON CONFLICT (version) DO UPDATE SET version = EXCLUDED.version;
+	{kwil_erc20_meta}DELETE FROM meta;
+	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version);
 	`, map[string]any{
 		"version": currentVersion,
 	}, nil)
