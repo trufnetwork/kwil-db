@@ -728,14 +728,14 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 		return 0, false, err
 	}
 
-	switch count {
-	case 0:
+	if count == 0 {
 		return 0, true, nil
-	case 1:
-		return version, false, nil
-	default:
-		return 0, false, fmt.Errorf("expected only one value for version table, got %d", count)
 	}
+
+	// If multiple rows exist, we return the highest version found.
+	// This allows the node to start and subsequently heal the table
+	// via setVersionToCurrent's DELETE/INSERT pattern.
+	return version, false, nil
 }
 
 var currentVersion = int64(2)
