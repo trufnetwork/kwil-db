@@ -2698,12 +2698,18 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 
 		// Attempt to stop deposit listener
 		if err := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID)); err != nil {
-			errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
+			// Ignore "not registered" errors to make UNUSE idempotent
+			if !strings.Contains(err.Error(), "not registered") {
+				errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
+			}
 		}
 
 		// Attempt to stop withdrawal listener
 		if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
-			errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
+			// Ignore "not registered" errors to make UNUSE idempotent
+			if !strings.Contains(err.Error(), "not registered") {
+				errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
+			}
 		}
 
 		// Return combined error if any failed
@@ -2712,7 +2718,12 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 		}
 		return nil
 	}
-	return evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
+
+	err := evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	return nil
 }
 
 // nilEthFilterer is a dummy filterer that does nothing.
