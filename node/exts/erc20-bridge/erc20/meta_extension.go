@@ -1605,13 +1605,13 @@ func init() {
 							offset := inputs[3].(int64)
 
 							if limit < 0 {
-								limit = 20
+								return fmt.Errorf("limit must be non-negative, got %d", limit)
 							}
 							if limit > 1000 {
 								limit = 1000
 							}
 							if offset < 0 {
-								offset = 0
+								return fmt.Errorf("offset must be non-negative, got %d", offset)
 							}
 
 							walletAddr, err := ethAddressFromHex(wallet)
@@ -2114,11 +2114,7 @@ func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *commo
 
 	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
 	if err != nil {
-		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: failed to decode txID %s: %v",
-				id, ctx.TxContext.TxID, err)
-		}
-		// Continue with nil internalTxHash rather than failing the whole balance change
+		return fmt.Errorf("failed to decode internal tx id %s: %w", ctx.TxContext.TxID, err)
 	}
 
 	// Record transaction history
@@ -2731,7 +2727,7 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 		// Attempt to stop deposit listener
 		if err := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID)); err != nil {
 			// Ignore "not registered" errors to make UNUSE idempotent
-			if !strings.Contains(err.Error(), "not registered") {
+			if !errors.Is(err, evmsync.ErrListenerNotRegistered) {
 				errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
 			}
 		}
@@ -2739,7 +2735,7 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 		// Attempt to stop withdrawal listener
 		if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
 			// Ignore "not registered" errors to make UNUSE idempotent
-			if !strings.Contains(err.Error(), "not registered") {
+			if !errors.Is(err, evmsync.ErrListenerNotRegistered) {
 				errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
 			}
 		}
@@ -2752,7 +2748,7 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 	}
 
 	err := evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
-	if err != nil && !strings.Contains(err.Error(), "not found") {
+	if err != nil && !errors.Is(err, evmsync.ErrPollerNotFound) {
 		return err
 	}
 	return nil

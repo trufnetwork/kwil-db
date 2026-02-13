@@ -574,7 +574,7 @@ func previousEpochConfirmed(ctx context.Context, app *common.App, instanceID *ty
 
 func rowToEpoch(r *common.Row) (*Epoch, error) {
 	if len(r.Values) != 9 {
-		return nil, fmt.Errorf("expected 11 values, got %d", len(r.Values))
+		return nil, fmt.Errorf("expected 9 values, got %d", len(r.Values))
 	}
 
 	id := r.Values[0].(*types.UUID)
