@@ -343,9 +343,13 @@ func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, e
 	}, nil)
 
 	if err != nil {
-		app.Service.Logger.Errorf("[DB] issueReward failed for epoch_id=%s: %v", epochID, err)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] issueReward failed for epoch_id=%s: %v", epochID, err)
+		}
 	} else {
-		app.Service.Logger.Infof("[DB] issueReward succeeded for epoch_id=%s", epochID)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[DB] issueReward succeeded for epoch_id=%s", epochID)
+		}
 	}
 
 	return err
@@ -726,9 +730,8 @@ var currentVersion = int64(2)
 // setVersion sets the version of the meta extension.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}INSERT INTO meta(version)
-	VALUES ($version)
-	ON CONFLICT (version) DO UPDATE SET version = $version
+	{kwil_erc20_meta}DELETE FROM meta;
+	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version);
 	`, map[string]any{
 		"version": currentVersion,
 	}, nil)

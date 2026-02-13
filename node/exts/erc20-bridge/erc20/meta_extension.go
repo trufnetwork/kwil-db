@@ -1643,10 +1643,18 @@ func init() {
 				return err
 			}
 		} else {
-			// in the future, we will handle version upgrades here
-			// For now, we allow version 1 to support migration via UNUSE/USE
-			if version != currentVersion && version != 1 {
-				return fmt.Errorf("reward extension version mismatch: expected %d, got %d", currentVersion, version)
+			// If we are at an older version (e.g. 1), trigger the idempotent schema update
+			// and bump version to current. This enables automatic migration on startup.
+			if version < currentVersion {
+				err = createSchema(ctx, app)
+				if err != nil {
+					return err
+				}
+
+				err = setVersionToCurrent(ctx, app)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -2080,11 +2088,6 @@ func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *commo
 		return err
 	}
 
-	// Record transaction history
-	txHistoryID := types.NewUUIDV5WithNamespace(
-		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
-		append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...))
-
 	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
 	if err != nil {
 		if app.Service != nil && app.Service.Logger != nil {
@@ -2094,17 +2097,17 @@ func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *commo
 		// Continue with nil internalTxHash rather than failing the whole balance change
 	}
 
+	// Record transaction history
+	// Include internalTxHash to prevent UUID collisions if same user withdraws to same recipient multiple times in one epoch
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
+		append(append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...), internalTxHash...))
+
 	_, err = app.DB.Execute(ctx.TxContext.Ctx, `
 		INSERT INTO kwil_erc20_meta.transaction_history
 		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp, epoch_id)
 		VALUES ($1, $2, 'withdrawal', $3, $4, $5, $6, 'pending_epoch', $7, $8, $9)
-		ON CONFLICT (id) DO UPDATE SET
-			amount = kwil_erc20_meta.transaction_history.amount + EXCLUDED.amount,
-			from_address = EXCLUDED.from_address,
-			internal_tx_hash = EXCLUDED.internal_tx_hash,
-			block_height = EXCLUDED.block_height,
-			block_timestamp = EXCLUDED.block_timestamp,
-			epoch_id = EXCLUDED.epoch_id
+		ON CONFLICT (id) DO NOTHING
 	`, txHistoryID, id, fromAddr.Bytes(), recipientAddr.Bytes(), amount, internalTxHash, block.Height, block.Timestamp, info.currentEpoch.ID)
 	if err != nil {
 		return fmt.Errorf("failed to record withdrawal history: %w", err)
