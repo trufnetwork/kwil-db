@@ -2468,19 +2468,18 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 //   - (err, false): Registration failed (caller should NOT clean up)
 func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 	// Check if deposit listener is already running for this instance
-	// Keep lock held during registration to prevent race conditions
 	instanceIDStr := r.ID.String()
 	runningListenersMu.Lock()
-	defer runningListenersMu.Unlock()
-
 	if runningDepositListeners[instanceIDStr] {
+		runningListenersMu.Unlock()
 		// Already running, skip registration
 		return nil, false
 	}
-
-	// Mark as running BEFORE registration to avoid race conditions
-	// Lock is held (deferred unlock above) to ensure atomicity
 	runningDepositListeners[instanceIDStr] = true
+	runningListenersMu.Unlock()
+
+	// Ensure we start with a clean state in the global registry
+	_ = evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID))
 
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
@@ -2492,6 +2491,9 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			if logger != nil {
+				logger.Infof("[HEARTBEAT] Deposit Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+			}
 			var logs []*evmsync.EthLog
 
 			// TODO(migration): Remove RewardDistributor fallback once all deployments migrate to TrufNetworkBridge.
@@ -2639,19 +2641,19 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 //   - (err, false): Registration failed (caller should NOT clean up)
 func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 	// Check if withdrawal listener is already running for this instance
-	// Keep lock held during registration to prevent race conditions
 	instanceIDStr := r.ID.String()
 	runningListenersMu.Lock()
-	defer runningListenersMu.Unlock()
-
 	if runningWithdrawalListeners[instanceIDStr] {
+		runningListenersMu.Unlock()
 		// Already running, skip registration
 		return nil, false
 	}
-
-	// Mark as running BEFORE registration to avoid race conditions
-	// Lock is held (deferred unlock above) to ensure atomicity
 	runningWithdrawalListeners[instanceIDStr] = true
+	runningListenersMu.Unlock()
+
+	// Ensure we start with a clean state in the global registry
+	// This is the long-term fix for stale listeners after crashes
+	_ = evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID))
 
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
@@ -2662,6 +2664,9 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 		UniqueName: withdrawalListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			if logger != nil {
+				logger.Infof("[HEARTBEAT] Withdrawal Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+			}
 			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
 			if err != nil {
 				return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", err)
