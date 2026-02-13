@@ -83,12 +83,38 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 // confirmEpoch confirms an epoch was received on-chain.
 // Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
+	// 1. Get the epoch ID first (avoids subquery parser limitations)
+	var epochID string
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT id FROM epochs WHERE reward_root = $root;
+	`, map[string]any{
+		"root": root,
+	}, func(row *common.Row) error {
+		epochID = row.Values[0].(string)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if epochID == "" {
+		return nil // Should not happen if root is valid, but safe to ignore
+	}
+
+	// 2. Update status using the explicit ID
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE epochs
 	SET confirmed = true
-	WHERE reward_root = $root;
+	WHERE id = $id;
+
+	-- Update transaction_history: Mark all withdrawals in this epoch as 'completed'
+	-- (meaning they are now ready to be claimed on Ethereum).
+	{kwil_erc20_meta}UPDATE transaction_history
+	SET status = 'completed'
+	WHERE epoch_id = $id
+	  AND status = 'pending_epoch';
 	`, map[string]any{
-		"root": root,
+		"id": epochID,
 	}, nil)
 }
 
@@ -242,20 +268,31 @@ func updateWithdrawalStatus(
 	blockNumber int64,
 	claimedAt int64,
 ) error {
+	// 1. Get the epoch ID first (avoids subquery parser limitations)
+	var epochID string
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT id FROM epochs
+	WHERE instance_id = $instance_id
+	  AND block_hash = $kwil_block_hash;
+	`, map[string]any{
+		"instance_id":     instanceID,
+		"kwil_block_hash": kwilBlockHash[:],
+	}, func(row *common.Row) error {
+		epochID = row.Values[0].(string)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if epochID == "" {
+		return nil
+	}
+
+	// 2. Perform updates using the explicit ID
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, tx_hash, block_number, claimed_at, created_at, updated_at)
-	SELECT
-		e.id,
-		$recipient,
-		'claimed',
-		$tx_hash,
-		$block_number,
-		$claimed_at,
-		$claimed_at,
-		$claimed_at
-	FROM epochs e
-	WHERE e.instance_id = $instance_id
-	  AND e.block_hash = $kwil_block_hash
+	VALUES ($epoch_id, $recipient, 'claimed', $tx_hash, $block_number, $claimed_at, $claimed_at, $claimed_at)
 	ON CONFLICT (epoch_id, recipient)
 	DO UPDATE SET
 		status = 'claimed',
@@ -270,20 +307,15 @@ func updateWithdrawalStatus(
 	SET status = 'claimed',
 		external_tx_hash = $tx_hash,
 		external_block_height = $block_number
-	WHERE epoch_id = (
-		SELECT id FROM epochs
-		WHERE instance_id = $instance_id
-		  AND block_hash = $kwil_block_hash
-		LIMIT 1
-	) AND to_address = $recipient
+	WHERE epoch_id = $epoch_id
+	  AND to_address = $recipient
 	  AND status != 'claimed';
 	`, map[string]any{
-		"instance_id":     instanceID,
-		"recipient":       recipient.Bytes(),
-		"kwil_block_hash": kwilBlockHash[:],
-		"tx_hash":         txHash,
-		"block_number":    blockNumber,
-		"claimed_at":      claimedAt,
+		"epoch_id":     epochID,
+		"recipient":    recipient.Bytes(),
+		"tx_hash":      txHash,
+		"block_number": blockNumber,
+		"claimed_at":   claimedAt,
 	}, nil)
 }
 
@@ -713,6 +745,8 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT version
 	FROM meta
+	ORDER BY version DESC
+	LIMIT 1
 	`, nil, func(r *common.Row) error {
 		if len(r.Values) != 1 {
 			return fmt.Errorf("expected 1 value, got %d", len(r.Values))
@@ -732,9 +766,6 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 		return 0, true, nil
 	}
 
-	// If multiple rows exist, we return the highest version found.
-	// This allows the node to start and subsequently heal the table
-	// via setVersionToCurrent's DELETE/INSERT pattern.
 	return version, false, nil
 }
 
@@ -745,9 +776,12 @@ func setVersionToCurrent(ctx context.Context, app *common.App) error {
 	if app.Service != nil && app.Service.Logger != nil {
 		app.Service.Logger.Infof("[DB] setVersionToCurrent: Updating version to %d", currentVersion)
 	}
+	// Atomic-like update: Insert new version first, then delete old ones.
+	// This ensures the table is NEVER empty, even during a crash.
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}DELETE FROM meta;
-	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version);
+	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version)
+	ON CONFLICT (version) DO NOTHING;
+	{kwil_erc20_meta}DELETE FROM meta WHERE version != $version;
 	`, map[string]any{
 		"version": currentVersion,
 	}, nil)
