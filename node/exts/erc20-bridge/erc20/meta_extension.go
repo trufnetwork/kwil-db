@@ -1644,7 +1644,8 @@ func init() {
 			}
 		} else {
 			// in the future, we will handle version upgrades here
-			if version != currentVersion {
+			// For now, we allow version 1 to support migration via UNUSE/USE
+			if version != currentVersion && version != 1 {
 				return fmt.Errorf("reward extension version mismatch: expected %d, got %d", currentVersion, version)
 			}
 		}

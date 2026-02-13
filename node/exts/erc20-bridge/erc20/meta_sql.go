@@ -721,7 +721,7 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 	}
 }
 
-var currentVersion = int64(1)
+var currentVersion = int64(2)
 
 // setVersion sets the version of the meta extension.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {
