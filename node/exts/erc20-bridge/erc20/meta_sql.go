@@ -84,20 +84,20 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 // Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
 	// 1. Get the epoch ID first (avoids subquery parser limitations)
-	var epochID string
+	var epochID *types.UUID
 	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT id FROM epochs WHERE reward_root = $root;
 	`, map[string]any{
 		"root": root,
 	}, func(row *common.Row) error {
-		epochID = row.Values[0].(string)
+		epochID = row.Values[0].(*types.UUID)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	if epochID == "" {
+	if epochID == nil {
 		return nil // Should not happen if root is valid, but safe to ignore
 	}
 
@@ -269,7 +269,7 @@ func updateWithdrawalStatus(
 	claimedAt int64,
 ) error {
 	// 1. Get the epoch ID first (avoids subquery parser limitations)
-	var epochID string
+	var epochID *types.UUID
 	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT id FROM epochs
 	WHERE instance_id = $instance_id
@@ -278,14 +278,14 @@ func updateWithdrawalStatus(
 		"instance_id":     instanceID,
 		"kwil_block_hash": kwilBlockHash[:],
 	}, func(row *common.Row) error {
-		epochID = row.Values[0].(string)
+		epochID = row.Values[0].(*types.UUID)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	if epochID == "" {
+	if epochID == nil {
 		return nil
 	}
 
