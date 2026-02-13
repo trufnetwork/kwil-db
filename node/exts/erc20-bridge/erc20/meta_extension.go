@@ -379,9 +379,28 @@ func init() {
 			return precompiles.Precompile{
 				Cache: getSingleton(),
 				OnUse: func(ctx *common.EngineContext, app *common.App) error {
-					return createSchema(ctx.TxContext.Ctx, app)
+					err := createSchema(ctx.TxContext.Ctx, app)
+					if err != nil {
+						return err
+					}
+					return setVersionToCurrent(ctx.TxContext.Ctx, app)
 				},
 				OnStart: func(ctx context.Context, app *common.App) error {
+					// Check version and upgrade if needed (automatic migration)
+					version, notYetSet, err := getVersion(ctx, app)
+					if err == nil && !notYetSet && version < currentVersion {
+						// Safe to run createSchema here because it uses IF NOT EXISTS and
+						// we've updated it to be idempotent.
+						err = createSchema(ctx, app)
+						if err != nil {
+							return err
+						}
+						err = setVersionToCurrent(ctx, app)
+						if err != nil {
+							return err
+						}
+					}
+
 					// if the schema exists, we should read all existing reward instances
 					instances, err := getStoredRewardInstances(ctx, app)
 					switch {

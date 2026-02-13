@@ -316,7 +316,20 @@ func setActiveStatus(ctx context.Context, app *common.App, id *types.UUID, activ
 // createSchema creates the schema for the meta extension.
 // it should be run exactly once (at genesis)
 func createSchema(ctx context.Context, app *common.App) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, metaSchema, nil, nil)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] createSchema: Executing metaSchema for kwil_erc20_meta")
+	}
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, metaSchema, nil, nil)
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] createSchema failed: %v", err)
+		}
+		return err
+	}
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] createSchema: Successfully executed metaSchema")
+	}
+	return nil
 }
 
 // issueReward issues a reward to a user.
@@ -728,10 +741,14 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 var currentVersion = int64(2)
 
 // setVersion sets the version of the meta extension.
+// setVersion sets the version of the meta extension.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] setVersionToCurrent: Updating version to %d", currentVersion)
+	}
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}DELETE FROM meta;
-	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version);
+	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version)
+	ON CONFLICT (version) DO UPDATE SET version = EXCLUDED.version;
 	`, map[string]any{
 		"version": currentVersion,
 	}, nil)

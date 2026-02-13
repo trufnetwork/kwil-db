@@ -122,15 +122,5 @@ CREATE TABLE IF NOT EXISTS transaction_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tx_history_from ON transaction_history(from_address);
-
 CREATE INDEX IF NOT EXISTS idx_tx_history_to ON transaction_history(to_address);
-
 CREATE INDEX IF NOT EXISTS idx_tx_history_epoch_id ON transaction_history(epoch_id);
-
--- Initialize/Update version
-DELETE FROM meta;
-INSERT INTO meta (version) VALUES (2);
-
-
-
-
