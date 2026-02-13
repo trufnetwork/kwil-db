@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -44,6 +45,8 @@ var (
 
 	// resolutions is a map of resolution functions
 	registeredResolutions = make(map[string]ResolveFunc)
+
+	ErrListenerNotRegistered = errors.New("listener not registered")
 )
 
 // this file contains a thread-safe in-memory cache for the chains that the network cares about.
@@ -132,7 +135,7 @@ func (l *globalListenerManager) UnregisterListener(uniqueName string) error {
 
 	info, ok := l.listeners[uniqueName]
 	if !ok {
-		return fmt.Errorf("listener with name %s not registered", uniqueName)
+		return fmt.Errorf("listener with name %s: %w", uniqueName, ErrListenerNotRegistered)
 	}
 
 	close(info.done)

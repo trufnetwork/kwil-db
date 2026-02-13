@@ -379,9 +379,33 @@ func init() {
 			return precompiles.Precompile{
 				Cache: getSingleton(),
 				OnUse: func(ctx *common.EngineContext, app *common.App) error {
-					return createSchema(ctx.TxContext.Ctx, app)
+					err := createSchema(ctx.TxContext.Ctx, app)
+					if err != nil {
+						return err
+					}
+					return setVersionToCurrent(ctx.TxContext.Ctx, app)
 				},
 				OnStart: func(ctx context.Context, app *common.App) error {
+					// Check version and upgrade if needed (automatic migration)
+					version, notYetSet, err := getVersion(ctx, app)
+					if err != nil {
+						// Only skip if the namespace truly doesn't exist yet
+						if !errors.Is(err, engine.ErrNamespaceNotFound) {
+							return fmt.Errorf("failed to get extension version: %w", err)
+						}
+					} else if !notYetSet && version < currentVersion {
+						// Safe to run createSchema here because it uses IF NOT EXISTS and
+						// we've updated it to be idempotent.
+						err = createSchema(ctx, app)
+						if err != nil {
+							return err
+						}
+						err = setVersionToCurrent(ctx, app)
+						if err != nil {
+							return err
+						}
+					}
+
 					// if the schema exists, we should read all existing reward instances
 					instances, err := getStoredRewardInstances(ctx, app)
 					switch {
@@ -1581,13 +1605,13 @@ func init() {
 							offset := inputs[3].(int64)
 
 							if limit < 0 {
-								limit = 20
+								return fmt.Errorf("limit must be non-negative, got %d", limit)
 							}
 							if limit > 1000 {
 								limit = 1000
 							}
 							if offset < 0 {
-								offset = 0
+								return fmt.Errorf("offset must be non-negative, got %d", offset)
 							}
 
 							walletAddr, err := ethAddressFromHex(wallet)
@@ -1643,9 +1667,18 @@ func init() {
 				return err
 			}
 		} else {
-			// in the future, we will handle version upgrades here
-			if version != currentVersion {
-				return fmt.Errorf("reward extension version mismatch: expected %d, got %d", currentVersion, version)
+			// If we are at an older version (e.g. 1), trigger the idempotent schema update
+			// and bump version to current. This enables automatic migration on startup.
+			if version < currentVersion {
+				err = createSchema(ctx, app)
+				if err != nil {
+					return err
+				}
+
+				err = setVersionToCurrent(ctx, app)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -2079,31 +2112,22 @@ func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *commo
 		return err
 	}
 
-	// Record transaction history
-	txHistoryID := types.NewUUIDV5WithNamespace(
-		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
-		append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...))
-
 	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
 	if err != nil {
-		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: failed to decode txID %s: %v",
-				id, ctx.TxContext.TxID, err)
-		}
-		// Continue with nil internalTxHash rather than failing the whole balance change
+		return fmt.Errorf("failed to decode internal tx id %s: %w", ctx.TxContext.TxID, err)
 	}
+
+	// Record transaction history
+	// Include internalTxHash to prevent UUID collisions if same user withdraws to same recipient multiple times in one epoch
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
+		append(append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...), internalTxHash...))
 
 	_, err = app.DB.Execute(ctx.TxContext.Ctx, `
 		INSERT INTO kwil_erc20_meta.transaction_history
 		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp, epoch_id)
 		VALUES ($1, $2, 'withdrawal', $3, $4, $5, $6, 'pending_epoch', $7, $8, $9)
-		ON CONFLICT (id) DO UPDATE SET
-			amount = kwil_erc20_meta.transaction_history.amount + EXCLUDED.amount,
-			from_address = EXCLUDED.from_address,
-			internal_tx_hash = EXCLUDED.internal_tx_hash,
-			block_height = EXCLUDED.block_height,
-			block_timestamp = EXCLUDED.block_timestamp,
-			epoch_id = EXCLUDED.epoch_id
+		ON CONFLICT (id) DO NOTHING
 	`, txHistoryID, id, fromAddr.Bytes(), recipientAddr.Bytes(), amount, internalTxHash, block.Height, block.Timestamp, info.currentEpoch.ID)
 	if err != nil {
 		return fmt.Errorf("failed to record withdrawal history: %w", err)
@@ -2444,19 +2468,18 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 //   - (err, false): Registration failed (caller should NOT clean up)
 func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 	// Check if deposit listener is already running for this instance
-	// Keep lock held during registration to prevent race conditions
 	instanceIDStr := r.ID.String()
 	runningListenersMu.Lock()
-	defer runningListenersMu.Unlock()
-
 	if runningDepositListeners[instanceIDStr] {
+		runningListenersMu.Unlock()
 		// Already running, skip registration
 		return nil, false
 	}
-
-	// Mark as running BEFORE registration to avoid race conditions
-	// Lock is held (deferred unlock above) to ensure atomicity
 	runningDepositListeners[instanceIDStr] = true
+	runningListenersMu.Unlock()
+
+	// Ensure we start with a clean state in the global registry
+	_ = evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID))
 
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
@@ -2468,6 +2491,9 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			if logger != nil {
+				logger.Infof("[HEARTBEAT] Deposit Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+			}
 			var logs []*evmsync.EthLog
 
 			// TODO(migration): Remove RewardDistributor fallback once all deployments migrate to TrufNetworkBridge.
@@ -2496,9 +2522,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				// Successfully got RewardDistributor events
 				defer depositIter.Close()
 				for depositIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := depositIter.Event.Raw
 					logs = append(logs, &evmsync.EthLog{
 						Metadata: logTypeDeposit,
-						Log:      &depositIter.Event.Raw,
+						Log:      &logCopy,
 					})
 				}
 				iterErr = depositIter.Error()
@@ -2541,9 +2569,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				}
 
 				for bridgeDepositIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := bridgeDepositIter.Event.Raw
 					logs = append(logs, &evmsync.EthLog{
 						Metadata: logTypeDeposit,
-						Log:      &bridgeDepositIter.Event.Raw,
+						Log:      &logCopy,
 					})
 				}
 				if err := bridgeDepositIter.Error(); err != nil {
@@ -2573,9 +2603,11 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				defer postIter.Close()
 
 				for postIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := postIter.Event.Raw
 					logs = append(logs, &evmsync.EthLog{
 						Metadata: logTypeConfirmedEpoch,
-						Log:      &postIter.Event.Raw,
+						Log:      &logCopy,
 					})
 				}
 				if err := postIter.Error(); err != nil {
@@ -2609,19 +2641,19 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 //   - (err, false): Registration failed (caller should NOT clean up)
 func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 	// Check if withdrawal listener is already running for this instance
-	// Keep lock held during registration to prevent race conditions
 	instanceIDStr := r.ID.String()
 	runningListenersMu.Lock()
-	defer runningListenersMu.Unlock()
-
 	if runningWithdrawalListeners[instanceIDStr] {
+		runningListenersMu.Unlock()
 		// Already running, skip registration
 		return nil, false
 	}
-
-	// Mark as running BEFORE registration to avoid race conditions
-	// Lock is held (deferred unlock above) to ensure atomicity
 	runningWithdrawalListeners[instanceIDStr] = true
+	runningListenersMu.Unlock()
+
+	// Ensure we start with a clean state in the global registry
+	// This is the long-term fix for stale listeners after crashes
+	_ = evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID))
 
 	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
 	escrowCopy := r.EscrowAddress
@@ -2632,6 +2664,9 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 		UniqueName: withdrawalListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			if logger != nil {
+				logger.Infof("[HEARTBEAT] Withdrawal Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+			}
 			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
 			if err != nil {
 				return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", err)
@@ -2658,9 +2693,11 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 			defer withdrawIter.Close()
 
 			for withdrawIter.Next() {
+				// Deep copy the log to avoid pointing to the iterator's internal reused struct
+				logCopy := withdrawIter.Event.Raw
 				logs = append(logs, &evmsync.EthLog{
 					Metadata: logTypeWithdrawal,
-					Log:      &withdrawIter.Event.Raw,
+					Log:      &logCopy,
 				})
 			}
 			if err := withdrawIter.Error(); err != nil {
@@ -2694,12 +2731,18 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 
 		// Attempt to stop deposit listener
 		if err := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID)); err != nil {
-			errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
+			// Ignore "not registered" errors to make UNUSE idempotent
+			if !errors.Is(err, evmsync.ErrListenerNotRegistered) {
+				errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
+			}
 		}
 
 		// Attempt to stop withdrawal listener
 		if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
-			errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
+			// Ignore "not registered" errors to make UNUSE idempotent
+			if !errors.Is(err, evmsync.ErrListenerNotRegistered) {
+				errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
+			}
 		}
 
 		// Return combined error if any failed
@@ -2708,7 +2751,12 @@ func (r *rewardExtensionInfo) stopAllListeners() error {
 		}
 		return nil
 	}
-	return evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
+
+	err := evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
+	if err != nil && !errors.Is(err, evmsync.ErrPollerNotFound) {
+		return err
+	}
+	return nil
 }
 
 // nilEthFilterer is a dummy filterer that does nothing.
@@ -2804,8 +2852,8 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 
 	_, err = app.DB.Execute(ctx, `
 		INSERT INTO kwil_erc20_meta.transaction_history
-		(id, instance_id, type, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
-		VALUES ($1, $2, 'deposit', $3, $4, $5, 'completed', $6, $7, $8)
+		(id, instance_id, type, from_address, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
+		VALUES ($1, $2, 'deposit', NULL, $3, $4, $5, 'completed', $6, $7, $8)
 		ON CONFLICT (id) DO NOTHING
 	`, txHistoryID, id, recipient.Bytes(), val, log.TxHash.Bytes(), block.Height, block.Timestamp, log.BlockNumber)
 	if err != nil {

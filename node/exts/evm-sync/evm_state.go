@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -40,6 +41,8 @@ func RegisterStatePollResolution(name string, resolve EVMPollResolveFunc) {
 }
 
 var pollFuncResolutions = make(map[string]EVMPollResolveFunc)
+
+var ErrPollerNotFound = errors.New("poller not found")
 
 func init() {
 	err := listeners.RegisterListener("evm_sync_poller",
@@ -142,7 +145,7 @@ func (s *statePoller) UnregisterPoll(uniqueName string) error {
 	defer s.mu.Unlock()
 
 	if _, ok := s.pollers[uniqueName]; !ok {
-		return fmt.Errorf("poller with name %s not found", uniqueName)
+		return fmt.Errorf("poller with name %s: %w", uniqueName, ErrPollerNotFound)
 	}
 
 	delete(s.pollers, uniqueName)
