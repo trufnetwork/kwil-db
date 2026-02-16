@@ -249,12 +249,18 @@ func init() {
 		}
 
 		for _, log := range logs {
-			if bytes.Equal(log.Metadata, logTypeDeposit) {
-				err := applyDepositLog(ctx, app, id, *log.Log, block)
+			if bytes.HasPrefix(log.Metadata, logTypeDeposit) {
+				var fromAddr *ethcommon.Address
+				if len(log.Metadata) >= len(logTypeDeposit)+20 {
+					addr := ethcommon.BytesToAddress(log.Metadata[len(logTypeDeposit) : len(logTypeDeposit)+20])
+					fromAddr = &addr
+				}
+
+				err := applyDepositLog(ctx, app, id, *log.Log, block, fromAddr)
 				if err != nil {
 					return err
 				}
-			} else if bytes.Equal(log.Metadata, logTypeConfirmedEpoch) {
+			} else if bytes.HasPrefix(log.Metadata, logTypeConfirmedEpoch) {
 				err := applyConfirmedEpochLog(ctx, app, *log.Log)
 				if err != nil {
 					return err
@@ -274,7 +280,7 @@ func init() {
 		}
 
 		for _, log := range logs {
-			if bytes.Equal(log.Metadata, logTypeWithdrawal) {
+			if bytes.HasPrefix(log.Metadata, logTypeWithdrawal) {
 				// Pass Kwil block height as deterministic timestamp
 				err := applyWithdrawalLog(ctx, app, id, *log.Log, block.Height)
 				if err != nil {
@@ -2524,8 +2530,18 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				for depositIter.Next() {
 					// Deep copy the log to avoid pointing to the iterator's internal reused struct
 					logCopy := depositIter.Event.Raw
+
+					// Fetch the sender address from the transaction
+					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
+
+					metadata := make([]byte, 0, len(logTypeDeposit)+20)
+					metadata = append(metadata, logTypeDeposit...)
+					if fromAddr != nil {
+						metadata = append(metadata, fromAddr.Bytes()...)
+					}
+
 					logs = append(logs, &evmsync.EthLog{
-						Metadata: logTypeDeposit,
+						Metadata: metadata,
 						Log:      &logCopy,
 					})
 				}
@@ -2571,8 +2587,19 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 				for bridgeDepositIter.Next() {
 					// Deep copy the log to avoid pointing to the iterator's internal reused struct
 					logCopy := bridgeDepositIter.Event.Raw
+
+					// Fetch the sender address from the transaction
+					// This runs outside consensus, so external RPC calls are safe
+					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
+
+					metadata := make([]byte, 0, len(logTypeDeposit)+20)
+					metadata = append(metadata, logTypeDeposit...)
+					if fromAddr != nil {
+						metadata = append(metadata, fromAddr.Bytes()...)
+					}
+
 					logs = append(logs, &evmsync.EthLog{
-						Metadata: logTypeDeposit,
+						Metadata: metadata,
 						Log:      &logCopy,
 					})
 				}
@@ -2782,7 +2809,7 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 // This function runs during consensus execution and must remain deterministic.
 //
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
-func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log, block *common.BlockContext) error {
+func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log, block *common.BlockContext, fromAddr *ethcommon.Address) error {
 	var recipient ethcommon.Address
 	var amount *big.Int
 	var err error
@@ -2850,12 +2877,17 @@ func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log e
 		types.NewUUIDV5WithNamespace(*id, log.TxHash.Bytes()),
 		append([]byte("deposit"), logIndexBytes...))
 
+	var fromAddrBytes any
+	if fromAddr != nil {
+		fromAddrBytes = fromAddr.Bytes()
+	}
+
 	_, err = app.DB.Execute(ctx, `
 		INSERT INTO kwil_erc20_meta.transaction_history
 		(id, instance_id, type, from_address, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
-		VALUES ($1, $2, 'deposit', NULL, $3, $4, $5, 'completed', $6, $7, $8)
+		VALUES ($1, $2, 'deposit', $3, $4, $5, $6, 'completed', $7, $8, $9)
 		ON CONFLICT (id) DO NOTHING
-	`, txHistoryID, id, recipient.Bytes(), val, log.TxHash.Bytes(), block.Height, block.Timestamp, log.BlockNumber)
+	`, txHistoryID, id, fromAddrBytes, recipient.Bytes(), val, log.TxHash.Bytes(), block.Height, block.Timestamp, log.BlockNumber)
 	if err != nil {
 		return fmt.Errorf("failed to record deposit history: %w", err)
 	}
@@ -3279,4 +3311,34 @@ func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUI
 	}
 
 	return signatures, nil
+}
+
+// fetchTxSender fetches and derives the sender of an Ethereum transaction.
+// Returns nil address and logs a warning on failure.
+// This is used during the event listener phase (outside consensus).
+func fetchTxSender(ctx context.Context, client *ethclient.Client, txHash ethcommon.Hash, maxRetries int64, logger log.Logger) *ethcommon.Address {
+	var addr ethcommon.Address
+	err := utils.Retry(ctx, maxRetries, func() error {
+		tx, isPending, err := client.TransactionByHash(ctx, txHash)
+		if err != nil {
+			return fmt.Errorf("failed to get tx %s: %w", txHash.Hex(), err)
+		}
+		if isPending {
+			// Deposit events come from finalized blocks; a pending tx suggests RPC inconsistency.
+			return fmt.Errorf("transaction %s is still pending", txHash.Hex())
+		}
+		// Derive sender
+		addr, err = ethtypes.Sender(ethtypes.LatestSignerForChainID(tx.ChainId()), tx)
+		if err != nil {
+			return fmt.Errorf("failed to derive sender for tx %s: %w", txHash.Hex(), err)
+		}
+		return nil
+	})
+	if err != nil {
+		if logger != nil {
+			logger.Warnf("failed to fetch sender for tx %s: %v", txHash.Hex(), err)
+		}
+		return nil
+	}
+	return &addr
 }

@@ -67,7 +67,7 @@ func TestHistoryLogic(t *testing.T) {
 	testWallet := ethcommon.HexToAddress("0xABC")
 	depositAmount := big.NewInt(1000)
 	txHash := ethcommon.HexToHash("0xDEPOSIT_TX")
-	
+
 	depositLog := ethtypes.Log{
 		Address:     testReward.EscrowAddress,
 		Topics:      []ethcommon.Hash{depositEventHash, ethcommon.BytesToHash(testWallet.Bytes())},
@@ -82,7 +82,7 @@ func TestHistoryLogic(t *testing.T) {
 		Timestamp: 1050,
 	}
 
-	err = applyDepositLog(ctx, app, instanceID, depositLog, blockCtx)
+	err = applyDepositLog(ctx, app, instanceID, depositLog, blockCtx, &testWallet)
 	require.NoError(t, err)
 
 	// Verify Deposit record
@@ -95,6 +95,7 @@ func TestHistoryLogic(t *testing.T) {
 	require.Len(t, records, 1)
 	require.Equal(t, "deposit", records[0].Type)
 	require.Equal(t, "completed", records[0].Status)
+	require.Equal(t, &testWallet, records[0].From)
 	require.Equal(t, txHash.Bytes(), records[0].ExternalTxHash)
 	require.Equal(t, int64(500), *records[0].ExternalBlockHeight)
 
@@ -102,12 +103,12 @@ func TestHistoryLogic(t *testing.T) {
 	withdrawAmount, _ := types.ParseDecimalExplicit("500", 78, 0)
 	withdrawalTxID := " withdrawal_tx_internal" // simplified hex
 	withdrawalTxID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	
+
 	// Withdrawal starts as 'pending_epoch'
-	// Manually trigger the withdrawal history recording logic 
+	// Manually trigger the withdrawal history recording logic
 	err = lockAndIssue(ctx, app, instanceID, epoch.ID, testWallet, testWallet, withdrawAmount)
 	require.NoError(t, err)
-	
+
 	// Record history manually to verify the SQL transitions
 	internalTxHash, _ := hex.DecodeString(withdrawalTxID)
 	txHistoryID := types.NewUUIDV5WithNamespace(
@@ -142,7 +143,7 @@ func TestHistoryLogic(t *testing.T) {
 	blockHash := [32]byte{0xBB}
 	err = finalizeEpoch(ctx, app, epoch.ID, 30, blockHash[:], rewardRoot, withdrawAmount)
 	require.NoError(t, err)
-	
+
 	err = confirmEpoch(ctx, app, rewardRoot)
 	require.NoError(t, err)
 
