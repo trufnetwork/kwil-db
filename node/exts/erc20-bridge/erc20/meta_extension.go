@@ -3324,7 +3324,9 @@ func fetchTxSender(ctx context.Context, client *ethclient.Client, txHash ethcomm
 			return fmt.Errorf("failed to get tx %s: %w", txHash.Hex(), err)
 		}
 		if isPending {
-			return fmt.Errorf("transaction %s is still pending", txHash.Hex())
+			// Deposit events come from finalized blocks; a pending tx suggests RPC inconsistency.
+			// Don't waste retries — return immediately and let the caller handle nil.
+			return nil
 		}
 		// Derive sender
 		addr, err = ethtypes.Sender(ethtypes.LatestSignerForChainID(tx.ChainId()), tx)

@@ -130,6 +130,89 @@ func TestApplyDepositLog(t *testing.T) {
 	require.Nil(t, balOther)
 }
 
+// TestApplyDepositLog_WithSender verifies that applyDepositLog correctly stores the sender address.
+func TestApplyDepositLog_WithSender(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	require.NoError(t, err)
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+
+	app := setup(t, tx)
+
+	id := newUUID()
+	chainInfo, ok := chains.GetChainInfoByID("11155111")
+	if !ok {
+		t.Fatalf("missing chain info for test chain")
+	}
+
+	upd := &userProvidedData{
+		ID:                 id,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000aa"),
+		DistributionPeriod: 3600,
+	}
+
+	require.NoError(t, createNewRewardInstance(ctx, app, upd))
+
+	require.NoError(t, setRewardSynced(ctx, app, id, 1, &syncedRewardData{
+		Erc20Address:  ethcommon.HexToAddress("0x00000000000000000000000000000000000000bb"),
+		Erc20Decimals: 18,
+	}))
+
+	recipient := ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc")
+	sender := ethcommon.HexToAddress("0x00000000000000000000000000000000000000ee")
+	amount := big.NewInt(100)
+
+	// Create a deposit log (RewardDistributor format)
+	amountBytes := make([]byte, 32)
+	amount.FillBytes(amountBytes)
+	data := make([]byte, 0, 64)
+	data = append(data, make([]byte, 12)...)
+	data = append(data, recipient.Bytes()...)
+	data = append(data, amountBytes...)
+
+	depositLog := ethtypes.Log{
+		Address: upd.EscrowAddress,
+		Topics:  []ethcommon.Hash{depositEventID},
+		Data:    data,
+		TxHash:  ethcommon.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+		Index:   0,
+	}
+
+	block := &common.BlockContext{
+		Height:    100,
+		Timestamp: 1600000000,
+	}
+
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block, &sender))
+
+	// Verify transaction history
+	res, err := app.DB.Execute(ctx, `
+		SELECT type, amount, external_tx_hash, from_address
+		FROM kwil_erc20_meta.transaction_history 
+		WHERE to_address = $1`, recipient.Bytes())
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+
+	row := res.Rows[0]
+	foundType := row[0].(string)
+	foundAmount := row[1].(*types.Decimal).String()
+	foundExtTxHash := row[2].([]byte)
+	foundFromAddress := row[3].([]byte)
+
+	require.Equal(t, "deposit", foundType)
+	require.Equal(t, amount.String(), foundAmount)
+	require.Equal(t, depositLog.TxHash.Bytes(), foundExtTxHash)
+	require.Equal(t, sender.Bytes(), foundFromAddress, "from_address should match the provided sender")
+}
+
 // TestApplyDepositLog_TrufNetworkBridge verifies that applyDepositLog correctly handles
 // TrufNetworkBridge Deposit events (indexed recipient, 32-byte data).
 func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
@@ -198,7 +281,7 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 
 	// Verify transaction history
 	res, err := app.DB.Execute(ctx, `
-		SELECT type, amount, external_tx_hash, external_block_height 
+		SELECT type, amount, external_tx_hash, external_block_height, from_address
 		FROM kwil_erc20_meta.transaction_history 
 		WHERE to_address = $1`, recipient.Bytes())
 	require.NoError(t, err)
@@ -209,6 +292,7 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 	require.Equal(t, amount.String(), row[1].(*types.Decimal).String())
 	require.Equal(t, depositLog.TxHash.Bytes(), row[2].([]byte))
 	require.Equal(t, int64(0), row[3].(int64)) // log.BlockNumber was 0 in this test setup
+	require.Nil(t, row[4], "from_address should be NULL")
 
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)
