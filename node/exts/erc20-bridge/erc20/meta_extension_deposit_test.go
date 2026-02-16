@@ -101,7 +101,7 @@ func TestApplyDepositLog(t *testing.T) {
 
 	// Verify transaction history
 	res, err := app.DB.Execute(ctx, `
-		SELECT type, amount, external_tx_hash, block_height, block_timestamp, external_block_height 
+		SELECT type, amount, external_tx_hash, block_height, block_timestamp, external_block_height, from_address
 		FROM kwil_erc20_meta.transaction_history 
 		WHERE to_address = $1`, recipient.Bytes())
 	require.NoError(t, err)
@@ -114,6 +114,7 @@ func TestApplyDepositLog(t *testing.T) {
 	foundBlockHeight := row[3].(int64)
 	foundBlockTimestamp := row[4].(int64)
 	foundExtBlockHeight := row[5].(int64)
+	foundFromAddress := row[6]
 
 	require.Equal(t, "deposit", foundType)
 	require.Equal(t, amount.String(), foundAmount)
@@ -121,6 +122,7 @@ func TestApplyDepositLog(t *testing.T) {
 	require.Equal(t, int64(100), foundBlockHeight)
 	require.Equal(t, int64(1600000000), foundBlockTimestamp)
 	require.Equal(t, int64(12345), foundExtBlockHeight)
+	require.Nil(t, foundFromAddress, "from_address should be NULL for deposits with unknown sender")
 
 	other := ethcommon.HexToAddress("0x00000000000000000000000000000000000000dd")
 	balOther, err := balanceOf(ctx, app, id, other)

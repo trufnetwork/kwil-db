@@ -2532,30 +2532,12 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 					logCopy := depositIter.Event.Raw
 
 					// Fetch the sender address from the transaction
-					var fromAddr ethcommon.Address
-					err = utils.Retry(ctx, evmMaxRetries, func() error {
-						tx, isPending, err := client.TransactionByHash(ctx, logCopy.TxHash)
-						if err != nil {
-							return fmt.Errorf("failed to get tx %s: %w", logCopy.TxHash.Hex(), err)
-						}
-						if isPending {
-							return fmt.Errorf("transaction %s is still pending", logCopy.TxHash.Hex())
-						}
+					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
 
-						// Derive sender
-						fromAddr, err = ethtypes.Sender(ethtypes.LatestSignerForChainID(tx.ChainId()), tx)
-						if err != nil {
-							return fmt.Errorf("failed to derive sender for tx %s: %w", logCopy.TxHash.Hex(), err)
-						}
-						return nil
-					})
-
-					metadata := make([]byte, len(logTypeDeposit)+len(fromAddr.Bytes()))
+					metadata := make([]byte, len(logTypeDeposit))
 					copy(metadata, logTypeDeposit)
-					if err == nil {
-						copy(metadata[len(logTypeDeposit):], fromAddr.Bytes())
-					} else {
-						logger.Warnf("failed to fetch sender for deposit tx %s: %v", logCopy.TxHash.Hex(), err)
+					if fromAddr != nil {
+						metadata = append(metadata, fromAddr.Bytes()...)
 					}
 
 					logs = append(logs, &evmsync.EthLog{
@@ -2608,30 +2590,12 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 
 					// Fetch the sender address from the transaction
 					// This runs outside consensus, so external RPC calls are safe
-					var fromAddr ethcommon.Address
-					err = utils.Retry(ctx, evmMaxRetries, func() error {
-						tx, isPending, err := client.TransactionByHash(ctx, logCopy.TxHash)
-						if err != nil {
-							return fmt.Errorf("failed to get tx %s: %w", logCopy.TxHash.Hex(), err)
-						}
-						if isPending {
-							return fmt.Errorf("transaction %s is still pending", logCopy.TxHash.Hex())
-						}
+					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
 
-						// Derive sender
-						fromAddr, err = ethtypes.Sender(ethtypes.LatestSignerForChainID(tx.ChainId()), tx)
-						if err != nil {
-							return fmt.Errorf("failed to derive sender for tx %s: %w", logCopy.TxHash.Hex(), err)
-						}
-						return nil
-					})
-
-					metadata := make([]byte, len(logTypeDeposit)+len(fromAddr.Bytes()))
+					metadata := make([]byte, len(logTypeDeposit))
 					copy(metadata, logTypeDeposit)
-					if err == nil {
-						copy(metadata[len(logTypeDeposit):], fromAddr.Bytes())
-					} else {
-						logger.Warnf("failed to fetch sender for deposit tx %s: %v", logCopy.TxHash.Hex(), err)
+					if fromAddr != nil {
+						metadata = append(metadata, fromAddr.Bytes()...)
 					}
 
 					logs = append(logs, &evmsync.EthLog{
@@ -3347,4 +3311,33 @@ func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUI
 	}
 
 	return signatures, nil
+}
+
+// fetchTxSender fetches and derives the sender of an Ethereum transaction.
+// Returns nil address and logs a warning on failure.
+// This is used during the event listener phase (outside consensus).
+func fetchTxSender(ctx context.Context, client *ethclient.Client, txHash ethcommon.Hash, maxRetries int64, logger log.Logger) *ethcommon.Address {
+	var addr ethcommon.Address
+	err := utils.Retry(ctx, maxRetries, func() error {
+		tx, isPending, err := client.TransactionByHash(ctx, txHash)
+		if err != nil {
+			return fmt.Errorf("failed to get tx %s: %w", txHash.Hex(), err)
+		}
+		if isPending {
+			return fmt.Errorf("transaction %s is still pending", txHash.Hex())
+		}
+		// Derive sender
+		addr, err = ethtypes.Sender(ethtypes.LatestSignerForChainID(tx.ChainId()), tx)
+		if err != nil {
+			return fmt.Errorf("failed to derive sender for tx %s: %w", txHash.Hex(), err)
+		}
+		return nil
+	})
+	if err != nil {
+		if logger != nil {
+			logger.Warnf("failed to fetch sender for tx %s: %v", txHash.Hex(), err)
+		}
+		return nil
+	}
+	return &addr
 }
