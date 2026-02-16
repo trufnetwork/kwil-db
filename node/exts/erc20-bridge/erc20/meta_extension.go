@@ -2534,8 +2534,8 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 					// Fetch the sender address from the transaction
 					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
 
-					metadata := make([]byte, len(logTypeDeposit))
-					copy(metadata, logTypeDeposit)
+					metadata := make([]byte, 0, len(logTypeDeposit)+20)
+					metadata = append(metadata, logTypeDeposit...)
 					if fromAddr != nil {
 						metadata = append(metadata, fromAddr.Bytes()...)
 					}
@@ -2592,8 +2592,8 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 					// This runs outside consensus, so external RPC calls are safe
 					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
 
-					metadata := make([]byte, len(logTypeDeposit))
-					copy(metadata, logTypeDeposit)
+					metadata := make([]byte, 0, len(logTypeDeposit)+20)
+					metadata = append(metadata, logTypeDeposit...)
 					if fromAddr != nil {
 						metadata = append(metadata, fromAddr.Bytes()...)
 					}
