@@ -172,7 +172,7 @@ func TestGetHistory(t *testing.T) {
 		BlockNumber: 100,
 	}
 	block1 := &common.BlockContext{Height: 100, Timestamp: 1000}
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block1))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block1, nil))
 
 	// 3. Transfer
 	transferAmount := types.MustParseDecimalExplicit("50", 78, 0)

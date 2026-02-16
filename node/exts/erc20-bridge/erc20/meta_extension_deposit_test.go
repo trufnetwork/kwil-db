@@ -92,7 +92,7 @@ func TestApplyDepositLog(t *testing.T) {
 		Timestamp: 1600000000,
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block, nil))
 
 	balRecipient, err := balanceOf(ctx, app, id, recipient)
 	require.NoError(t, err)
@@ -187,7 +187,7 @@ func TestApplyDepositLog_TrufNetworkBridge(t *testing.T) {
 		Timestamp: 1600000200,
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block, nil))
 
 	balRecipient, err := balanceOf(ctx, app, id, recipient)
 	require.NoError(t, err)
@@ -271,7 +271,7 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 		Timestamp: 1600000300,
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog1, block))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog1, block, nil))
 
 	// User 2: TrufNetworkBridge deposit (indexed recipient)
 	recipient2 := ethcommon.HexToAddress("0x00000000000000000000000000000000000002bb")
@@ -290,7 +290,7 @@ func TestApplyDepositLog_BothFormats(t *testing.T) {
 		TxHash: ethcommon.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222"),
 	}
 
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog2, block))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog2, block, nil))
 
 	// Verify both deposits were processed correctly
 	bal1, err := balanceOf(ctx, app, id, recipient1)
@@ -349,7 +349,7 @@ func TestApplyDepositLog_InvalidFormat(t *testing.T) {
 
 	block := &common.BlockContext{}
 
-	err = applyDepositLog(ctx, app, id, invalidLog1, block)
+	err = applyDepositLog(ctx, app, id, invalidLog1, block, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown Deposit event format")
 
@@ -360,7 +360,7 @@ func TestApplyDepositLog_InvalidFormat(t *testing.T) {
 		Data:    make([]byte, 96),
 	}
 
-	err = applyDepositLog(ctx, app, id, invalidLog2, block)
+	err = applyDepositLog(ctx, app, id, invalidLog2, block, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown Deposit event format")
 }

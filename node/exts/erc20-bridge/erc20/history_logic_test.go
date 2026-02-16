@@ -82,7 +82,7 @@ func TestHistoryLogic(t *testing.T) {
 		Timestamp: 1050,
 	}
 
-	err = applyDepositLog(ctx, app, instanceID, depositLog, blockCtx)
+	err = applyDepositLog(ctx, app, instanceID, depositLog, blockCtx, &testWallet)
 	require.NoError(t, err)
 
 	// Verify Deposit record
@@ -95,6 +95,7 @@ func TestHistoryLogic(t *testing.T) {
 	require.Len(t, records, 1)
 	require.Equal(t, "deposit", records[0].Type)
 	require.Equal(t, "completed", records[0].Status)
+	require.Equal(t, &testWallet, records[0].From)
 	require.Equal(t, txHash.Bytes(), records[0].ExternalTxHash)
 	require.Equal(t, int64(500), *records[0].ExternalBlockHeight)
 
