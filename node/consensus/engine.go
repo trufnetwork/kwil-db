@@ -1197,6 +1197,20 @@ func (ce *ConsensusEngine) InCatchup() bool {
 	return ce.inSync.Load()
 }
 
+// CanReannounce returns true if it's safe to re-announce transactions from the mempool.
+// It returns false if a block is currently being executed (Proposed or Executed state)
+// to avoid re-announcing transactions with nonces that will be invalidated once the block commits.
+// This prevents the race condition where transactions are validated against stale account state
+// during block execution, causing cascading validation failures across the network.
+func (ce *ConsensusEngine) CanReannounce() bool {
+	ce.stateInfo.mtx.RLock()
+	defer ce.stateInfo.mtx.RUnlock()
+
+	// Only allow re-announcement when the consensus engine is in Committed state
+	// (i.e., not currently executing or waiting to commit a block)
+	return ce.stateInfo.status == Committed
+}
+
 func (ce *ConsensusEngine) SubscribeTx(txHash ktypes.Hash) (<-chan ktypes.TxResult, error) {
 	ce.subMtx.Lock()
 	defer ce.subMtx.Unlock()

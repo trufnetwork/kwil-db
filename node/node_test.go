@@ -403,6 +403,10 @@ func (ce *dummyCE) InCatchup() bool {
 	return false
 }
 
+func (ce *dummyCE) CanReannounce() bool {
+	return true // For tests, always allow re-announcement
+}
+
 func (ce *dummyCE) CancelBlockExecution(height int64, txIDs []types.Hash) error {
 	return nil
 }
