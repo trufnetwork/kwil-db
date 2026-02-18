@@ -2701,6 +2701,76 @@ func Test_Extensions(t *testing.T) {
 	require.Equal(t, []string{"initialize", "start", "use", "initialize", "start", "unuse"}, notifications)
 }
 
+// Test_UnuseIdempotent tests that UNUSE can be called multiple times on the same extension
+// without error. This is important for cleanup workflows where an extension may already be
+// disabled, and ensures proper namespace cleanup occurs even when called repeatedly.
+func Test_UnuseIdempotent(t *testing.T) {
+	// Track OnUnuse calls
+	var unuseCallCount int
+
+	// Register a test extension with OnUnuse tracking
+	err := precompiles.RegisterInitializer("idempotent_test", func(ctx context.Context, service *common.Service, db sql.DB, alias string, metadata map[string]any) (precompiles.Precompile, error) {
+		return precompiles.Precompile{
+			OnUse: func(ctx *common.EngineContext, app *common.App) error {
+				return nil
+			},
+			OnUnuse: func(ctx *common.EngineContext, app *common.App) error {
+				unuseCallCount++
+				// Return nil on subsequent calls (idempotent behavior)
+				// This simulates the fix in erc20 disable() method
+				return nil
+			},
+			Methods: []precompiles.Method{
+				{
+					Name: "noop",
+					Returns: &precompiles.MethodReturn{
+						Fields: []precompiles.PrecompileValue{precompiles.NewPrecompileValue("val", types.TextType, false)},
+					},
+					Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+						return resultFn([]any{"noop"})
+					},
+					AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC},
+				},
+			},
+		}, nil
+	})
+	require.NoError(t, err)
+
+	db := newTestDB(t, nil, nil)
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	interp := newTestInterp(t, tx, nil, false)
+
+	// USE the extension
+	err = interp.Execute(newEngineCtx(defaultCaller), tx, `USE idempotent_test {} AS test_idempotent;`, nil, nil)
+	require.NoError(t, err)
+
+	// Verify we can call the extension method
+	_, err = interp.Call(newEngineCtx(defaultCaller), tx, "test_idempotent", "noop", nil, nil)
+	require.NoError(t, err)
+
+	// First UNUSE - should succeed
+	err = interp.Execute(newEngineCtx(defaultCaller), tx, `UNUSE test_idempotent;`, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, unuseCallCount, "OnUnuse should be called once")
+
+	// Verify namespace is cleaned up - calling method should fail
+	_, err = interp.Call(newEngineCtx(defaultCaller), tx, "test_idempotent", "noop", nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "namespace")
+
+	// Second UNUSE - should return "namespace does not exist" error
+	// This is expected behavior when namespace is already removed
+	err = interp.Execute(newEngineCtx(defaultCaller), tx, `UNUSE test_idempotent;`, nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not exist")
+	// OnUnuse should NOT be called again since namespace doesn't exist
+	require.Equal(t, 1, unuseCallCount, "OnUnuse should still only be called once")
+}
+
 // This test tests that functions can be overwritten by extension methods, and extension
 // methods can be overwritten by actions. Dropping actions should restore the correct previous
 // behavior.

@@ -80,17 +80,41 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 	}, nil)
 }
 
-// confirmEpoch confirms an epoch was received on-chain, also delete all the votes
-// associated with the epoch.
+// confirmEpoch confirms an epoch was received on-chain.
+// Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
+	// 1. Get the epoch ID first (avoids subquery parser limitations)
+	var epochID *types.UUID
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT id FROM epochs WHERE reward_root = $root;
+	`, map[string]any{
+		"root": root,
+	}, func(row *common.Row) error {
+		epochID = row.Values[0].(*types.UUID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if epochID == nil {
+		return nil // Should not happen if root is valid, but safe to ignore
+	}
+
+	// 2. Update status using the explicit ID
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE epochs
 	SET confirmed = true
-	WHERE reward_root = $root;
+	WHERE id = $id;
 
-    {kwil_erc20_meta}DELETE FROM epoch_votes where epoch_id=(SELECT id FROM epochs WHERE reward_root = $root);
+	-- Update transaction_history: Mark all withdrawals in this epoch as 'completed'
+	-- (meaning they are now ready to be claimed on Ethereum).
+	{kwil_erc20_meta}UPDATE transaction_history
+	SET status = 'completed'
+	WHERE epoch_id = $id
+	  AND status = 'pending_epoch';
 	`, map[string]any{
-		"root": root,
+		"id": epochID,
 	}, nil)
 }
 
@@ -165,6 +189,12 @@ func getStoredRewardInstances(ctx context.Context, app *common.App) ([]*rewardEx
 			StartTime:   epochCreatedAtUnix,
 		}
 
+		// DEBUG: Log loaded epoch for each instance
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[INIT] Loaded instance %s with currentEpoch ID=%s, startHeight=%d, synced=%v, active=%v",
+				reward.ID, epochID, epochCreatedAtBlock, reward.synced, reward.active)
+		}
+
 		if !reward.synced {
 			rewards = append(rewards, reward)
 			return nil
@@ -222,6 +252,73 @@ func userBalanceID(rewardID *types.UUID, user ethcommon.Address) *types.UUID {
 	return &id
 }
 
+// updateWithdrawalStatus updates the status of a withdrawal to 'claimed' when a Withdraw event is detected.
+// It matches the withdrawal by recipient and kwilBlockHash to ensure we update the correct epoch's withdrawal.
+//
+// Uses UPSERT pattern: Creates the withdrawal record if it doesn't exist, or updates it if it does.
+// This is safe because duplicate Withdraw events for the same withdrawal are idempotent.
+// If the withdrawal is already claimed, the WHERE clause prevents redundant updates.
+func updateWithdrawalStatus(
+	ctx context.Context,
+	app *common.App,
+	instanceID *types.UUID,
+	recipient ethcommon.Address,
+	kwilBlockHash [32]byte,
+	txHash []byte,
+	blockNumber int64,
+	claimedAt int64,
+) error {
+	// 1. Get the epoch ID first (avoids subquery parser limitations)
+	var epochID *types.UUID
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT id FROM epochs
+	WHERE instance_id = $instance_id
+	  AND block_hash = $kwil_block_hash;
+	`, map[string]any{
+		"instance_id":     instanceID,
+		"kwil_block_hash": kwilBlockHash[:],
+	}, func(row *common.Row) error {
+		epochID = row.Values[0].(*types.UUID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if epochID == nil {
+		return nil
+	}
+
+	// 2. Perform updates using the explicit ID
+	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, tx_hash, block_number, claimed_at, created_at, updated_at)
+	VALUES ($epoch_id, $recipient, 'claimed', $tx_hash, $block_number, $claimed_at, $claimed_at, $claimed_at)
+	ON CONFLICT (epoch_id, recipient)
+	DO UPDATE SET
+		status = 'claimed',
+		tx_hash = $tx_hash,
+		block_number = $block_number,
+		claimed_at = $claimed_at,
+		updated_at = $claimed_at
+	WHERE withdrawals.status != 'claimed';
+
+	-- Update transaction_history status to 'claimed'
+	{kwil_erc20_meta}UPDATE transaction_history
+	SET status = 'claimed',
+		external_tx_hash = $tx_hash,
+		external_block_height = $block_number
+	WHERE epoch_id = $epoch_id
+	  AND to_address = $recipient
+	  AND status != 'claimed';
+	`, map[string]any{
+		"epoch_id":     epochID,
+		"recipient":    recipient.Bytes(),
+		"tx_hash":      txHash,
+		"block_number": blockNumber,
+		"claimed_at":   claimedAt,
+	}, nil)
+}
+
 // reuseRewardInstance reuse existing synced reward instance, set active status to true,
 // and update the distribution period.
 // This should be only called when re-use an extension.
@@ -251,12 +348,31 @@ func setActiveStatus(ctx context.Context, app *common.App, id *types.UUID, activ
 // createSchema creates the schema for the meta extension.
 // it should be run exactly once (at genesis)
 func createSchema(ctx context.Context, app *common.App) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, metaSchema, nil, nil)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] createSchema: Executing metaSchema for kwil_erc20_meta")
+	}
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, metaSchema, nil, nil)
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] createSchema failed: %v", err)
+		}
+		return err
+	}
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] createSchema: Successfully executed metaSchema")
+	}
+	return nil
 }
 
 // issueReward issues a reward to a user.
 func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, epochID *types.UUID, user ethcommon.Address, amount *types.Decimal) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	// DEBUG: Log before inserting into epoch_rewards
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] issueReward: Inserting into epoch_rewards - epoch_id=%s, recipient=%s, amount=%s",
+			epochID, user.Hex(), amount.String())
+	}
+
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE reward_instances
 	SET balance = balance - $amount
     WHERE id = $instance_id;
@@ -270,11 +386,37 @@ func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, e
 		"user":        user.Bytes(),
 		"amount":      amount,
 	}, nil)
+
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] issueReward failed for epoch_id=%s: %v", epochID, err)
+		}
+	} else {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[DB] issueReward succeeded for epoch_id=%s", epochID)
+		}
+	}
+
+	return err
 }
 
 // transferTokens transfers tokens from one user to another.
-func transferTokens(ctx context.Context, app *common.App, rewardID *types.UUID, from, to ethcommon.Address, amount *types.Decimal) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+func transferTokens(ctx *common.EngineContext, app *common.App, rewardID *types.UUID, from, to ethcommon.Address, amount *types.Decimal) error {
+	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
+	if err != nil {
+		return fmt.Errorf("invalid tx id: %w", err)
+	}
+
+	// Create unique ID for this transfer event
+	hashInput := make([]byte, 0, len(from.Bytes())+len(to.Bytes())+len(internalTxHash))
+	hashInput = append(hashInput, from.Bytes()...)
+	hashInput = append(hashInput, to.Bytes()...)
+	hashInput = append(hashInput, internalTxHash...)
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*rewardID, []byte("transfer")),
+		hashInput)
+
+	return app.Engine.ExecuteWithoutEngineCtx(ctx.TxContext.Ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE balances
 	SET balance = balance - $amount
 	WHERE reward_id = $reward_id AND address = $from;
@@ -282,12 +424,21 @@ func transferTokens(ctx context.Context, app *common.App, rewardID *types.UUID, 
 	{kwil_erc20_meta}INSERT INTO balances(id, reward_id, address, balance)
 	VALUES ($to_id, $reward_id, $to, $amount)
 	ON CONFLICT (id) DO UPDATE SET balance = balances.balance + $amount;
+
+	{kwil_erc20_meta}INSERT INTO transaction_history
+		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp)
+	VALUES ($history_id, $reward_id, 'transfer', $from, $to, $amount, $tx_hash, 'completed', $height, $timestamp)
+	ON CONFLICT (id) DO NOTHING;
 	`, map[string]any{
-		"reward_id": rewardID,
-		"from":      from.Bytes(),
-		"to":        to.Bytes(),
-		"amount":    amount,
-		"to_id":     userBalanceID(rewardID, to),
+		"reward_id":  rewardID,
+		"from":       from.Bytes(),
+		"to":         to.Bytes(),
+		"amount":     amount,
+		"to_id":      userBalanceID(rewardID, to),
+		"history_id": &txHistoryID,
+		"tx_hash":    internalTxHash,
+		"height":     ctx.TxContext.BlockContext.Height,
+		"timestamp":  ctx.TxContext.BlockContext.Timestamp,
 	}, nil)
 }
 
@@ -311,7 +462,13 @@ func transferTokensFromUserToNetwork(ctx context.Context, app *common.App, rewar
 
 // lockAndIssue locks balance from a user and issues a reward to the designated recipient.
 func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, epochID *types.UUID, from ethcommon.Address, recipient ethcommon.Address, amount *types.Decimal) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	// DEBUG: Log lockAndIssue operation
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] lockAndIssue: reward_id=%s, epoch_id=%s, from=%s, recipient=%s, amount=%s",
+			rewardID, epochID, from.Hex(), recipient.Hex(), amount.String())
+	}
+
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE balances
 	SET balance = balance - $amount
 	WHERE reward_id = $reward_id AND address = $from;
@@ -326,6 +483,18 @@ func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, ep
 		"recipient": recipient.Bytes(),
 		"amount":    amount,
 	}, nil)
+
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] lockAndIssue failed for epoch_id=%s: %v", epochID, err)
+		}
+	} else {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[DB] lockAndIssue succeeded - inserted into epoch_rewards for epoch_id=%s", epochID)
+		}
+	}
+
+	return err
 }
 
 // transferTokensFromNetworkToUser transfers tokens from the network to a user.
@@ -372,13 +541,21 @@ func balanceOf(ctx context.Context, app *common.App, rewardID *types.UUID, user 
 
 // getRewardsForEpoch gets all rewards for an epoch.
 func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUID, fn func(reward *EpochReward) error) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	// DEBUG: Log which epoch we're querying rewards for
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[REWARDS] Querying epoch_rewards for epoch_id=%s", epochID)
+	}
+
+	rewardCount := 0
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT recipient, amount
 	FROM epoch_rewards
 	WHERE epoch_id = $epoch_id
+	ORDER BY recipient ASC, amount ASC
 	`, map[string]any{
 		"epoch_id": epochID,
 	}, func(row *common.Row) error {
+		rewardCount++
 		if len(row.Values) != 2 {
 			return fmt.Errorf("expected 2 values, got %d", len(row.Values))
 		}
@@ -393,6 +570,12 @@ func getRewardsForEpoch(ctx context.Context, app *common.App, epochID *types.UUI
 			Amount:    row.Values[1].(*types.Decimal),
 		})
 	})
+
+	// DEBUG: Log how many rewards were found
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[REWARDS] Found %d rewards for epoch_id=%s", rewardCount, epochID)
+	}
+	return err
 }
 
 // previousEpochConfirmed return whether previous exists and confirmed.
@@ -423,7 +606,7 @@ func previousEpochConfirmed(ctx context.Context, app *common.App, instanceID *ty
 
 func rowToEpoch(r *common.Row) (*Epoch, error) {
 	if len(r.Values) != 9 {
-		return nil, fmt.Errorf("expected 11 values, got %d", len(r.Values))
+		return nil, fmt.Errorf("expected 9 values, got %d", len(r.Values))
 	}
 
 	id := r.Values[0].(*types.UUID)
@@ -562,6 +745,8 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT version
 	FROM meta
+	ORDER BY version DESC
+	LIMIT 1
 	`, nil, func(r *common.Row) error {
 		if len(r.Values) != 1 {
 			return fmt.Errorf("expected 1 value, got %d", len(r.Values))
@@ -577,24 +762,26 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 		return 0, false, err
 	}
 
-	switch count {
-	case 0:
+	if count == 0 {
 		return 0, true, nil
-	case 1:
-		return version, false, nil
-	default:
-		return 0, false, errors.New("expected only one value for version table, got")
 	}
+
+	return version, false, nil
 }
 
-var currentVersion = int64(1)
+var currentVersion = int64(2)
 
-// setVersion sets the version of the meta extension.
+// setVersionToCurrent sets the version of the meta extension to currentVersion.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] setVersionToCurrent: Updating version to %d", currentVersion)
+	}
+	// Atomic-like update: Insert new version first, then delete old ones.
+	// This ensures the table is NEVER empty, even during a crash.
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}INSERT INTO meta(version)
-	VALUES ($version)
-	ON CONFLICT (version) DO UPDATE SET version = $version
+	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version)
+	ON CONFLICT (version) DO NOTHING;
+	{kwil_erc20_meta}DELETE FROM meta WHERE version != $version;
 	`, map[string]any{
 		"version": currentVersion,
 	}, nil)
@@ -649,10 +836,15 @@ func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUI
 	{kwil_erc20_meta}SELECT e.id, e.created_at_block, e.created_at_unix, e.reward_root, e.reward_amount, e.ended_at, e.block_hash, e.confirmed, ARRAY[]::TEXT[] as votes
 	FROM epoch_rewards AS r
 	JOIN epochs AS e ON r.epoch_id = e.id
-	WHERE recipient = $wallet AND e.instance_id = $instance_id AND e.ended_at IS NOT NULL` // at least finalized
+	LEFT JOIN withdrawals AS w ON w.epoch_id = e.id AND w.recipient = r.recipient
+	WHERE r.recipient = $wallet AND e.instance_id = $instance_id AND e.ended_at IS NOT NULL` // at least finalized
 	if !pending {
 		query += ` AND e.confirmed IS true`
 	}
+	// Filter out claimed withdrawals (already withdrawn on Ethereum)
+	query += ` AND (w.status IS NULL OR w.status != 'claimed')`
+	// Deterministic ordering for consensus + newest epochs first for UX
+	query += ` ORDER BY e.created_at_block DESC`
 
 	query += ";"
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query,
@@ -666,4 +858,74 @@ func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUI
 			}
 			return fn(epoch)
 		})
+}
+
+type HistoryRecord struct {
+	Type                string
+	Amount              *types.Decimal
+	From                *ethcommon.Address
+	To                  *ethcommon.Address
+	InternalTxHash      []byte
+	ExternalTxHash      []byte
+	Status              string
+	BlockHeight         int64
+	BlockTimestamp      int64
+	ExternalBlockHeight *int64
+}
+
+// getHistory returns the transaction history for a given wallet address.
+func getHistory(ctx context.Context, app *common.App, instanceID *types.UUID, wallet ethcommon.Address, limit int64, offset int64, fn func(*HistoryRecord) error) error {
+	query := `
+	{kwil_erc20_meta}SELECT type, amount, from_address, to_address, internal_tx_hash, external_tx_hash, status, block_height, block_timestamp, external_block_height
+	FROM transaction_history
+	WHERE instance_id = $instance_id AND (from_address = $wallet OR to_address = $wallet)
+	ORDER BY block_height DESC, block_timestamp DESC
+	LIMIT $limit OFFSET $offset;
+	`
+
+	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query, map[string]any{
+		"instance_id": instanceID,
+		"wallet":      wallet.Bytes(),
+		"limit":       limit,
+		"offset":      offset,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 10 {
+			return fmt.Errorf("expected 10 values, got %d", len(row.Values))
+		}
+
+		rec := &HistoryRecord{
+			Type:           row.Values[0].(string),
+			Amount:         row.Values[1].(*types.Decimal),
+			Status:         row.Values[6].(string),
+			BlockHeight:    row.Values[7].(int64),
+			BlockTimestamp: row.Values[8].(int64),
+		}
+
+		if row.Values[2] != nil {
+			addr, err := bytesToEthAddress(row.Values[2].([]byte))
+			if err != nil {
+				return err
+			}
+			rec.From = &addr
+		}
+		if row.Values[3] != nil {
+			addr, err := bytesToEthAddress(row.Values[3].([]byte))
+			if err != nil {
+				return err
+			}
+			rec.To = &addr
+		}
+		if row.Values[4] != nil {
+			rec.InternalTxHash = row.Values[4].([]byte)
+		}
+		if row.Values[5] != nil {
+			rec.ExternalTxHash = row.Values[5].([]byte)
+		}
+		if row.Values[9] != nil {
+			h := row.Values[9].(int64)
+			rec.ExternalBlockHeight = &h
+		}
+
+		return fn(rec)
+	})
 }

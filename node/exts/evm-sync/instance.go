@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/trufnetwork/kwil-db/common"
@@ -43,6 +45,8 @@ var (
 
 	// resolutions is a map of resolution functions
 	registeredResolutions = make(map[string]ResolveFunc)
+
+	ErrListenerNotRegistered = errors.New("listener not registered")
 )
 
 // this file contains a thread-safe in-memory cache for the chains that the network cares about.
@@ -131,7 +135,7 @@ func (l *globalListenerManager) UnregisterListener(uniqueName string) error {
 
 	info, ok := l.listeners[uniqueName]
 	if !ok {
-		return fmt.Errorf("listener with name %s not registered", uniqueName)
+		return fmt.Errorf("listener with name %s: %w", uniqueName, ErrListenerNotRegistered)
 	}
 
 	close(info.done)
@@ -193,37 +197,133 @@ type listenerInfo struct {
 	getLogs GetBlockLogsFunc
 }
 
+// Listener recovery configuration
+const (
+	// initialRecoveryDelay is the initial delay before attempting to recover a failed listener
+	initialRecoveryDelay = 5 * time.Second
+	// maxRecoveryDelay is the maximum delay between recovery attempts
+	maxRecoveryDelay = 5 * time.Minute
+	// recoveryBackoffMultiplier is the multiplier for exponential backoff
+	recoveryBackoffMultiplier = 2
+)
+
 // listen makes a new client and starts listening for events.
-// It does not return any errors because errors returned from listeners
-// are fatal, and errors returned from this function are _very_ likely
-// due to network errors (e.g. with the target RPC).
+// It automatically recovers from transient errors (e.g., RPC timeouts, network issues)
+// using exponential backoff. The listener will keep retrying until:
+// - The context is cancelled (node shutdown)
+// - The done channel is closed (listener unregistered)
+// - A non-recoverable configuration error occurs
 func (l *listenerInfo) listen(ctx context.Context, service *common.Service, eventstore listeners.EventStore, syncConf *syncConfig) {
 	logger := service.Logger.New(l.uniqueName + "." + string(l.chain.Name))
 
 	chainConf, err := getChainConf(service.LocalConfig.Erc20Bridge, l.chain.Name)
 	if err != nil {
-		logger.Error("failed to get chain config", "err", err)
+		// Configuration errors are not recoverable
+		logger.Error("failed to get chain config (not recoverable)", "err", err)
 		return
 	}
 
-	ethClient, err := newEthClient(ctx, chainConf.Provider, syncConf.MaxRetries, l.done, logger)
-	if err != nil {
-		logger.Error("failed to create evm client", "err", err)
-		return
-	}
+	recoveryDelay := initialRecoveryDelay
+	consecutiveFailures := 0
 
-	indiv := &individualListener{
-		chain:            l.chain,
-		syncConf:         syncConf,
-		chainConf:        chainConf,
-		client:           ethClient,
-		orderedSyncTopic: l.uniqueName,
-		getLogsFunc:      l.getLogs,
-	}
+	for {
+		// Check if we should stop before attempting to connect
+		select {
+		case <-ctx.Done():
+			logger.Debug("context cancelled, stopping listener")
+			return
+		case <-l.done:
+			logger.Debug("listener unregistered, stopping")
+			return
+		default:
+		}
 
-	err = indiv.listen(ctx, eventstore, logger)
-	if err != nil {
-		logger.Error("error listening", "chain", l.chain, "uniquename", l.uniqueName, "err", err)
+		// Create a new client for each attempt (previous connection may be stale)
+		ethClient, err := newEthClient(ctx, chainConf.Provider, syncConf.MaxRetries, l.done, logger)
+		if err != nil {
+			consecutiveFailures++
+			logger.Warn("failed to create EVM client, will retry",
+				"err", err,
+				"consecutive_failures", consecutiveFailures,
+				"retry_delay", recoveryDelay.String())
+
+			// Wait before retrying with exponential backoff
+			select {
+			case <-ctx.Done():
+				logger.Debug("context cancelled while waiting for retry")
+				return
+			case <-l.done:
+				logger.Debug("listener unregistered while waiting for retry")
+				return
+			case <-time.After(recoveryDelay):
+				// Increase delay with exponential backoff, capped at max
+				recoveryDelay = recoveryDelay * recoveryBackoffMultiplier
+				if recoveryDelay > maxRecoveryDelay {
+					recoveryDelay = maxRecoveryDelay
+				}
+				continue
+			}
+		}
+
+		indiv := &individualListener{
+			chain:            l.chain,
+			syncConf:         syncConf,
+			chainConf:        chainConf,
+			client:           ethClient,
+			orderedSyncTopic: l.uniqueName,
+			getLogsFunc:      l.getLogs,
+		}
+
+		// Run the listener - this blocks until an error occurs or context is cancelled
+		err = indiv.listen(ctx, eventstore, logger)
+
+		// Clean up the client
+		ethClient.Close()
+
+		// Check if the error is due to context cancellation (clean shutdown)
+		if ctx.Err() != nil {
+			logger.Debug("listener stopped due to context cancellation")
+			return
+		}
+
+		// Check if listener was unregistered
+		select {
+		case <-l.done:
+			logger.Debug("listener stopped due to unregistration")
+			return
+		default:
+		}
+
+		if err != nil {
+			consecutiveFailures++
+			logger.Warn("listener error, will attempt recovery",
+				"chain", l.chain.Name,
+				"err", err,
+				"consecutive_failures", consecutiveFailures,
+				"retry_delay", recoveryDelay.String())
+
+			// Wait before retrying with exponential backoff
+			select {
+			case <-ctx.Done():
+				logger.Debug("context cancelled while waiting for recovery")
+				return
+			case <-l.done:
+				logger.Debug("listener unregistered while waiting for recovery")
+				return
+			case <-time.After(recoveryDelay):
+				// Increase delay with exponential backoff, capped at max
+				recoveryDelay = recoveryDelay * recoveryBackoffMultiplier
+				if recoveryDelay > maxRecoveryDelay {
+					recoveryDelay = maxRecoveryDelay
+				}
+			}
+		} else {
+			// Listener returned without error (shouldn't happen in normal operation)
+			// but if it does, reset the backoff and continue
+			recoveryDelay = initialRecoveryDelay
+			consecutiveFailures = 0
+			logger.Info("listener returned without error, restarting")
+		}
 	}
 }
 

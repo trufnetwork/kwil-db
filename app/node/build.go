@@ -19,6 +19,7 @@ import (
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/rpc/transport"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node"
 	"github.com/trufnetwork/kwil-db/node/accounts"
@@ -41,6 +42,7 @@ import (
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
 	"github.com/trufnetwork/kwil-db/node/store"
 	"github.com/trufnetwork/kwil-db/node/txapp"
+	"github.com/trufnetwork/kwil-db/node/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 	"github.com/trufnetwork/kwil-db/node/voting"
 )
@@ -80,16 +82,21 @@ func buildServer(ctx context.Context, d *coreDependencies) *server {
 	// eventstore, votestore
 	es, vs := buildVoteStore(ctx, d, closers) // ev, vs
 
-	// engine
-	e := buildEngine(d, ctx, db, accounts, vs, d.namespaceManager)
+	// Create shared Service instance for both Engine and TxApp
+	// This ensures BroadcastTxFn updates are visible to extensions
+	// DO NOT use NamedLogger() as it creates copies that won't see updates
+	sharedService := d.service("engine", db)
+
+	// engine - pass shared service directly without copying
+	e := buildEngine(d, ctx, db, accounts, vs, d.namespaceManager, sharedService)
 	d.namespaceManager.Ready()
 
 	// Mempool
 	txSz := min(d.cfg.Mempool.MaxTxBytes, d.genesisCfg.MaxBlockSize) // txSz shouldn't exceed MaxBlockSize
 	mp := mempool.New(d.cfg.Mempool.MaxSize, txSz)
 
-	// TxAPP
-	txApp := buildTxApp(ctx, d, db, accounts, vs, e)
+	// TxAPP - pass same shared service directly without copying
+	txApp := buildTxApp(ctx, d, db, accounts, vs, e, sharedService)
 
 	// Migrator
 	migrator := buildMigrator(d, ctx, db, accounts, vs)
@@ -103,11 +110,21 @@ func buildServer(ctx context.Context, d *coreDependencies) *server {
 	// Consensus
 	ce := buildConsensusEngine(ctx, d, db, mp, bs, bp)
 
+	// Update TxApp's service with BroadcastTxFn from ConsensusEngine
+	// This enables extensions to submit transactions to the mempool
+	txApp.UpdateBroadcastTxFn(func(ctx context.Context, tx *ktypes.Transaction) (ktypes.Hash, error) {
+		// Convert core/types.Transaction to node/types.Tx for consensus engine
+		nodeTx := types.NewTx(tx)
+		// Call consensus engine's BroadcastTx with sync=1 (synchronous broadcast)
+		txHash, _, err := ce.BroadcastTx(ctx, nodeTx, 1)
+		return txHash, err
+	})
+
 	// Node
 	node := buildNode(d, mp, bs, ce, snapshotStore, db, bp, p2pSvc)
 
 	// listeners
-	lm := buildListenerManager(d, es, bp, node)
+	lm := buildListenerManager(d, db, es, bp, node)
 
 	// RPC Services
 	rpcSvcLogger := d.logger.New("USER")
@@ -425,22 +442,27 @@ func buildMetaStore(ctx context.Context, db *pg.DB) {
 }
 
 // service returns a common.Service with the given logger name
-func (c *coreDependencies) service(loggerName string) *common.Service {
+func (c *coreDependencies) service(loggerName string, dbPool sql.DelayedReadTxMaker) *common.Service {
 	signer := auth.GetNodeSigner(c.privKey)
+	logger := c.logger.New(loggerName)
 
 	return &common.Service{
-		Logger:        c.logger.New(loggerName),
-		GenesisConfig: c.genesisCfg,
-		LocalConfig:   c.cfg,
-		Identity:      signer.CompactID(),
+		Logger:          logger,
+		GenesisConfig:   c.genesisCfg,
+		LocalConfig:     c.cfg,
+		Identity:        signer.CompactID(),
+		ValidatorSigner: NewValidatorSigner(c.privKey, signer.CompactID(), logger),
+		DBPool:          dbPool,
 	}
 }
 
 func buildTxApp(ctx context.Context, d *coreDependencies, db *pg.DB, accounts *accounts.Accounts,
-	votestore *voting.VoteStore, engine common.Engine) *txapp.TxApp {
+	votestore *voting.VoteStore, engine common.Engine, service *common.Service) *txapp.TxApp {
 	signer := auth.GetNodeSigner(d.privKey)
 
-	txapp, err := txapp.NewTxApp(ctx, db, engine, signer, nil, d.service("TxAPP"), accounts, votestore)
+	// Use shared Service instance directly (no copying via NamedLogger)
+	// This ensures BroadcastTxFn updates are visible to all components
+	txapp, err := txapp.NewTxApp(ctx, db, engine, signer, nil, service, accounts, votestore)
 	if err != nil {
 		failBuild(err, "failed to create txapp")
 	}
@@ -541,7 +563,7 @@ func buildErc20BridgeSignerMgr(d *coreDependencies, db *pg.DB,
 	}
 
 	return signersvc.NewServiceMgr(d.genesisCfg.ChainID, db, engine, node, bp,
-		d.cfg.Erc20Bridge, state, d.logger.New("EVMRW"))
+		d.cfg.Erc20Bridge, state, d.rootDir, d.logger.New("EVMRW"))
 }
 
 func buildNode(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
@@ -588,7 +610,7 @@ func failBuild(err error, msg string) {
 	})
 }
 
-func buildEngine(d *coreDependencies, ctx context.Context, db *pg.DB, accounts common.Accounts, validators common.Validators, namespaceManager engine.NamespaceRegister) *interpreter.ThreadSafeInterpreter {
+func buildEngine(d *coreDependencies, ctx context.Context, db *pg.DB, accounts common.Accounts, validators common.Validators, namespaceManager engine.NamespaceRegister, service *common.Service) *interpreter.ThreadSafeInterpreter {
 	extensions := precompiles.RegisteredPrecompiles()
 	for name := range extensions {
 		d.logger.Info("registered extension", "name", name)
@@ -600,7 +622,9 @@ func buildEngine(d *coreDependencies, ctx context.Context, db *pg.DB, accounts c
 	}
 	defer tx.Rollback(ctx)
 
-	interp, err := interpreter.NewInterpreter(ctx, tx, d.service("engine"), accounts, validators, namespaceManager)
+	// Use shared Service instance directly (no copying via NamedLogger)
+	// This ensures BroadcastTxFn updates are visible to extensions
+	interp, err := interpreter.NewInterpreter(ctx, tx, service, accounts, validators, namespaceManager)
 	if err != nil {
 		failBuild(err, "failed to initialize engine")
 	}
@@ -636,8 +660,8 @@ func buildSnapshotStore(d *coreDependencies, bs *store.BlockStore) *snapshotter.
 	return ss
 }
 
-func buildListenerManager(d *coreDependencies, ev *voting.EventStore, bp *blockprocessor.BlockProcessor, node *node.Node) *listeners.ListenerManager {
-	return listeners.NewListenerManager(d.service("ListenerManager"), ev, bp, node)
+func buildListenerManager(d *coreDependencies, db *pg.DB, ev *voting.EventStore, bp *blockprocessor.BlockProcessor, node *node.Node) *listeners.ListenerManager {
+	return listeners.NewListenerManager(d.service("ListenerManager", db), ev, bp, node)
 }
 
 func buildJRPCAdminServer(d *coreDependencies) *rpcserver.Server {

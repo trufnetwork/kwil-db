@@ -95,7 +95,7 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 	i = 0
 	proposerNonce := uint64(0)
 
-	// Enfore nonce ordering and remove transactions from the unfunded accounts
+	// Enforce nonce ordering and remove transactions from the unfunded accounts
 	for _, tx := range okTxns {
 		if i > 0 && tx.Body.Nonce == nonces[i-1] && bytes.Equal(tx.Sender, okTxns[i-1].Sender) {
 			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)

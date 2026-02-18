@@ -123,3 +123,9 @@ type MigrationStatusRequest struct{}
 
 type ChallengeRequest struct{}
 type HealthRequest struct{}
+
+// WithdrawalProofRequest contains the request parameters for MethodGetWithdrawalProof.
+type WithdrawalProofRequest struct {
+	EpochID   string `json:"epoch_id" desc:"epoch ID (UUID)"`
+	Recipient string `json:"recipient" desc:"recipient Ethereum address (0x...)"`
+}

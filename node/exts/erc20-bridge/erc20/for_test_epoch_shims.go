@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
@@ -155,6 +156,73 @@ func ForTestingFinalizeAndConfirmCurrentEpoch(ctx context.Context, platform *kwi
 	if confirmed == 0 {
 		return fmt.Errorf("finalize pipeline failed: no confirmed epochs for instance %s", id.String())
 	}
+	return nil
+}
+
+// ForTestingAddValidatorSignatureToEpoch adds a validator signature to the most recent confirmed epoch
+// for the given instance. This is needed for tests that call hoodi_get_withdrawal_proof which expects
+// validator signatures to be present.
+func ForTestingAddValidatorSignatureToEpoch(ctx context.Context, platform *kwilTesting.Platform, chain, escrow string) error {
+	app := &common.App{DB: platform.DB, Engine: platform.Engine}
+	id := ForTestingGetInstanceID(chain, escrow)
+
+	// Get the most recently confirmed epoch for this instance
+	var epochID *types.UUID
+	var merkleRoot []byte
+	var blockHash []byte
+
+	err := platform.Engine.ExecuteWithoutEngineCtx(ctx, platform.DB, `
+		{kwil_erc20_meta}SELECT id, reward_root, block_hash
+		FROM epochs
+		WHERE instance_id = $id AND confirmed IS TRUE
+		ORDER BY created_at_block DESC
+		LIMIT 1`,
+		map[string]any{"id": id},
+		func(r *common.Row) error {
+			if len(r.Values) != 3 {
+				return nil
+			}
+			epochID = r.Values[0].(*types.UUID)
+			if r.Values[1] != nil {
+				merkleRoot = r.Values[1].([]byte)
+			}
+			if r.Values[2] != nil {
+				blockHash = r.Values[2].([]byte)
+			}
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("failed to query confirmed epoch: %w", err)
+	}
+
+	if epochID == nil || merkleRoot == nil || blockHash == nil {
+		return fmt.Errorf("no confirmed epoch found for instance %s", id.String())
+	}
+
+	// Generate a validator key and signature
+	validatorKey, err := crypto.GenerateKey()
+	if err != nil {
+		return fmt.Errorf("failed to generate validator key: %w", err)
+	}
+	validatorAddr := crypto.PubkeyToAddress(validatorKey.PublicKey)
+
+	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
+	if err != nil {
+		return fmt.Errorf("failed to compute message hash: %w", err)
+	}
+
+	signature, err := signMessage(messageHash, validatorKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign message: %w", err)
+	}
+
+	// Vote on the epoch with nonce 0 (non-custodial signatures)
+	const nonCustodialNonce = 0
+	err = voteEpoch(ctx, app, epochID, validatorAddr, nonCustodialNonce, signature)
+	if err != nil {
+		return fmt.Errorf("failed to vote on epoch: %w", err)
+	}
+
 	return nil
 }
 

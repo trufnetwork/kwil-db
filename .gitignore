@@ -58,3 +58,7 @@ go.work.sum
 
 # mergetool artifacts
 *.orig
+
+CLAUDE.md
+GEMINI.md
+uncommitted

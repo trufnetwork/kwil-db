@@ -278,7 +278,7 @@ func colStats(ctx context.Context, qualifiedTable string, colInfo []ColInfo, db 
 						}
 
 					case *types.Decimal:
-						if v.NaN() { // we're pretending this is NULL by our sql.Scanner's convetion
+						if v.NaN() { // we're pretending this is NULL by our sql.Scanner's convention
 							stat.NullCount++
 							continue
 						}
@@ -288,7 +288,7 @@ func colStats(ctx context.Context, qualifiedTable string, colInfo []ColInfo, db 
 						}
 						dec = v
 					case types.Decimal:
-						if v.NaN() { // we're pretending this is NULL by our sql.Scanner's convetion
+						if v.NaN() { // we're pretending this is NULL by our sql.Scanner's convention
 							stat.NullCount++
 							continue
 						}

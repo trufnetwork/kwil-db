@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -25,12 +26,15 @@ import (
 
 	"github.com/decred/dcrd/container/lru"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/trufnetwork/kwil-db/common"
+	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/core/utils/order"
@@ -52,6 +56,10 @@ const (
 	uint256Precision        = 78
 
 	rewardMerkleTreeLRUSize = 1000
+
+	// EthereumSignedMessagePrefix is the prefix used for EIP-191 compliant message signing.
+	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash() format.
+	EthereumSignedMessagePrefix = "\x19Ethereum Signed Message:\n32"
 )
 
 var (
@@ -72,10 +80,33 @@ var (
 	// so that we know how to decode them
 	logTypeDeposit        = []byte("rcpdepst")
 	logTypeConfirmedEpoch = []byte("cnfepch")
+	logTypeWithdrawal     = []byte("wthdrwl")
 
 	mtLRUCache = lru.NewMap[[32]byte, []byte](rewardMerkleTreeLRUSize) // tree root => tree body
 
 	_SINGLETON *extensionInfo
+
+	// runningSigners tracks which instance IDs have active validator signer goroutines
+	// to prevent duplicate signers if OnStart is called multiple times
+	runningSigners = make(map[string]bool)
+
+	// runningSignerCancels stores cancel functions for active signer goroutines
+	// to allow graceful shutdown when instances are disabled
+	runningSignerCancels = make(map[string]context.CancelFunc)
+
+	// runningSignersMu protects both runningSigners and runningSignerCancels maps
+	runningSignersMu sync.Mutex
+
+	// runningDepositListeners tracks which instance IDs have active deposit listeners
+	// to prevent duplicate listeners if OnStart is called multiple times (e.g., when adding a new bridge instance via USE statement)
+	runningDepositListeners = make(map[string]bool)
+
+	// runningWithdrawalListeners tracks which instance IDs have active withdrawal listeners
+	// to prevent duplicate listeners if OnStart is called multiple times
+	runningWithdrawalListeners = make(map[string]bool)
+
+	// runningListenersMu protects both runningDepositListeners and runningWithdrawalListeners maps
+	runningListenersMu sync.Mutex
 )
 
 // generates a deterministic UUID for the chain and escrow
@@ -98,10 +129,12 @@ func idFromStatePollerUniqueName(name string) (*types.UUID, error) {
 }
 
 const (
-	statePollerPrefix          = "erc20_state_poll_"
-	depositListenerPrefix      = "erc20_transfer_listener_" // retain prefix for stored topics
-	depositEventResolutionName = "erc20_transfer_sync"
-	statePollResolutionName    = "erc20_state_poll_sync"
+	statePollerPrefix             = "erc20_state_poll_"
+	depositListenerPrefix         = "erc20_transfer_listener_" // retain prefix for stored topics
+	depositEventResolutionName    = "erc20_transfer_sync"
+	withdrawalListenerPrefix      = "erc20_withdrawal_listener_"
+	withdrawalEventResolutionName = "erc20_withdrawal_sync"
+	statePollResolutionName       = "erc20_state_poll_sync"
 )
 
 // depositListenerUniqueName generates a unique name for the deposit listener
@@ -116,6 +149,20 @@ func idFromDepositListenerUniqueName(name string) (*types.UUID, error) {
 	}
 
 	return types.ParseUUID(strings.TrimPrefix(name, depositListenerPrefix))
+}
+
+// withdrawalListenerUniqueName generates a unique name for the withdrawal listener
+func withdrawalListenerUniqueName(id types.UUID) string {
+	return withdrawalListenerPrefix + id.String()
+}
+
+// idFromWithdrawalListenerUniqueName extracts the id from the unique name
+func idFromWithdrawalListenerUniqueName(name string) (*types.UUID, error) {
+	if !strings.HasPrefix(name, withdrawalListenerPrefix) {
+		return nil, fmt.Errorf("invalid withdrawal listener name %s", name)
+	}
+
+	return types.ParseUUID(strings.TrimPrefix(name, withdrawalListenerPrefix))
 }
 
 // generateEpochID generates a deterministic UUID for an epoch
@@ -202,13 +249,40 @@ func init() {
 		}
 
 		for _, log := range logs {
-			if bytes.Equal(log.Metadata, logTypeDeposit) {
-				err := applyDepositLog(ctx, app, id, *log.Log)
+			if bytes.HasPrefix(log.Metadata, logTypeDeposit) {
+				var fromAddr *ethcommon.Address
+				if len(log.Metadata) >= len(logTypeDeposit)+20 {
+					addr := ethcommon.BytesToAddress(log.Metadata[len(logTypeDeposit) : len(logTypeDeposit)+20])
+					fromAddr = &addr
+				}
+
+				err := applyDepositLog(ctx, app, id, *log.Log, block, fromAddr)
 				if err != nil {
 					return err
 				}
-			} else if bytes.Equal(log.Metadata, logTypeConfirmedEpoch) {
+			} else if bytes.HasPrefix(log.Metadata, logTypeConfirmedEpoch) {
 				err := applyConfirmedEpochLog(ctx, app, *log.Log)
+				if err != nil {
+					return err
+				}
+			} else {
+				return fmt.Errorf("unknown log type %x", log.Metadata)
+			}
+		}
+
+		return nil
+	})
+
+	evmsync.RegisterEventResolution(withdrawalEventResolutionName, func(ctx context.Context, app *common.App, block *common.BlockContext, uniqueName string, logs []*evmsync.EthLog) error {
+		id, err := idFromWithdrawalListenerUniqueName(uniqueName)
+		if err != nil {
+			return err
+		}
+
+		for _, log := range logs {
+			if bytes.HasPrefix(log.Metadata, logTypeWithdrawal) {
+				// Pass Kwil block height as deterministic timestamp
+				err := applyWithdrawalLog(ctx, app, id, *log.Log, block.Height)
 				if err != nil {
 					return err
 				}
@@ -272,7 +346,33 @@ func init() {
 			// we need to unlock before we call start because it
 			// will acquire the write lock
 			info.mu.Unlock()
-			return info.startDepositListener()
+
+			// Start both deposit and withdrawal listeners
+			depositErr, depositStarted := info.startDepositListener()
+			if depositErr != nil {
+				return depositErr
+			}
+
+			withdrawalErr, _ := info.startWithdrawalListener()
+			if withdrawalErr != nil {
+				// Cleanup: Only unregister deposit listener if WE started it
+				if depositStarted {
+					instanceIDStr := id.String()
+					cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*id))
+					if cleanupErr != nil {
+						logger := app.Service.Logger
+						if logger != nil {
+							logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+						}
+					}
+					// Remove tracking entry
+					runningListenersMu.Lock()
+					delete(runningDepositListeners, instanceIDStr)
+					runningListenersMu.Unlock()
+				}
+				return withdrawalErr
+			}
+			return nil
 		}
 
 		info.mu.Unlock()
@@ -285,9 +385,33 @@ func init() {
 			return precompiles.Precompile{
 				Cache: getSingleton(),
 				OnUse: func(ctx *common.EngineContext, app *common.App) error {
-					return createSchema(ctx.TxContext.Ctx, app)
+					err := createSchema(ctx.TxContext.Ctx, app)
+					if err != nil {
+						return err
+					}
+					return setVersionToCurrent(ctx.TxContext.Ctx, app)
 				},
 				OnStart: func(ctx context.Context, app *common.App) error {
+					// Check version and upgrade if needed (automatic migration)
+					version, notYetSet, err := getVersion(ctx, app)
+					if err != nil {
+						// Only skip if the namespace truly doesn't exist yet
+						if !errors.Is(err, engine.ErrNamespaceNotFound) {
+							return fmt.Errorf("failed to get extension version: %w", err)
+						}
+					} else if !notYetSet && version < currentVersion {
+						// Safe to run createSchema here because it uses IF NOT EXISTS and
+						// we've updated it to be idempotent.
+						err = createSchema(ctx, app)
+						if err != nil {
+							return err
+						}
+						err = setVersionToCurrent(ctx, app)
+						if err != nil {
+							return err
+						}
+					}
+
 					// if the schema exists, we should read all existing reward instances
 					instances, err := getStoredRewardInstances(ctx, app)
 					switch {
@@ -309,9 +433,28 @@ func init() {
 						// deposit listener. Otherwise, we should start the state poller
 						if instance.active {
 							if instance.synced {
-								err = instance.startDepositListener()
-								if err != nil {
-									return err
+								// Start both deposit and withdrawal listeners
+								// These methods are idempotent - safe to call multiple times
+								depositErr, depositStarted := instance.startDepositListener()
+								if depositErr != nil {
+									return depositErr
+								}
+
+								withdrawalErr, _ := instance.startWithdrawalListener()
+								if withdrawalErr != nil {
+									// Cleanup: Only unregister deposit listener if WE started it
+									if depositStarted {
+										instanceIDStr := instance.ID.String()
+										cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*instance.ID))
+										if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+										}
+										// Remove tracking entry
+										runningListenersMu.Lock()
+										delete(runningDepositListeners, instanceIDStr)
+										runningListenersMu.Unlock()
+									}
+									return withdrawalErr
 								}
 							} else {
 								err = instance.startStatePoller()
@@ -322,6 +465,62 @@ func init() {
 						}
 
 						getSingleton().instances.Set(*instance.ID, instance)
+					}
+
+					// Start validator signer services for non-custodial withdrawals
+					// This runs in background and submits validator signatures via transactions
+					for _, instance := range instances {
+						if instance.active && instance.synced {
+							instanceIDStr := instance.ID.String()
+
+							// Check if signer is already running for this instance
+							runningSignersMu.Lock()
+							alreadyRunning := runningSigners[instanceIDStr]
+							if !alreadyRunning {
+								runningSigners[instanceIDStr] = true
+							}
+							runningSignersMu.Unlock()
+
+							if alreadyRunning {
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
+								}
+								continue
+							}
+
+							// Try to get validator signer
+							signer, err := getValidatorSigner(app, instance.ID)
+							if err != nil {
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
+								}
+								// Clean up tracking maps on error
+								runningSignersMu.Lock()
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								runningSignersMu.Unlock()
+								continue
+							}
+							if signer != nil {
+								// Create cancellable context so we can stop the signer when instance is disabled
+								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
+								signerCtx, cancel := context.WithCancel(context.Background())
+
+								// Store cancel function for cleanup on disable
+								runningSignersMu.Lock()
+								runningSignerCancels[instanceIDStr] = cancel
+								runningSignersMu.Unlock()
+
+								// Start background signer with cancellable context
+								go signer.Start(signerCtx)
+							} else {
+								// No signer available, clean up tracking maps
+								runningSignersMu.Lock()
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								runningSignersMu.Unlock()
+							}
+						}
 					}
 
 					return nil
@@ -411,12 +610,28 @@ func init() {
 									info.mu.RLock()
 									defer info.mu.RUnlock()
 
-									// an error from startDepositListener is a critical error
-									// in the code, not a user error. Therefore, not too concerned with
-									// rolling back the above changes
-									err = info.startDepositListener()
-									if err != nil {
-										return err
+									// Start deposit listener
+									depositErr, depositStarted := info.startDepositListener()
+									if depositErr != nil {
+										return depositErr
+									}
+
+									// Start withdrawal listener
+									withdrawalErr, _ := info.startWithdrawalListener()
+									if withdrawalErr != nil {
+										// Cleanup: Only unregister deposit listener if WE started it
+										if depositStarted {
+											instanceIDStr := id.String()
+											cleanupErr := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(id))
+											if cleanupErr != nil && app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Warnf("failed to cleanup deposit listener after withdrawal listener failure: %v", cleanupErr)
+											}
+											// Remove tracking entry
+											runningListenersMu.Lock()
+											delete(runningDepositListeners, instanceIDStr)
+											runningListenersMu.Unlock()
+										}
+										return withdrawalErr
 									}
 
 									return resultFn([]any{id})
@@ -426,6 +641,13 @@ func init() {
 								// do nothing, we will proceed below to start the state poller
 							} else {
 								err = evmsync.EventSyncer.RegisterNewTopic(ctx.TxContext.Ctx, db, app.Engine, depositListenerUniqueName(id), depositEventResolutionName)
+								if err != nil {
+									return err
+								}
+
+								// Register withdrawal topic
+								// Safe to register for all instances (old contracts simply won't emit Withdraw events)
+								err = evmsync.EventSyncer.RegisterNewTopic(ctx.TxContext.Ctx, db, app.Engine, withdrawalListenerUniqueName(id), withdrawalEventResolutionName)
 								if err != nil {
 									return err
 								}
@@ -497,7 +719,9 @@ func init() {
 
 							if !info.active {
 								info.mu.RUnlock()
-								return fmt.Errorf("reward extension with id %s is already disabled", id)
+								// Already disabled - this is idempotent, return success
+								// This allows UNUSE to complete namespace cleanup even when called multiple times
+								return nil
 							}
 
 							err := setActiveStatus(ctx.TxContext.Ctx, app, id, false)
@@ -509,6 +733,25 @@ func init() {
 							info.mu.Lock()
 							info.active = false
 							info.mu.Unlock()
+
+							// Stop validator signer goroutine if running
+							instanceIDStr := id.String()
+							runningSignersMu.Lock()
+							if cancel, ok := runningSignerCancels[instanceIDStr]; ok {
+								cancel() // Signal signer to stop
+								delete(runningSigners, instanceIDStr)
+								delete(runningSignerCancels, instanceIDStr)
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("stopped validator signer for instance %s", id)
+								}
+							}
+							runningSignersMu.Unlock()
+
+							// Clean up listener tracking
+							runningListenersMu.Lock()
+							delete(runningDepositListeners, instanceIDStr)
+							delete(runningWithdrawalListeners, instanceIDStr)
+							runningListenersMu.Unlock()
 
 							// stopAllListeners does not require a lock.
 							// Any error returned here suggests some sort of critical bug
@@ -681,7 +924,7 @@ func init() {
 								return fmt.Errorf("insufficient balance: have %s, need %s", currentBalance, amount)
 							}
 
-							return transferTokens(ctx.TxContext.Ctx, app, id, from, toAddr, amount)
+							return transferTokens(ctx, app, id, from, toAddr, amount)
 						},
 					},
 					{
@@ -853,7 +1096,7 @@ func init() {
 								amount = inputs[2].(*types.Decimal)
 							}
 
-							return getSingleton().lockAndIssueTokens(ctx.TxContext.Ctx, app, id, ctx.TxContext.Caller, recipient, amount)
+							return getSingleton().lockAndIssueTokens(ctx, app, id, ctx.TxContext.Caller, recipient, amount, ctx.TxContext.BlockContext)
 						},
 					},
 					{
@@ -1086,9 +1329,6 @@ func init() {
 								return err
 							}
 
-							// NOTE: if we have safe address and safe nonce, we can verify the signature
-							// But if we only have safe address, and safeNonce from the input, then it's no point
-
 							ok, err := canVoteEpoch(ctx.TxContext.Ctx, app, epochID)
 							if err != nil {
 								return fmt.Errorf("check epoch can vote: %w", err)
@@ -1098,7 +1338,136 @@ func init() {
 								return fmt.Errorf("epoch cannot be voted")
 							}
 
-							return voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
+							// Verify signature for non-custodial validator votes (nonce=0)
+							// This prevents forged votes from non-validators
+							const nonCustodialNonce = 0
+							if nonce == nonCustodialNonce {
+								// Query epoch's reward_root and block_hash for signature verification
+								result, err := app.DB.Execute(ctx.TxContext.Ctx, `
+									SELECT reward_root, block_hash
+									FROM kwil_erc20_meta.epochs
+									WHERE id = $1
+								`, epochID)
+								if err != nil {
+									return fmt.Errorf("failed to query epoch data for signature verification: %w", err)
+								}
+								if len(result.Rows) == 0 {
+									return fmt.Errorf("epoch %s not found for signature verification", epochID)
+								}
+
+								// Extract reward_root and block_hash with nil checks
+								if result.Rows[0][0] == nil || result.Rows[0][1] == nil {
+									return fmt.Errorf("epoch %s missing reward_root or block_hash (not finalized yet)", epochID)
+								}
+								rewardRoot, ok := result.Rows[0][0].([]byte)
+								if !ok {
+									return fmt.Errorf("invalid reward_root type for epoch %s", epochID)
+								}
+								blockHash, ok := result.Rows[0][1].([]byte)
+								if !ok {
+									return fmt.Errorf("invalid block_hash type for epoch %s", epochID)
+								}
+
+								// Compute the message hash that validators sign
+								messageHash, err := computeEpochMessageHash(rewardRoot, blockHash)
+								if err != nil {
+									return fmt.Errorf("failed to compute epoch message hash: %w", err)
+								}
+
+								// Add Ethereum signed message prefix to match contract expectation
+								prefix := []byte(EthereumSignedMessagePrefix)
+								ethSignedMessageHash := crypto.Keccak256(append(prefix, messageHash...))
+
+								// Verify signature against caller's address
+								// Use standard Ethereum signature verification (V=27/28) for OpenZeppelin compatibility
+								err = utils.EthStandardVerifyDigest(signature, ethSignedMessageHash, from.Bytes())
+								if err != nil {
+									return fmt.Errorf("signature verification failed for address %s: %w", from.Hex(), err)
+								}
+
+								// Signature is valid - proceed to store vote
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("signature verified for epoch %s from validator %s", epochID, from.Hex())
+								}
+							}
+
+							// Store the vote (only reached if signature verification passed for nonce=0)
+							err = voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
+							if err != nil {
+								return err
+							}
+
+							// For non-custodial validator signatures (nonce=0), check threshold and confirm epoch
+							// This ensures epoch confirmation happens deterministically during consensus
+							if nonce == nonCustodialNonce {
+								// Calculate BFT threshold (2/3 of total validator voting power)
+								totalPower, thresholdPower, err := calculateBFTThreshold(app)
+								if err != nil {
+									if app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Errorf("failed to calculate BFT threshold: %v", err)
+									}
+									return fmt.Errorf("failed to calculate BFT threshold: %w", err)
+								}
+
+								// Sum voting power of all validators who voted for this epoch
+								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
+								if err != nil {
+									if app.Service != nil && app.Service.Logger != nil {
+										app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
+									}
+									return fmt.Errorf("failed to sum voting power for epoch %s: %w", epochID, err)
+								}
+
+								if app.Service != nil && app.Service.Logger != nil {
+									app.Service.Logger.Debugf("epoch %s: voting_power=%d, threshold=%d, total_power=%d",
+										epochID, votingPower, thresholdPower, totalPower)
+								}
+
+								// Check if threshold reached (BFT: >= 2/3 of validator voting power)
+								if votingPower >= thresholdPower {
+									// Get epoch merkle root for confirmation
+									result, err := app.DB.Execute(ctx.TxContext.Ctx, `
+										SELECT reward_root FROM kwil_erc20_meta.epochs
+										WHERE id = $1
+									`, epochID)
+									if err != nil {
+										if app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Errorf("failed to get epoch merkle root: %v", err)
+										}
+										return fmt.Errorf("failed to get epoch merkle root: %w", err)
+									}
+
+									if len(result.Rows) > 0 {
+										// Check for nil merkle root before type assertion
+										if result.Rows[0][0] == nil {
+											if app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Warnf("epoch %s has nil reward_root, cannot confirm", epochID)
+											}
+											return fmt.Errorf("epoch %s has nil reward_root, cannot confirm", epochID)
+										}
+										merkleRoot, ok := result.Rows[0][0].([]byte)
+										if !ok {
+											if app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Errorf("epoch %s reward_root is not []byte type", epochID)
+											}
+											return fmt.Errorf("epoch %s reward_root has invalid type %T", epochID, result.Rows[0][0])
+										}
+										err = confirmEpoch(ctx.TxContext.Ctx, app, merkleRoot)
+										if err != nil {
+											if app.Service != nil && app.Service.Logger != nil {
+												app.Service.Logger.Errorf("failed to confirm epoch %s: %v", epochID, err)
+											}
+											return fmt.Errorf("failed to confirm epoch %s: %w", epochID, err)
+										}
+										if app.Service != nil && app.Service.Logger != nil {
+											app.Service.Logger.Infof("epoch %s confirmed with voting_power=%d (threshold=%d)",
+												epochID, votingPower, thresholdPower)
+										}
+									}
+								}
+							}
+
+							return nil
 						},
 					},
 					{
@@ -1122,6 +1491,7 @@ func init() {
 								{Name: "param_block_hash", Type: types.ByteaType},
 								{Name: "param_root", Type: types.ByteaType},
 								{Name: "param_proofs", Type: types.ByteaArrayType},
+								{Name: "param_signatures", Type: types.ByteaArrayType}, // Validator signatures
 							},
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
@@ -1184,6 +1554,12 @@ func init() {
 									return err
 								}
 
+								// Query validator signatures for this epoch
+								signatures, err := getEpochSignatures(ctx.TxContext.Ctx, app, epoch.ID)
+								if err != nil {
+									return fmt.Errorf("get epoch signatures: %w", err)
+								}
+
 								err = resultFn([]any{info.ChainInfo.Name.String(),
 									info.ChainInfo.ID,
 									info.EscrowAddress.String(),
@@ -1193,6 +1569,7 @@ func init() {
 									bh,
 									epoch.Root,
 									proofs,
+									signatures, // Add validator signatures
 								})
 								if err != nil {
 									return err
@@ -1200,6 +1577,76 @@ func init() {
 							}
 
 							return nil
+						},
+					},
+					{
+						// get_history returns the transaction history for a given wallet address.
+						Name: "get_history",
+						Parameters: []precompiles.PrecompileValue{
+							{Name: "id", Type: types.UUIDType},
+							{Name: "wallet", Type: types.TextType},
+							{Name: "limit", Type: types.IntType},
+							{Name: "offset", Type: types.IntType},
+						},
+						Returns: &precompiles.MethodReturn{
+							IsTable: true,
+							Fields: []precompiles.PrecompileValue{
+								{Name: "type", Type: types.TextType},
+								{Name: "amount", Type: uint256Numeric},
+								{Name: "from_address", Type: types.ByteaType, Nullable: true},
+								{Name: "to_address", Type: types.ByteaType, Nullable: true},
+								{Name: "internal_tx_hash", Type: types.ByteaType, Nullable: true},
+								{Name: "external_tx_hash", Type: types.ByteaType, Nullable: true},
+								{Name: "status", Type: types.TextType},
+								{Name: "block_height", Type: types.IntType},
+								{Name: "block_timestamp", Type: types.IntType},
+								{Name: "external_block_height", Type: types.IntType, Nullable: true},
+							},
+						},
+						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC, precompiles.VIEW},
+						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+							id := inputs[0].(*types.UUID)
+							wallet := inputs[1].(string)
+							limit := inputs[2].(int64)
+							offset := inputs[3].(int64)
+
+							if limit < 0 {
+								return fmt.Errorf("limit must be non-negative, got %d", limit)
+							}
+							if limit > 1000 {
+								limit = 1000
+							}
+							if offset < 0 {
+								return fmt.Errorf("offset must be non-negative, got %d", offset)
+							}
+
+							walletAddr, err := ethAddressFromHex(wallet)
+							if err != nil {
+								return err
+							}
+
+							return getHistory(ctx.TxContext.Ctx, app, id, walletAddr, limit, offset, func(rec *HistoryRecord) error {
+								var fromBytes []byte
+								if rec.From != nil {
+									fromBytes = rec.From.Bytes()
+								}
+								var toBytes []byte
+								if rec.To != nil {
+									toBytes = rec.To.Bytes()
+								}
+								return resultFn([]any{
+									rec.Type,
+									rec.Amount,
+									fromBytes,
+									toBytes,
+									rec.InternalTxHash,
+									rec.ExternalTxHash,
+									rec.Status,
+									rec.BlockHeight,
+									rec.BlockTimestamp,
+									rec.ExternalBlockHeight,
+								})
+							})
 						},
 					},
 				},
@@ -1226,9 +1673,18 @@ func init() {
 				return err
 			}
 		} else {
-			// in the future, we will handle version upgrades here
-			if version != currentVersion {
-				return fmt.Errorf("reward extension version mismatch: expected %d, got %d", currentVersion, version)
+			// If we are at an older version (e.g. 1), trigger the idempotent schema update
+			// and bump version to current. This enables automatic migration on startup.
+			if version < currentVersion {
+				err = createSchema(ctx, app)
+				if err != nil {
+					return err
+				}
+
+				err = setVersionToCurrent(ctx, app)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -1250,10 +1706,33 @@ func init() {
 		err := getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			defer info.mu.RUnlock()
+
+			// DEBUG: Log entry into end_block check
+			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
+					id, info.currentEpoch.ID, info.currentEpoch.StartHeight, info.currentEpoch.StartTime, info.userProvidedData.DistributionPeriod, elapsedTime)
+			}
+
 			// If the block is greater than or equal to the start time + distribution period: Otherwise, we should do nothing.
 			if block.Timestamp-info.currentEpoch.StartTime < info.userProvidedData.DistributionPeriod {
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Not ready to finalize (elapsed %d < period %d)", id, elapsedTime, info.userProvidedData.DistributionPeriod)
+				}
 				return nil
 			}
+
+			// Beacon finality check removed from epoch finalization.
+			// Rationale: Epoch finalization happens on TruflationNetwork consensus based on
+			// withdrawal requests that already exist in TN state. The security concern for
+			// beacon finality is at deposit time (preventing deposit reorg attacks), not
+			// withdrawal time. Checking arbitrary Ethereum blocks during epoch finalization
+			// creates false dependencies and can block withdrawals indefinitely if beacon
+			// RPC is unavailable or returns errors for empty slots.
+			//
+			// Security model: Deposit finality is checked when processing deposit events
+			// (see applyDepositLog), ensuring only finalized Ethereum deposits are credited
+			// to user balances on TN.
 
 			// There will be always 2 epochs(except the very first epoch):
 			// - finalized epoch: finalized but not confirmed, wait to be confimed
@@ -1268,16 +1747,37 @@ func init() {
 				return err
 			}
 
+			// DEBUG: Log previous epoch check result
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
+					id, preExists, preConfirmed, info.currentEpoch.StartHeight)
+			}
+
 			if !preExists || // first epoch should always be finalized
 				(preExists && preConfirmed) { // previous epoch exists and is confirmed
+				// DEBUG: Log before generating merkle tree
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
+						id, info.currentEpoch.ID, info.EscrowAddress.Hex())
+				}
+
 				leafNum, jsonBody, root, total, err := genMerkleTreeForEpoch(ctx, app, info.currentEpoch.ID, info.EscrowAddress.Hex(), block.Hash)
 				if err != nil {
 					return err
 				}
 
 				if leafNum == 0 {
-					app.Service.Logger.Debug("no rewards to distribute, delay finalized current epoch")
+					if app.Service != nil && app.Service.Logger != nil {
+						app.Service.Logger.Warnf("[ENDBLOCK] Instance %s: genMerkleTreeForEpoch returned 0 rewards for epoch ID=%s - delaying finalization",
+							id, info.currentEpoch.ID)
+					}
 					return nil
+				}
+
+				// DEBUG: Log successful merkle tree generation
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Generated merkle tree with %d leaves, total=%s, root=%x",
+						id, leafNum, total.String(), root)
 				}
 
 				erc20Total, err := erc20ValueFromBigInt(total)
@@ -1292,6 +1792,13 @@ func init() {
 
 				// create a new epoch
 				newEpoch := newPendingEpoch(id, block)
+
+				// DEBUG: Log new epoch creation
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Creating new epoch ID=%s, startHeight=%d, startTime=%d (old epoch ID=%s)",
+						id, newEpoch.ID, newEpoch.StartHeight, newEpoch.StartTime, info.currentEpoch.ID)
+				}
+
 				err = createEpoch(ctx, app, newEpoch, id)
 				if err != nil {
 					return err
@@ -1303,11 +1810,17 @@ func init() {
 				mtLRUCache.Put(b32Root, jsonBody)
 
 				newEpochs[*id] = newEpoch
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Successfully finalized epoch and created new epoch", id)
+				}
 				return nil
 			}
 
 			// if previous epoch exists and not confirmed, we do nothing.
-			app.Service.Logger.Debug("previous epoch is not confirmed yet, skip finalize current epoch")
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
+					id, info.currentEpoch.ID)
+			}
 			return nil
 		})
 		if err != nil {
@@ -1319,7 +1832,15 @@ func init() {
 			newEpoch, ok := newEpochs[*id]
 			if ok {
 				info.mu.Lock()
+				oldEpochID := info.currentEpoch.ID
 				info.currentEpoch = newEpoch
+
+				// DEBUG: Log epoch update in memory
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Updated in-memory currentEpoch: %s -> %s",
+						id, oldEpochID, newEpoch.ID)
+				}
+
 				info.mu.Unlock()
 			}
 			return nil
@@ -1332,16 +1853,32 @@ func init() {
 
 func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.UUID,
 	escrowAddr string, blockHash [32]byte) (leafNum int, jsonTree []byte, root []byte, total *big.Int, err error) {
+	// DEBUG: Log entry into genMerkleTreeForEpoch
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
+	}
+
 	var rewards []*EpochReward
 	err = getRewardsForEpoch(ctx, app, epochID, func(reward *EpochReward) error {
 		rewards = append(rewards, reward)
 		return nil
 	})
 	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[MERKLE] getRewardsForEpoch failed for epoch ID=%s: %v", epochID, err)
+		}
 		return 0, nil, nil, nil, err
 	}
 
+	// DEBUG: Log number of rewards collected
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
+	}
+
 	if len(rewards) == 0 { // no rewards, delay finalize current epoch
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Warnf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
+		}
 		return 0, nil, nil, nil, nil // should skip
 	}
 
@@ -1515,7 +2052,7 @@ func (e *extensionInfo) issueTokens(ctx context.Context, app *common.App, id *ty
 }
 
 // lockAndIssueTokens locks tokens from the sender and issues them to the desired recipient within the current epoch.
-func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App, id *types.UUID, from string, recipient string, amount *types.Decimal) error {
+func (e *extensionInfo) lockAndIssueTokens(ctx *common.EngineContext, app *common.App, id *types.UUID, from string, recipient string, amount *types.Decimal, block *common.BlockContext) error {
 	if amount == nil {
 		return fmt.Errorf("amount needs to be positive")
 	}
@@ -1534,7 +2071,7 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 		return fmt.Errorf("amount needs to be positive")
 	}
 
-	bal, err := balanceOf(ctx, app, id, fromAddr)
+	bal, err := balanceOf(ctx.TxContext.Ctx, app, id, fromAddr)
 	if err != nil {
 		return err
 	}
@@ -1564,13 +2101,47 @@ func (e *extensionInfo) lockAndIssueTokens(ctx context.Context, app *common.App,
 	info.mu.RLock()
 	defer info.mu.RUnlock()
 
+	// DEBUG: Log withdrawal request
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: User %s requesting withdrawal to %s, amount=%s, currentEpoch ID=%s",
+			id, fromAddr.Hex(), recipientAddr.Hex(), amount.String(), info.currentEpoch.ID)
+	}
+
 	// we dont need to update the cached data here since we are directly converting
 	// a user balance (which is never cached) into a reward (which is also never cached)
-	err = lockAndIssue(ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
+	err = lockAndIssue(ctx.TxContext.Ctx, app, id, info.currentEpoch.ID, fromAddr, recipientAddr, amount)
 	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[WITHDRAWAL] Instance %s: lockAndIssue failed for epoch ID=%s: %v",
+				id, info.currentEpoch.ID, err)
+		}
 		return err
 	}
 
+	internalTxHash, err := hex.DecodeString(ctx.TxContext.TxID)
+	if err != nil {
+		return fmt.Errorf("failed to decode internal tx id %s: %w", ctx.TxContext.TxID, err)
+	}
+
+	// Record transaction history
+	// Include internalTxHash to prevent UUID collisions if same user withdraws to same recipient multiple times in one epoch
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, info.currentEpoch.ID.Bytes()),
+		append(append(append([]byte("withdrawal"), fromAddr.Bytes()...), recipientAddr.Bytes()...), internalTxHash...))
+
+	_, err = app.DB.Execute(ctx.TxContext.Ctx, `
+		INSERT INTO kwil_erc20_meta.transaction_history
+		(id, instance_id, type, from_address, to_address, amount, internal_tx_hash, status, block_height, block_timestamp, epoch_id)
+		VALUES ($1, $2, 'withdrawal', $3, $4, $5, $6, 'pending_epoch', $7, $8, $9)
+		ON CONFLICT (id) DO NOTHING
+	`, txHistoryID, id, fromAddr.Bytes(), recipientAddr.Bytes(), amount, internalTxHash, block.Height, block.Timestamp, info.currentEpoch.ID)
+	if err != nil {
+		return fmt.Errorf("failed to record withdrawal history: %w", err)
+	}
+
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[WITHDRAWAL] Instance %s: Successfully added withdrawal to epoch ID=%s", id, info.currentEpoch.ID)
+	}
 	return nil
 }
 
@@ -1836,12 +2407,25 @@ func (r *rewardExtensionInfo) copy() *rewardExtensionInfo {
 	}
 }
 
+// loggingContext returns a human-readable identifier for logging
+// Format: "chain.escrow_suffix" (e.g., "hoodi.31554e7")
+func (r *rewardExtensionInfo) loggingContext() string {
+	// Use last 7 chars of escrow address for human identification
+	escrowHex := r.EscrowAddress.Hex()
+	if len(escrowHex) >= 7 {
+		escrowSuffix := escrowHex[len(escrowHex)-7:]
+		return fmt.Sprintf("%s.%s", r.ChainInfo.Name, escrowSuffix)
+	}
+	return string(r.ChainInfo.Name)
+}
+
 // startStatePoller starts a state poller for the reward extension.
 func (r *rewardExtensionInfo) startStatePoller() error {
 	synced := r.synced // copy to avoid race conditions
 	escrow := r.EscrowAddress
 	id := *r.ID
 	chainName := r.ChainInfo.Name
+	logContext := r.loggingContext() // capture for use in closure
 
 	return evmsync.StatePoller.RegisterPoll(evmsync.PollConfig{
 		Chain:          chainName,
@@ -1855,7 +2439,7 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 
 			data, err := getSyncedRewardData(ctx, client, escrow)
 			if err != nil {
-				logger := service.Logger.New(statePollerUniqueName(id))
+				logger := service.Logger.New(statePollerUniqueName(id) + "." + logContext)
 				logger.Errorf("failed to get synced reward data: %v", err)
 				return
 			}
@@ -1867,7 +2451,7 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 
 			err = broadcast(ctx, bts)
 			if err != nil {
-				logger := service.Logger.New(statePollerUniqueName(id))
+				logger := service.Logger.New(statePollerUniqueName(id) + "." + logContext)
 				logger.Errorf("failed to get broadcast reward data to network: %v", err)
 				return
 			}
@@ -1880,55 +2464,156 @@ func (r *rewardExtensionInfo) startStatePoller() error {
 	})
 }
 
-// startDepositListener starts an event listener that listens for Deposit events on the RewardDistributor escrow
-func (r *rewardExtensionInfo) startDepositListener() error {
+// startDepositListener starts an event listener that listens for Deposit events on the bridge contract.
+// It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
+// This method is idempotent - calling it multiple times for the same instance is safe.
+//
+// Returns (error, wasStarted) where:
+//   - (nil, true): Successfully registered a NEW listener (caller owns cleanup responsibility)
+//   - (nil, false): Listener already existed (caller should NOT clean up)
+//   - (err, false): Registration failed (caller should NOT clean up)
+func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
+	// Check if deposit listener is already running for this instance
+	instanceIDStr := r.ID.String()
+	runningListenersMu.Lock()
+	if runningDepositListeners[instanceIDStr] {
+		runningListenersMu.Unlock()
+		// Already running, skip registration
+		return nil, false
+	}
+	runningDepositListeners[instanceIDStr] = true
+	runningListenersMu.Unlock()
+
+	// Ensure we start with a clean state in the global registry
+	_ = evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID))
+
 	// I'm not sure if copies are needed because the values should never be modified,
 	// but just in case, I copy them to be used in GetLogs, which runs outside of consensus
 	escrowCopy := r.EscrowAddress
 	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
 
 	// we now register synchronization of the Deposit event
-	return evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
+	err := evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
 		UniqueName: depositListenerUniqueName(*r.ID),
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
-			escrowFilt, err := abigen.NewRewardDistributorFilterer(escrowCopy, client)
+			if logger != nil {
+				logger.Infof("[HEARTBEAT] Deposit Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+			}
+			var logs []*evmsync.EthLog
+
+			// TODO(migration): Remove RewardDistributor fallback once all deployments migrate to TrufNetworkBridge.
+			// Try RewardDistributor format first (backward compatibility)
+			rewardFilt, err := abigen.NewRewardDistributorFilterer(escrowCopy, client)
 			if err != nil {
 				return nil, fmt.Errorf("failed to bind to RewardDistributor filterer: %w", err)
 			}
 
-			var logs []*evmsync.EthLog
-
 			var depositIter *abigen.RewardDistributorDepositIterator
 			err = utils.Retry(ctx, evmMaxRetries, func() error {
-				depositIter, err = escrowFilt.FilterDeposit(&bind.FilterOpts{
+				depositIter, err = rewardFilt.FilterDeposit(&bind.FilterOpts{
 					Start:   startBlock,
 					End:     &endBlock,
 					Context: ctx,
 				})
 				if err != nil {
-					return fmt.Errorf("failed to get deposit logs: %w", err)
+					return fmt.Errorf("failed to get RewardDistributor deposit logs: %w", err)
 				}
 				return nil
 			})
+			var iterErr error
 			if err != nil {
-				return nil, err
-			}
-			defer depositIter.Close()
+				logger.Warnf("RewardDistributor FilterDeposit failed (trying TrufNetworkBridge): %v", err)
+			} else {
+				// Successfully got RewardDistributor events
+				defer depositIter.Close()
+				for depositIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := depositIter.Event.Raw
 
-			for depositIter.Next() {
-				logs = append(logs, &evmsync.EthLog{
-					Metadata: logTypeDeposit,
-					Log:      &depositIter.Event.Raw,
+					// Fetch the sender address from the transaction
+					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
+
+					metadata := make([]byte, 0, len(logTypeDeposit)+20)
+					metadata = append(metadata, logTypeDeposit...)
+					if fromAddr != nil {
+						metadata = append(metadata, fromAddr.Bytes()...)
+					}
+
+					logs = append(logs, &evmsync.EthLog{
+						Metadata: metadata,
+						Log:      &logCopy,
+					})
+				}
+				iterErr = depositIter.Error()
+				if iterErr != nil {
+					// Iteration failed (likely ABI parsing error) - try TrufNetworkBridge
+					logger.Warnf("RewardDistributor deposit iteration failed (trying TrufNetworkBridge): %v", iterErr)
+					logs = nil // Clear any partial results
+				}
+			}
+
+			// Try TrufNetworkBridge format (if RewardDistributor failed or returned no events)
+			// TODO(migration): Make this the primary path and remove RewardDistributor fallback once migration complete.
+			if err != nil || iterErr != nil || len(logs) == 0 {
+				bridgeFilt, bridgeErr := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
+				if bridgeErr != nil {
+					return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", bridgeErr)
+				}
+
+				var bridgeDepositIter *abigen.TrufNetworkBridgeDepositIterator
+				bridgeErr = utils.Retry(ctx, evmMaxRetries, func() error {
+					// nil recipient filter = get deposits for all recipients
+					bridgeDepositIter, bridgeErr = bridgeFilt.FilterDeposit(&bind.FilterOpts{
+						Start:   startBlock,
+						End:     &endBlock,
+						Context: ctx,
+					}, nil)
+					if bridgeErr != nil {
+						return fmt.Errorf("failed to get TrufNetworkBridge deposit logs: %w", bridgeErr)
+					}
+					return nil
 				})
-			}
-			if err := depositIter.Error(); err != nil {
-				return nil, fmt.Errorf("failed to get deposit logs: %w", err)
+				if bridgeErr != nil {
+					return nil, bridgeErr
+				}
+				defer bridgeDepositIter.Close()
+
+				// Clear logs from failed RewardDistributor attempt
+				if err != nil {
+					logs = nil
+				}
+
+				for bridgeDepositIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := bridgeDepositIter.Event.Raw
+
+					// Fetch the sender address from the transaction
+					// This runs outside consensus, so external RPC calls are safe
+					fromAddr := fetchTxSender(ctx, client, logCopy.TxHash, evmMaxRetries, logger)
+
+					metadata := make([]byte, 0, len(logTypeDeposit)+20)
+					metadata = append(metadata, logTypeDeposit...)
+					if fromAddr != nil {
+						metadata = append(metadata, fromAddr.Bytes()...)
+					}
+
+					logs = append(logs, &evmsync.EthLog{
+						Metadata: metadata,
+						Log:      &logCopy,
+					})
+				}
+				if err := bridgeDepositIter.Error(); err != nil {
+					return nil, fmt.Errorf("failed to iterate TrufNetworkBridge deposit logs: %w", err)
+				}
 			}
 
+			// TODO(migration): Remove RewardPosted event handling once all deployments migrate to TrufNetworkBridge.
+			// TrufNetworkBridge uses local validator voting for epoch confirmation, not on-chain RewardPosted events.
+			// Fetch RewardPosted events (only RewardDistributor has this)
 			var postIter *abigen.RewardDistributorRewardPostedIterator
 			err = utils.Retry(ctx, evmMaxRetries, func() error {
-				postIter, err = escrowFilt.FilterRewardPosted(&bind.FilterOpts{
+				postIter, err = rewardFilt.FilterRewardPosted(&bind.FilterOpts{
 					Start:   startBlock,
 					End:     &endBlock,
 					Context: ctx,
@@ -1939,36 +2624,166 @@ func (r *rewardExtensionInfo) startDepositListener() error {
 				return nil
 			})
 			if err != nil {
-				return nil, err
-			}
-			defer postIter.Close()
+				// TrufNetworkBridge doesn't have RewardPosted events, so this is expected to fail
+				logger.Debugf("RewardPosted events not available (expected for TrufNetworkBridge): %v", err)
+			} else {
+				defer postIter.Close()
 
-			for postIter.Next() {
-				logs = append(logs, &evmsync.EthLog{
-					Metadata: logTypeConfirmedEpoch,
-					Log:      &postIter.Event.Raw,
-				})
-			}
-			if err := postIter.Error(); err != nil {
-				return nil, fmt.Errorf("failed to get reward posted logs: %w", err)
+				for postIter.Next() {
+					// Deep copy the log to avoid pointing to the iterator's internal reused struct
+					logCopy := postIter.Event.Raw
+					logs = append(logs, &evmsync.EthLog{
+						Metadata: logTypeConfirmedEpoch,
+						Log:      &logCopy,
+					})
+				}
+				if err := postIter.Error(); err != nil {
+					return nil, fmt.Errorf("failed to iterate reward posted logs: %w", err)
+				}
 			}
 
 			return logs, nil
 		},
 	})
+
+	if err != nil {
+		// Registration failed, clean up tracking
+		// Lock still held (deferred unlock)
+		delete(runningDepositListeners, instanceIDStr)
+		return err, false
+	}
+
+	// Successfully started a NEW listener - caller owns cleanup responsibility
+	return nil, true
+}
+
+// startWithdrawalListener starts an event listener that listens for Withdraw events on the contract.
+// The listener is registered for all instances but only processes events if the contract emits them.
+// Old contracts (RewardDistributor) never emit Withdraw events, so the listener remains dormant for those instances.
+// This method is idempotent - calling it multiple times for the same instance is safe.
+//
+// Returns (error, wasStarted) where:
+//   - (nil, true): Successfully registered a NEW listener (caller owns cleanup responsibility)
+//   - (nil, false): Listener already existed (caller should NOT clean up)
+//   - (err, false): Registration failed (caller should NOT clean up)
+func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
+	// Check if withdrawal listener is already running for this instance
+	instanceIDStr := r.ID.String()
+	runningListenersMu.Lock()
+	if runningWithdrawalListeners[instanceIDStr] {
+		runningListenersMu.Unlock()
+		// Already running, skip registration
+		return nil, false
+	}
+	runningWithdrawalListeners[instanceIDStr] = true
+	runningListenersMu.Unlock()
+
+	// Ensure we start with a clean state in the global registry
+	// This is the long-term fix for stale listeners after crashes
+	_ = evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID))
+
+	// Copy values to avoid race conditions in GetLogs (runs outside consensus)
+	escrowCopy := r.EscrowAddress
+	evmMaxRetries := int64(10) // retry on evm RPC request is crucial
+
+	// Register withdrawal event listener
+	err := evmsync.EventSyncer.RegisterNewListener(evmsync.EVMEventListenerConfig{
+		UniqueName: withdrawalListenerUniqueName(*r.ID),
+		Chain:      r.ChainInfo.Name,
+		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
+			if logger != nil {
+				logger.Infof("[HEARTBEAT] Withdrawal Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+			}
+			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
+			if err != nil {
+				return nil, fmt.Errorf("failed to bind to TrufNetworkBridge filterer: %w", err)
+			}
+
+			var logs []*evmsync.EthLog
+
+			// Fetch Withdraw events
+			var withdrawIter *abigen.TrufNetworkBridgeWithdrawIterator
+			err = utils.Retry(ctx, evmMaxRetries, func() error {
+				withdrawIter, err = bridgeFilt.FilterWithdraw(&bind.FilterOpts{
+					Start:   startBlock,
+					End:     &endBlock,
+					Context: ctx,
+				}, nil, nil) // nil filters = get all recipients and kwilBlockHashes
+				if err != nil {
+					return fmt.Errorf("failed to get withdraw logs: %w", err)
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			defer withdrawIter.Close()
+
+			for withdrawIter.Next() {
+				// Deep copy the log to avoid pointing to the iterator's internal reused struct
+				logCopy := withdrawIter.Event.Raw
+				logs = append(logs, &evmsync.EthLog{
+					Metadata: logTypeWithdrawal,
+					Log:      &logCopy,
+				})
+			}
+			if err := withdrawIter.Error(); err != nil {
+				return nil, fmt.Errorf("failed to get withdraw logs: %w", err)
+			}
+
+			return logs, nil
+		},
+	})
+
+	if err != nil {
+		// Registration failed, clean up tracking
+		// Lock still held (deferred unlock)
+		delete(runningWithdrawalListeners, instanceIDStr)
+		return err, false
+	}
+
+	// Successfully started a NEW listener - caller owns cleanup responsibility
+	return nil, true
 }
 
 // stopAllListeners stops all event listeners for the reward extension.
-// If it is synced, this means it must have an active Deposit listener.
+// If it is synced, this means it must have active Deposit and Withdrawal listeners.
 // If it is not synced, it must have an active state poller.
 // NOTE: UnregisterListener doesn't unregister the topic because the reward
 // instance will not be deleted when `unuse`/`disable`, we need to keep the
 // topics to make sure we don't lose events.
 func (r *rewardExtensionInfo) stopAllListeners() error {
 	if r.synced {
-		return evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID))
+		var errs []error
+
+		// Attempt to stop deposit listener
+		if err := evmsync.EventSyncer.UnregisterListener(depositListenerUniqueName(*r.ID)); err != nil {
+			// Ignore "not registered" errors to make UNUSE idempotent
+			if !errors.Is(err, evmsync.ErrListenerNotRegistered) {
+				errs = append(errs, fmt.Errorf("failed to unregister deposit listener: %w", err))
+			}
+		}
+
+		// Attempt to stop withdrawal listener
+		if err := evmsync.EventSyncer.UnregisterListener(withdrawalListenerUniqueName(*r.ID)); err != nil {
+			// Ignore "not registered" errors to make UNUSE idempotent
+			if !errors.Is(err, evmsync.ErrListenerNotRegistered) {
+				errs = append(errs, fmt.Errorf("failed to unregister withdrawal listener: %w", err))
+			}
+		}
+
+		// Return combined error if any failed
+		if len(errs) > 0 {
+			return fmt.Errorf("listener cleanup errors: %v", errs)
+		}
+		return nil
 	}
-	return evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
+
+	err := evmsync.StatePoller.UnregisterPoll(statePollerUniqueName(*r.ID))
+	if err != nil && !errors.Is(err, evmsync.ErrPollerNotFound) {
+		return err
+	}
+	return nil
 }
 
 // nilEthFilterer is a dummy filterer that does nothing.
@@ -1985,21 +2800,104 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 }
 
 // applyDepositLog applies a Deposit log to the reward extension.
-func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log) error {
-	data, err := rewardLogParser.ParseDeposit(log)
-	if err != nil {
-		return fmt.Errorf("failed to parse Deposit event: %w", err)
+// It supports both RewardDistributor (non-indexed recipient) and TrufNetworkBridge (indexed recipient) formats.
+// The format is auto-detected based on the event log structure.
+//
+// SECURITY: Deposits are processed immediately for optimal UX (no finality delay).
+// Withdrawals are protected by beacon finality check during epoch finalization (endBlock).
+// This design prioritizes user experience while maintaining security where it matters most.
+// This function runs during consensus execution and must remain deterministic.
+//
+// TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
+func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log, block *common.BlockContext, fromAddr *ethcommon.Address) error {
+	var recipient ethcommon.Address
+	var amount *big.Int
+	var err error
+
+	// Detect event format based on log structure:
+	// - TrufNetworkBridge: indexed recipient (topics[1]), amount in data (32 bytes)
+	// - RewardDistributor: non-indexed recipient and amount in data (64 bytes)
+	if len(log.Topics) >= 2 && len(log.Data) == 32 {
+		// TrufNetworkBridge format (indexed recipient)
+		bridgeData, parseErr := bridgeLogParser.ParseDeposit(log)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse TrufNetworkBridge Deposit event: %w", parseErr)
+		}
+		recipient = bridgeData.Recipient
+		amount = bridgeData.Amount
+	} else if len(log.Data) == 64 {
+		// TODO(migration): Remove RewardDistributor support once migration complete.
+		// RewardDistributor format (non-indexed recipient)
+		rewardData, parseErr := rewardLogParser.ParseDeposit(log)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse RewardDistributor Deposit event: %w", parseErr)
+		}
+		recipient = rewardData.Recipient
+		amount = rewardData.Amount
+	} else {
+		return fmt.Errorf("unknown Deposit event format: topics=%d, data_len=%d", len(log.Topics), len(log.Data))
 	}
 
-	val, err := erc20ValueFromBigInt(data.Amount)
+	// Deposit finality is now checked in the EVENT LISTENER (GetLogs function), which runs
+	// EXTERNAL to consensus execution. This prevents the appHash mismatch bug that occurred
+	// when finality checks ran during consensus.
+	//
+	// How it works:
+	// 1. Each validator's event listener queries Ethereum for finalized block (background service)
+	// 2. Listener only fetches deposits from finalized blocks
+	// 3. Listener broadcasts resolution proposal with finalized deposits
+	// 4. Validators vote on proposals (resolution voting system)
+	// 5. Majority consensus determines which deposits are accepted
+	// 6. THIS function (applyDepositLog) processes only the voted/confirmed deposits
+	// 7. All validators see the same confirmed deposits → Same appHash ✅
+	//
+	// Security:
+	// - Only finalized Ethereum blocks are processed (~15 min after inclusion)
+	// - Prevents deposit reorg attacks (15-min window eliminated)
+	// - Resolution voting ensures consensus even if validators query at different times
+	//
+	// Implementation:
+	// - registerDepositListener() GetLogs function (line ~2369)
+	// - registerWithdrawalListener() GetLogs function (line ~2561)
+	//
+	// Note: This function runs during consensus execution and must remain deterministic.
+	// All external data fetching happens in the event listener, not here.
+
+	val, err := erc20ValueFromBigInt(amount)
 	if err != nil {
 		return fmt.Errorf("failed to convert big.Int to decimal.Decimal: %w", err)
 	}
 
-	return creditBalance(ctx, app, id, data.Recipient, val)
+	// Record transaction history
+	// Include log index to prevent UUID collisions when a single Ethereum tx has multiple Deposit events
+	logIndexBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(logIndexBytes, uint32(log.Index))
+
+	txHistoryID := types.NewUUIDV5WithNamespace(
+		types.NewUUIDV5WithNamespace(*id, log.TxHash.Bytes()),
+		append([]byte("deposit"), logIndexBytes...))
+
+	var fromAddrBytes any
+	if fromAddr != nil {
+		fromAddrBytes = fromAddr.Bytes()
+	}
+
+	_, err = app.DB.Execute(ctx, `
+		INSERT INTO kwil_erc20_meta.transaction_history
+		(id, instance_id, type, from_address, to_address, amount, external_tx_hash, status, block_height, block_timestamp, external_block_height)
+		VALUES ($1, $2, 'deposit', $3, $4, $5, $6, 'completed', $7, $8, $9)
+		ON CONFLICT (id) DO NOTHING
+	`, txHistoryID, id, fromAddrBytes, recipient.Bytes(), val, log.TxHash.Bytes(), block.Height, block.Timestamp, log.BlockNumber)
+	if err != nil {
+		return fmt.Errorf("failed to record deposit history: %w", err)
+	}
+
+	return creditBalance(ctx, app, id, recipient, val)
 }
 
 // applyConfirmedEpochLog applies a ConfirmedEpoch log to the reward extension.
+// TODO(migration): Remove this function once all deployments migrate to TrufNetworkBridge.
+// TrufNetworkBridge uses local validator voting for epoch confirmation, not on-chain RewardPosted events.
 func applyConfirmedEpochLog(ctx context.Context, app *common.App, log ethtypes.Log) error {
 	data, err := rewardLogParser.ParseRewardPosted(log)
 	if err != nil {
@@ -2007,6 +2905,48 @@ func applyConfirmedEpochLog(ctx context.Context, app *common.App, log ethtypes.L
 	}
 
 	return confirmEpoch(ctx, app, data.Root[:])
+}
+
+// applyWithdrawalLog applies a Withdraw log to update withdrawal status.
+// This is called when a user claims a withdrawal on Ethereum, detected via the withdrawal listener.
+// It updates the withdrawal record to 'claimed' status with transaction details.
+//
+// The claimedAt timestamp uses Kwil block height for deterministic consensus.
+// TODO: Consider using Ethereum block timestamp when available in EthLog structure.
+func applyWithdrawalLog(ctx context.Context, app *common.App, instanceID *types.UUID, log ethtypes.Log, kwilBlockHeight int64) error {
+	// Parse the Withdraw event from TrufNetworkBridge contract
+	data, err := bridgeLogParser.ParseWithdraw(log)
+	if err != nil {
+		return fmt.Errorf("failed to parse Withdraw event: %w", err)
+	}
+
+	// Validate parsed data
+	if data == nil {
+		return fmt.Errorf("parsed Withdraw event data is nil")
+	}
+	if data.Recipient == (ethcommon.Address{}) {
+		return fmt.Errorf("Withdraw event has zero recipient address")
+	}
+	if data.KwilBlockHash == ([32]byte{}) {
+		return fmt.Errorf("Withdraw event has empty kwilBlockHash")
+	}
+	if log.BlockNumber == 0 {
+		return fmt.Errorf("Withdraw event has zero block number")
+	}
+
+	// Update withdrawal status to 'claimed' with transaction details
+	// This matches by recipient + kwilBlockHash to ensure we update the correct epoch
+	// Using Kwil block height as deterministic timestamp (not time.Now() for consensus safety)
+	return updateWithdrawalStatus(
+		ctx,
+		app,
+		instanceID,
+		data.Recipient,
+		data.KwilBlockHash, // Matches the epoch via kwil_block_hash
+		log.TxHash.Bytes(),
+		int64(log.BlockNumber),
+		kwilBlockHeight, // Deterministic: Kwil block height when event was processed
+	)
 }
 
 // erc20ValueFromBigInt converts a big.Int to a decimal.Decimal(78,0)
@@ -2020,6 +2960,7 @@ func erc20ValueFromBigInt(b *big.Int) (*types.Decimal, error) {
 }
 
 var (
+	// TODO(migration): Remove rewardLogParser once all deployments migrate to TrufNetworkBridge.
 	// rewardLogParser is a pre-bound RewardDistributor filterer for parsing Deposit and RewardPosted events.
 	rewardLogParser = func() irewardLogParser {
 		filt, err := abigen.NewRewardDistributorFilterer(ethcommon.Address{}, nilEthFilterer{})
@@ -2031,14 +2972,34 @@ var (
 	}()
 )
 
+// TODO(migration): Remove irewardLogParser interface once all deployments migrate to TrufNetworkBridge.
 // irewardLogParser is an interface for parsing RewardDistributor logs.
 type irewardLogParser interface {
 	ParseDeposit(log ethtypes.Log) (*abigen.RewardDistributorDeposit, error)
 	ParseRewardPosted(log ethtypes.Log) (*abigen.RewardDistributorRewardPosted, error)
 }
 
-// getSyncedRewardData reads on-chain data from both the RewardDistributor and the Gnosis Safe
-// it references, returning them in a syncedRewardData struct.
+// bridgeLogParser is a pre-bound TrufNetworkBridge filterer for parsing Withdraw events.
+// This is used by the withdrawal listener to parse Withdraw events from the new contract.
+var bridgeLogParser = func() ibridgeLogParser {
+	filt, err := abigen.NewTrufNetworkBridgeFilterer(ethcommon.Address{}, nilEthFilterer{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to bind to TrufNetworkBridge filterer: %v", err))
+	}
+
+	return filt
+}()
+
+// ibridgeLogParser is an interface for parsing TrufNetworkBridge logs.
+type ibridgeLogParser interface {
+	ParseWithdraw(log ethtypes.Log) (*abigen.TrufNetworkBridgeWithdraw, error)
+	ParseDeposit(log ethtypes.Log) (*abigen.TrufNetworkBridgeDeposit, error)
+}
+
+// getSyncedRewardData reads on-chain data from the bridge contract and token.
+// TODO(migration): Update to use TrufNetworkBridge binding once all deployments migrated.
+// Currently uses RewardDistributor binding for backward compatibility, but both contracts
+// have rewardToken() function with same signature, so this works for both.
 // It does not get the tokens owned by escrow; it will later sync those from erc20 logs
 func getSyncedRewardData(
 	ctx context.Context,
@@ -2047,12 +3008,15 @@ func getSyncedRewardData(
 ) (*syncedRewardData, error) {
 
 	// 1) Instantiate a binding to RewardDistributor at distributorAddr.
+	// TODO(migration): Change to TrufNetworkBridge binding once migration complete.
+	// Works with both contracts since both have rewardToken() with same signature.
 	distributor, err := abigen.NewRewardDistributor(distributorAddr, client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to bind to RewardDistributor: %w", err)
 	}
 
 	// 2) Read the rewardToken address from the RewardDistributor
+	// TrufNetworkBridge also has rewardToken() function (alias for getBridgedToken)
 	rewardTokenAddr, err := distributor.RewardToken(&bind.CallOpts{Context: ctx})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rewardToken from RewardDistributor: %w", err)
@@ -2123,4 +3087,258 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 	}
 
 	return n, nil
+}
+
+// ============================================================================
+// Validator Signing for Non-Custodial Withdrawals
+// ============================================================================
+
+// getValidatorSigner returns a ValidatorSigner wrapper for the node's validator key.
+// For non-custodial validator voting, this MUST use the node's validator key (not bridge signer key)
+// to ensure signatures map to the validator's registered identity in the validator set.
+// Returns nil if no validator signer is available.
+func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSigner, error) {
+	// Use the ValidatorSigner from Service
+	// This provides controlled access to signing without exposing the raw private key
+	if app.Service.ValidatorSigner == nil {
+		return nil, nil // No validator signer available
+	}
+
+	// Get Ethereum address for the validator
+	addressBytes, err := app.Service.ValidatorSigner.EthereumAddress()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get validator Ethereum address: %w", err)
+	}
+
+	// Create ValidatorSigner with the interface
+	return NewValidatorSignerFromInterface(app, instanceID, app.Service.ValidatorSigner, addressBytes), nil
+}
+
+// computeEpochMessageHash computes the message hash that validators sign.
+// This matches the format expected by TrufNetworkBridge contract:
+// keccak256(abi.encode(merkleRoot, kwilBlockHash))
+func computeEpochMessageHash(merkleRoot []byte, blockHash []byte) ([]byte, error) {
+	// Use go-ethereum's ABI encoder
+	bytes32Type, err := abi.NewType("bytes32", "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bytes32 type: %w", err)
+	}
+
+	arguments := abi.Arguments{
+		{Type: bytes32Type},
+		{Type: bytes32Type},
+	}
+
+	// Validate inputs are exactly 32 bytes before copying
+	if len(merkleRoot) != 32 {
+		return nil, fmt.Errorf("invalid merkleRoot size: expected 32 bytes, got %d bytes", len(merkleRoot))
+	}
+	if len(blockHash) != 32 {
+		return nil, fmt.Errorf("invalid blockHash size: expected 32 bytes, got %d bytes", len(blockHash))
+	}
+
+	// Convert to fixed-size arrays
+	var rootBytes32 [32]byte
+	var hashBytes32 [32]byte
+	copy(rootBytes32[:], merkleRoot)
+	copy(hashBytes32[:], blockHash)
+
+	// ABI encode
+	packed, err := arguments.Pack(rootBytes32, hashBytes32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack arguments: %w", err)
+	}
+
+	// Keccak256 hash
+	messageHash := crypto.Keccak256(packed)
+	return messageHash, nil
+}
+
+// calculateBFTThreshold calculates the BFT threshold (2/3 of total validator voting power).
+// Returns (totalPower, thresholdPower, error).
+// Uses ceiling division to ensure >= 2/3 of voting power is required.
+func calculateBFTThreshold(app *common.App) (int64, int64, error) {
+	// Get all validators and sum their voting power
+	validators := app.Validators.GetValidators()
+
+	var totalPower int64
+	for _, v := range validators {
+		totalPower += v.Power
+	}
+
+	if totalPower == 0 {
+		return 0, 0, fmt.Errorf("no validators with voting power")
+	}
+
+	// Calculate 2/3 threshold using ceiling division: ceil(totalPower * 2 / 3)
+	// Formula: (totalPower * 2 + 3 - 1) / 3 = (totalPower * 2 + 2) / 3
+	thresholdPower := (totalPower*2 + 2) / 3
+
+	return totalPower, thresholdPower, nil
+}
+
+// sumEpochVotingPower calculates the total voting power of validators who voted for an epoch.
+// Only counts non-custodial validator signatures (nonce=0).
+//
+// IMPORTANT: This function only counts voting power for validators using secp256k1 keys.
+// Non-custodial validator voting requires EthPersonalSigner (Ethereum addresses), which
+// necessitates secp256k1 keys. Validators with other key types (e.g., ed25519) will not
+// participate in non-custodial withdrawal voting, though they remain fully functional
+// validators in the network's BFT consensus.
+//
+// Note: This function cannot use ctx.TxContext because it's called from a handler.
+// It matches votes by Ethereum address, which requires validators to use EthPersonalSigner.
+func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {
+	const nonCustodialNonce = 0
+
+	// Get all votes for this epoch (stores Ethereum addresses as voters)
+	result, err := app.DB.Execute(ctx, `
+		SELECT voter
+		FROM kwil_erc20_meta.epoch_votes
+		WHERE epoch_id = $1 AND nonce = $2
+	`, epochID, nonCustodialNonce)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query epoch votes: %w", err)
+	}
+
+	// For each vote, we need to find the corresponding validator
+	// Unfortunately, epoch_votes stores Ethereum addresses, not validator pubkeys
+	// We need to iterate through validators and match their Ethereum address
+	validators := app.Validators.GetValidators()
+
+	// Build a map of validator Ethereum addresses -> power
+	// This requires computing each validator's Ethereum address from their pubkey
+	validatorPowerMap := make(map[string]int64)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
+	}
+	for _, v := range validators {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
+		}
+		// Compute Ethereum address from validator pubkey
+		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
+		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
+			// Parse the pubkey and derive Ethereum address
+			ethAddr, err := ethAddressFromPubKey(v.Identifier)
+			if err != nil {
+				// Skip validators with invalid keys
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
+				}
+				continue
+			}
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
+			}
+			validatorPowerMap[ethAddr.Hex()] = v.Power
+		}
+	}
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
+	}
+
+	// Sum voting power for all voters
+	var votingPower int64
+	for _, row := range result.Rows {
+		voterBytes, ok := row[0].([]byte)
+		if !ok {
+			continue
+		}
+
+		// Convert voter bytes to Ethereum address
+		if len(voterBytes) != 20 {
+			continue
+		}
+		voter := ethcommon.BytesToAddress(voterBytes)
+
+		// Look up voting power
+		if power, ok := validatorPowerMap[voter.Hex()]; ok {
+			votingPower += power
+		}
+	}
+
+	return votingPower, nil
+}
+
+// ethAddressFromPubKey derives an Ethereum address from a secp256k1 public key.
+// The pubKey should be 33 bytes (compressed) or 65 bytes (uncompressed).
+func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
+	// Parse the public key
+	pubkey, err := crypto.UnmarshalPubkey(pubKey)
+	if err != nil {
+		// Try decompressing if it's a 33-byte compressed key
+		if len(pubKey) == 33 {
+			pubkey, err = crypto.DecompressPubkey(pubKey)
+			if err != nil {
+				return ethcommon.Address{}, fmt.Errorf("failed to decompress pubkey: %w", err)
+			}
+		} else {
+			return ethcommon.Address{}, fmt.Errorf("failed to parse pubkey: %w", err)
+		}
+	}
+
+	// Derive Ethereum address from public key
+	address := crypto.PubkeyToAddress(*pubkey)
+	return address, nil
+}
+
+// getEpochSignatures retrieves all validator signatures for an epoch.
+// Returns array of signatures (65 bytes each: r||s||v format).
+// Only returns signatures with nonce=0 (validator-verified signatures).
+func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUID) ([][]byte, error) {
+	query := `{kwil_erc20_meta}SELECT signature FROM epoch_votes
+	          WHERE epoch_id = $epoch_id AND nonce = 0
+	          ORDER BY voter`
+
+	// Initialize as empty slice (not nil) to ensure non-nullable column compatibility
+	signatures := make([][]byte, 0)
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, query, map[string]any{
+		"epoch_id": epochID,
+	}, func(row *common.Row) error {
+		if len(row.Values) != 1 {
+			return nil
+		}
+		sig, ok := row.Values[0].([]byte)
+		if !ok {
+			return fmt.Errorf("signature should be []byte, got %T", row.Values[0])
+		}
+		signatures = append(signatures, sig)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query epoch signatures: %w", err)
+	}
+
+	return signatures, nil
+}
+
+// fetchTxSender fetches and derives the sender of an Ethereum transaction.
+// Returns nil address and logs a warning on failure.
+// This is used during the event listener phase (outside consensus).
+func fetchTxSender(ctx context.Context, client *ethclient.Client, txHash ethcommon.Hash, maxRetries int64, logger log.Logger) *ethcommon.Address {
+	var addr ethcommon.Address
+	err := utils.Retry(ctx, maxRetries, func() error {
+		tx, isPending, err := client.TransactionByHash(ctx, txHash)
+		if err != nil {
+			return fmt.Errorf("failed to get tx %s: %w", txHash.Hex(), err)
+		}
+		if isPending {
+			// Deposit events come from finalized blocks; a pending tx suggests RPC inconsistency.
+			return fmt.Errorf("transaction %s is still pending", txHash.Hex())
+		}
+		// Derive sender
+		addr, err = ethtypes.Sender(ethtypes.LatestSignerForChainID(tx.ChainId()), tx)
+		if err != nil {
+			return fmt.Errorf("failed to derive sender for tx %s: %w", txHash.Hex(), err)
+		}
+		return nil
+	})
+	if err != nil {
+		if logger != nil {
+			logger.Warnf("failed to fetch sender for tx %s: %v", txHash.Hex(), err)
+		}
+		return nil
+	}
+	return &addr
 }

@@ -3,7 +3,7 @@ SET CURRENT NAMESPACE TO kwil_erc20_meta;
 -- reward_instances tracks all reward extensions that have been created.
 -- it includes reward_instances that have synced data from the chain, as
 -- well as reward_instances that have been created but not yet synced.
-CREATE TABLE reward_instances (
+CREATE TABLE IF NOT EXISTS reward_instances (
     -- the following columns are set when the reward is created
     id UUID PRIMARY KEY,
     chain_id TEXT NOT NULL,
@@ -24,7 +24,7 @@ CREATE TABLE reward_instances (
 );
 
 -- balances tracks the balance of each user in a given reward instance.
-CREATE TABLE balances (
+CREATE TABLE IF NOT EXISTS balances (
     id UUID PRIMARY KEY,
     reward_id UUID NOT NULL REFERENCES reward_instances(id) ON UPDATE CASCADE ON DELETE CASCADE,
     address BYTEA NOT NULL, -- wallet address of the user
@@ -42,7 +42,7 @@ CREATE TABLE balances (
 -- but this requires partial indexes which are not yet supported in Kwil
 -- We'll always have two active epochs at the same time(except the very first epoch),
 -- one is finalized and waiting to be confirmed, the other is collecting new rewards.
-CREATE TABLE epochs (
+CREATE TABLE IF NOT EXISTS epochs (
 	id UUID PRIMARY KEY,
     created_at_block INT8 NOT NULL, -- kwil block height
     created_at_unix INT8 NOT NULL, -- unix timestamp (in seconds)
@@ -55,30 +55,72 @@ CREATE TABLE epochs (
 );
 
 -- index helps us query for unconfirmed epochs, which is very common
-CREATE INDEX idx_epochs_confirmed ON epochs(instance_id, confirmed);
+CREATE INDEX IF NOT EXISTS idx_epochs_confirmed ON epochs(instance_id, confirmed);
 
 -- epoch_rewards holds information about the rewards in a given epoch
-CREATE TABLE epoch_rewards (
+CREATE TABLE IF NOT EXISTS epoch_rewards (
     epoch_id UUID NOT NULL REFERENCES epochs(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
     recipient BYTEA NOT NULL,
     amount NUMERIC(78,0) NOT NULL, -- allows uint256
     PRIMARY KEY (epoch_id, recipient)
 );
 
-CREATE INDEX idx_epoch_rewards_epoch_id ON epoch_rewards(epoch_id);
+CREATE INDEX IF NOT EXISTS idx_epoch_rewards_epoch_id ON epoch_rewards(epoch_id);
 
-CREATE TABLE meta
+CREATE TABLE IF NOT EXISTS meta
 (
     version INT8 PRIMARY KEY
 );
 
 -- epoch_votes holds the votes from signer
 -- A signer can vote multiple times with different safe_nonce
--- After an epoch is confirmed, we can delete all related votes.
-CREATE TABLE epoch_votes (
+-- Votes are preserved after confirmation for withdrawal proof generation.
+CREATE TABLE IF NOT EXISTS epoch_votes (
     epoch_id UUID NOT NULL REFERENCES epochs(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
     voter BYTEA NOT NULL,
     nonce INT8 NOT NULL, -- safe nonce; this helps to skip unnecessary dup votes
     signature BYTEA NOT NULL,
     PRIMARY KEY (epoch_id, voter, nonce)
 );
+
+-- withdrawals tracks withdrawal claims on the blockchain (multi-chain support)
+-- Chain information is determined through: withdrawals -> epochs -> reward_instances -> chain_id
+-- This allows GetWithdrawalProof to return accurate status information
+CREATE TABLE IF NOT EXISTS withdrawals (
+    epoch_id UUID NOT NULL,
+    recipient BYTEA NOT NULL,
+    tx_hash BYTEA,               -- Blockchain transaction hash (NULL until claimed)
+    block_number INT8,           -- Blockchain block number
+    created_at INT8 NOT NULL,    -- Unix timestamp when record was created (Kwil block time)
+    claimed_at INT8,             -- Unix timestamp when claimed on external blockchain
+    updated_at INT8,             -- Last update timestamp (Kwil block time)
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'claimed')),
+    PRIMARY KEY (epoch_id, recipient),
+    FOREIGN KEY (epoch_id) REFERENCES epochs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_tx_hash ON withdrawals(tx_hash);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_recipient ON withdrawals(recipient);
+
+-- transaction_history tracks all token movements (deposits, withdrawals, transfers)
+-- to provide a unified source of truth for user auditing.
+CREATE TABLE IF NOT EXISTS transaction_history (
+    id UUID PRIMARY KEY,
+    instance_id UUID NOT NULL REFERENCES reward_instances(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'transfer')),
+    from_address BYTEA,            -- NULL for external deposits
+    to_address BYTEA,              -- NULL for external withdrawals
+    amount NUMERIC(78, 0) NOT NULL,
+    internal_tx_hash BYTEA,        -- Kwil Tx Hash
+    external_tx_hash BYTEA,        -- External Blockchain Tx Hash
+    status TEXT NOT NULL CHECK (status IN ('completed', 'pending_epoch', 'claimed')),
+    block_height INT8 NOT NULL,
+    block_timestamp INT8 NOT NULL, -- Unix timestamp in seconds
+    external_block_height INT8,    -- Optional: Blockchain block number
+    epoch_id UUID REFERENCES epochs(id) ON UPDATE RESTRICT ON DELETE SET NULL  -- Optional: For withdrawals
+);
+
+CREATE INDEX IF NOT EXISTS idx_tx_history_instance_from ON transaction_history(instance_id, from_address);
+CREATE INDEX IF NOT EXISTS idx_tx_history_instance_to ON transaction_history(instance_id, to_address);
+CREATE INDEX IF NOT EXISTS idx_tx_history_epoch_id ON transaction_history(epoch_id);
