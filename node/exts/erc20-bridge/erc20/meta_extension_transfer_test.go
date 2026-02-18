@@ -160,28 +160,28 @@ func TestGetHistory(t *testing.T) {
 	depositAmount := big.NewInt(100)
 	var data [32]byte
 	copy(data[32-len(depositAmount.Bytes()):], depositAmount.Bytes())
-	
+
 	depositLog := ethtypes.Log{
 		Address: upd.EscrowAddress,
 		Topics: []ethcommon.Hash{
 			depositEventID,
 			ethcommon.BytesToHash(sender.Bytes()),
 		},
-		Data:   data[:],
-		TxHash: ethcommon.HexToHash("0x1111"),
+		Data:        data[:],
+		TxHash:      ethcommon.HexToHash("0x1111"),
 		BlockNumber: 100,
 	}
 	block1 := &common.BlockContext{Height: 100, Timestamp: 1000}
-	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block1))
+	require.NoError(t, applyDepositLog(ctx, app, id, depositLog, block1, nil))
 
 	// 3. Transfer
 	transferAmount := types.MustParseDecimalExplicit("50", 78, 0)
 	block2 := &common.BlockContext{Height: 200, Timestamp: 2000}
 	engCtx := &common.EngineContext{
 		TxContext: &common.TxContext{
-			Ctx:  ctx,
-			TxID: "2222",
-			Caller: sender.Hex(),
+			Ctx:          ctx,
+			TxID:         "2222",
+			Caller:       sender.Hex(),
 			BlockContext: block2,
 		},
 	}

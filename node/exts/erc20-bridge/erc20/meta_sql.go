@@ -83,12 +83,38 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 // confirmEpoch confirms an epoch was received on-chain.
 // Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
+	// 1. Get the epoch ID first (avoids subquery parser limitations)
+	var epochID *types.UUID
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT id FROM epochs WHERE reward_root = $root;
+	`, map[string]any{
+		"root": root,
+	}, func(row *common.Row) error {
+		epochID = row.Values[0].(*types.UUID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if epochID == nil {
+		return nil // Should not happen if root is valid, but safe to ignore
+	}
+
+	// 2. Update status using the explicit ID
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE epochs
 	SET confirmed = true
-	WHERE reward_root = $root;
+	WHERE id = $id;
+
+	-- Update transaction_history: Mark all withdrawals in this epoch as 'completed'
+	-- (meaning they are now ready to be claimed on Ethereum).
+	{kwil_erc20_meta}UPDATE transaction_history
+	SET status = 'completed'
+	WHERE epoch_id = $id
+	  AND status = 'pending_epoch';
 	`, map[string]any{
-		"root": root,
+		"id": epochID,
 	}, nil)
 }
 
@@ -242,20 +268,31 @@ func updateWithdrawalStatus(
 	blockNumber int64,
 	claimedAt int64,
 ) error {
+	// 1. Get the epoch ID first (avoids subquery parser limitations)
+	var epochID *types.UUID
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT id FROM epochs
+	WHERE instance_id = $instance_id
+	  AND block_hash = $kwil_block_hash;
+	`, map[string]any{
+		"instance_id":     instanceID,
+		"kwil_block_hash": kwilBlockHash[:],
+	}, func(row *common.Row) error {
+		epochID = row.Values[0].(*types.UUID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if epochID == nil {
+		return nil
+	}
+
+	// 2. Perform updates using the explicit ID
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}INSERT INTO withdrawals (epoch_id, recipient, status, tx_hash, block_number, claimed_at, created_at, updated_at)
-	SELECT
-		e.id,
-		$recipient,
-		'claimed',
-		$tx_hash,
-		$block_number,
-		$claimed_at,
-		$claimed_at,
-		$claimed_at
-	FROM epochs e
-	WHERE e.instance_id = $instance_id
-	  AND e.block_hash = $kwil_block_hash
+	VALUES ($epoch_id, $recipient, 'claimed', $tx_hash, $block_number, $claimed_at, $claimed_at, $claimed_at)
 	ON CONFLICT (epoch_id, recipient)
 	DO UPDATE SET
 		status = 'claimed',
@@ -270,20 +307,15 @@ func updateWithdrawalStatus(
 	SET status = 'claimed',
 		external_tx_hash = $tx_hash,
 		external_block_height = $block_number
-	WHERE epoch_id = (
-		SELECT id FROM epochs
-		WHERE instance_id = $instance_id
-		  AND block_hash = $kwil_block_hash
-		LIMIT 1
-	) AND to_address = $recipient
+	WHERE epoch_id = $epoch_id
+	  AND to_address = $recipient
 	  AND status != 'claimed';
 	`, map[string]any{
-		"instance_id":     instanceID,
-		"recipient":       recipient.Bytes(),
-		"kwil_block_hash": kwilBlockHash[:],
-		"tx_hash":         txHash,
-		"block_number":    blockNumber,
-		"claimed_at":      claimedAt,
+		"epoch_id":     epochID,
+		"recipient":    recipient.Bytes(),
+		"tx_hash":      txHash,
+		"block_number": blockNumber,
+		"claimed_at":   claimedAt,
 	}, nil)
 }
 
@@ -316,7 +348,20 @@ func setActiveStatus(ctx context.Context, app *common.App, id *types.UUID, activ
 // createSchema creates the schema for the meta extension.
 // it should be run exactly once (at genesis)
 func createSchema(ctx context.Context, app *common.App) error {
-	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, metaSchema, nil, nil)
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] createSchema: Executing metaSchema for kwil_erc20_meta")
+	}
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, metaSchema, nil, nil)
+	if err != nil {
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] createSchema failed: %v", err)
+		}
+		return err
+	}
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] createSchema: Successfully executed metaSchema")
+	}
+	return nil
 }
 
 // issueReward issues a reward to a user.
@@ -343,9 +388,13 @@ func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, e
 	}, nil)
 
 	if err != nil {
-		app.Service.Logger.Errorf("[DB] issueReward failed for epoch_id=%s: %v", epochID, err)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Errorf("[DB] issueReward failed for epoch_id=%s: %v", epochID, err)
+		}
 	} else {
-		app.Service.Logger.Infof("[DB] issueReward succeeded for epoch_id=%s", epochID)
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("[DB] issueReward succeeded for epoch_id=%s", epochID)
+		}
 	}
 
 	return err
@@ -557,7 +606,7 @@ func previousEpochConfirmed(ctx context.Context, app *common.App, instanceID *ty
 
 func rowToEpoch(r *common.Row) (*Epoch, error) {
 	if len(r.Values) != 9 {
-		return nil, fmt.Errorf("expected 11 values, got %d", len(r.Values))
+		return nil, fmt.Errorf("expected 9 values, got %d", len(r.Values))
 	}
 
 	id := r.Values[0].(*types.UUID)
@@ -696,6 +745,8 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 	err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}SELECT version
 	FROM meta
+	ORDER BY version DESC
+	LIMIT 1
 	`, nil, func(r *common.Row) error {
 		if len(r.Values) != 1 {
 			return fmt.Errorf("expected 1 value, got %d", len(r.Values))
@@ -711,24 +762,26 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 		return 0, false, err
 	}
 
-	switch count {
-	case 0:
+	if count == 0 {
 		return 0, true, nil
-	case 1:
-		return version, false, nil
-	default:
-		return 0, false, errors.New("expected only one value for version table, got")
 	}
+
+	return version, false, nil
 }
 
-var currentVersion = int64(1)
+var currentVersion = int64(2)
 
-// setVersion sets the version of the meta extension.
+// setVersionToCurrent sets the version of the meta extension to currentVersion.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Infof("[DB] setVersionToCurrent: Updating version to %d", currentVersion)
+	}
+	// Atomic-like update: Insert new version first, then delete old ones.
+	// This ensures the table is NEVER empty, even during a crash.
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}INSERT INTO meta(version)
-	VALUES ($version)
-	ON CONFLICT (version) DO UPDATE SET version = $version
+	{kwil_erc20_meta}INSERT INTO meta(version) VALUES ($version)
+	ON CONFLICT (version) DO NOTHING;
+	{kwil_erc20_meta}DELETE FROM meta WHERE version != $version;
 	`, map[string]any{
 		"version": currentVersion,
 	}, nil)

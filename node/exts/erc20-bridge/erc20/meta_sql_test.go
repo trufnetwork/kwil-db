@@ -434,8 +434,8 @@ func TestTransactionHistoryTableExists(t *testing.T) {
 	require.NoError(t, err)
 
 	expectedIndexes := []string{
-		"idx_tx_history_from",
-		"idx_tx_history_to",
+		"idx_tx_history_instance_from",
+		"idx_tx_history_instance_to",
 		"idx_tx_history_epoch_id",
 	}
 
