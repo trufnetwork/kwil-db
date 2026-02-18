@@ -96,10 +96,7 @@ func Start(ctx context.Context, service *common.Service, eventStore listeners.Ev
 
 		// get the next block chunk. if it is greater than the current height - required confirmations,
 		// we will set it to the current height - required confirmations
-		toBlock := lastHeight + config.BlockSyncChunkSize
-		if toBlock > currentHeight-config.RequiredConfirmations {
-			toBlock = currentHeight - config.RequiredConfirmations
-		}
+		toBlock := min(lastHeight+config.BlockSyncChunkSize, currentHeight-config.RequiredConfirmations)
 
 		err = processEvents(ctx, lastHeight, toBlock, client, eventStore, service.Logger)
 		if err != nil {
