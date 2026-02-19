@@ -1706,7 +1706,9 @@ func init() {
 		err := getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			defer info.mu.RUnlock()
-
+			if !info.active {
+				return nil // skip inactive (e.g. unused) instances
+			}
 			// DEBUG: Log entry into end_block check
 			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
 			if app.Service != nil && app.Service.Logger != nil {
