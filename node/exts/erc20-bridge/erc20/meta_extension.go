@@ -1398,8 +1398,17 @@ func init() {
 								return err
 							}
 
-							// For non-custodial only (nonce=0 and V=27/28): check threshold and confirm epoch
+							// For non-custodial only: check threshold and confirm. Never confirm custodial (Safe) epochs here;
+							// those are confirmed by the listener when the on-chain event is seen.
 							if nonce == nonCustodialNonce && !utils.IsGnosisStyleSignature(signature) {
+								hasSafeVote, err := epochHasGnosisStyleVote(ctx.TxContext.Ctx, app, epochID)
+								if err != nil {
+									return fmt.Errorf("check custodial votes for epoch %s: %w", epochID, err)
+								}
+								if hasSafeVote {
+									// Custodial epoch (Safe owners voted); listener will confirm on on-chain event
+									return nil
+								}
 								// Calculate BFT threshold (2/3 of total validator voting power)
 								totalPower, thresholdPower, err := calculateBFTThreshold(app)
 								if err != nil {

@@ -826,6 +826,29 @@ func voteEpoch(ctx context.Context, app *common.App, epochID *types.UUID,
 	}, nil)
 }
 
+// epochHasGnosisStyleVote returns true if the epoch has at least one vote with Gnosis Safe V (31 or 32).
+// Such epochs are custodial (Safe-based); confirmation must be done by the listener on on-chain event, not by vote_epoch threshold.
+func epochHasGnosisStyleVote(ctx context.Context, app *common.App, epochID *types.UUID) (bool, error) {
+	var found bool
+	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}SELECT signature FROM epoch_votes WHERE epoch_id = $epoch_id
+	`, map[string]any{"epoch_id": epochID}, func(r *common.Row) error {
+		if len(r.Values) == 0 {
+			return nil
+		}
+		sig, ok := r.Values[0].([]byte)
+		if !ok || len(sig) != 65 {
+			return nil
+		}
+		v := sig[64]
+		if v == 31 || v == 32 {
+			found = true
+		}
+		return nil
+	})
+	return found, err
+}
+
 // getWalletEpochs returns all confirmed epochs that the given wallet has reward in.
 // If pending=true, return all finalized epochs(no necessary confirmed).
 func getWalletEpochs(ctx context.Context, app *common.App, instanceID *types.UUID,
