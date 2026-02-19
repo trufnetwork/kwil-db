@@ -142,6 +142,16 @@ func EthGnosisSignDigest(digest []byte, key *ecdsa.PrivateKey) ([]byte, error) {
 	return sig, nil
 }
 
+// IsGnosisStyleSignature reports whether the signature uses Gnosis Safe V (31 or 32).
+// Used to distinguish custodial (Safe) votes from non-custodial (validator) votes when nonce=0.
+func IsGnosisStyleSignature(sig []byte) bool {
+	if len(sig) != ethCrypto.SignatureLength {
+		return false
+	}
+	v := sig[ethCrypto.RecoveryIDOffset]
+	return v == 31 || v == 32
+}
+
 // EthStandardVerifyDigest verifies an Ethereum signature (V=27/28 or 31/32).
 // Accepts both standard personal_sign (V=27 or 28) and Gnosis Safe style (V=31 or 32).
 // This avoids rejecting custodial Safe votes when Safe nonce is 0 (first tx), since

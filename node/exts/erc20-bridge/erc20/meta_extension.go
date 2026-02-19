@@ -1338,11 +1338,12 @@ func init() {
 								return fmt.Errorf("epoch cannot be voted")
 							}
 
-							// Verify signature for non-custodial validator votes (nonce=0)
-							// This prevents forged votes from non-validators
+							// For nonce=0 we must distinguish custodial (Safe) vs non-custodial (validator) votes.
+							// Custodial: signature is over Safe tx hash (V=31/32). Do not verify here; Poster/Safe verify on-chain.
+							// Non-custodial: signature is over (reward_root, block_hash) (V=27/28). Verify and run threshold.
 							const nonCustodialNonce = 0
-							if nonce == nonCustodialNonce {
-								// Query epoch's reward_root and block_hash for signature verification
+							if nonce == nonCustodialNonce && !utils.IsGnosisStyleSignature(signature) {
+								// Non-custodial validator vote: verify signature over (reward_root, block_hash)
 								result, err := app.DB.Execute(ctx.TxContext.Ctx, `
 									SELECT reward_root, block_hash
 									FROM kwil_erc20_meta.epochs
@@ -1397,9 +1398,8 @@ func init() {
 								return err
 							}
 
-							// For non-custodial validator signatures (nonce=0), check threshold and confirm epoch
-							// This ensures epoch confirmation happens deterministically during consensus
-							if nonce == nonCustodialNonce {
+							// For non-custodial only (nonce=0 and V=27/28): check threshold and confirm epoch
+							if nonce == nonCustodialNonce && !utils.IsGnosisStyleSignature(signature) {
 								// Calculate BFT threshold (2/3 of total validator voting power)
 								totalPower, thresholdPower, err := calculateBFTThreshold(app)
 								if err != nil {
