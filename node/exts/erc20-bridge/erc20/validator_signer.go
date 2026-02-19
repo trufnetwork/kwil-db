@@ -2,6 +2,7 @@ package erc20
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -176,6 +177,10 @@ func (v *ValidatorSigner) pollAndSign(ctx context.Context) {
 		err = v.signAndVote(ctx, epoch)
 		if err != nil {
 			v.logger.Warnf("failed to sign and vote for epoch %s: %v", epoch.ID, err)
+			// Resync nonce from chain on invalid nonce so the next poll uses the correct nonce
+			if errors.Is(err, types.ErrInvalidNonce) {
+				v.resyncNonceFromChain(ctx)
+			}
 			continue
 		}
 
@@ -347,6 +352,35 @@ func (v *ValidatorSigner) signAndVote(ctx context.Context, epoch *FinalizedEpoch
 	// during block execution, ensuring deterministic consensus. See meta_extension.go:1193-1229
 
 	return nil
+}
+
+// resyncNonceFromChain fetches the account nonce from chain state and sets localNonce
+// so the next vote transaction uses the correct nonce. Call this after an invalid-nonce
+// error so the next attempt succeeds without waiting for another poll.
+func (v *ValidatorSigner) resyncNonceFromChain(ctx context.Context) {
+	readTx, err := v.beginReadTx()
+	if err != nil {
+		v.logger.Warnf("failed to resync nonce: %v", err)
+		return
+	}
+	defer readTx.Rollback(ctx)
+
+	accountID := &types.AccountID{
+		Identifier: v.address.Bytes(),
+		KeyType:    kwilcrypto.KeyTypeSecp256k1,
+	}
+	account, err := v.app.Accounts.GetAccount(ctx, readTx, accountID)
+	if err != nil {
+		v.logger.Warnf("failed to get account for nonce resync: %v", err)
+		return
+	}
+
+	v.mu.Lock()
+	old := v.localNonce
+	newNonce := uint64(account.Nonce)
+	v.localNonce = newNonce
+	v.mu.Unlock()
+	v.logger.Infof("resynced vote nonce from chain: %d -> %d", old, newNonce)
 }
 
 // createVoteTransaction creates a signed transaction that calls the vote_epoch action.
