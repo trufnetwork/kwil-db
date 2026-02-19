@@ -142,8 +142,10 @@ func EthGnosisSignDigest(digest []byte, key *ecdsa.PrivateKey) ([]byte, error) {
 	return sig, nil
 }
 
-// EthStandardVerifyDigest verifies a standard Ethereum signature (V=27 or 28).
-// This is compatible with OpenZeppelin's ECDSA.recover().
+// EthStandardVerifyDigest verifies an Ethereum signature (V=27/28 or 31/32).
+// Accepts both standard personal_sign (V=27 or 28) and Gnosis Safe style (V=31 or 32).
+// This avoids rejecting custodial Safe votes when Safe nonce is 0 (first tx), since
+// the bridge signer produces Gnosis-style V for Safe tx hashes.
 func EthStandardVerifyDigest(sig []byte, digest []byte, address []byte) error {
 	// signature is 65 bytes, [R || S || V] format
 	if len(sig) != ethCrypto.SignatureLength {
@@ -151,12 +153,19 @@ func EthStandardVerifyDigest(sig []byte, digest []byte, address []byte) error {
 			ethCrypto.SignatureLength, len(sig))
 	}
 
-	if sig[ethCrypto.RecoveryIDOffset] != 27 && sig[ethCrypto.RecoveryIDOffset] != 28 {
-		return fmt.Errorf("invalid signature V: expected 27 or 28, got %d", sig[ethCrypto.RecoveryIDOffset])
+	v := sig[ethCrypto.RecoveryIDOffset]
+	var recoveryID byte
+	switch v {
+	case 27, 28:
+		recoveryID = v - 27
+	case 31, 32:
+		recoveryID = v - 31
+	default:
+		return fmt.Errorf("invalid signature V: expected 27, 28, 31, or 32, got %d", v)
 	}
 
 	sig = slices.Clone(sig)
-	sig[ethCrypto.RecoveryIDOffset] -= 27
+	sig[ethCrypto.RecoveryIDOffset] = recoveryID
 
 	pubkeyBytes, err := ethCrypto.Ecrecover(digest, sig)
 	if err != nil {
