@@ -2500,7 +2500,7 @@ func (r *rewardExtensionInfo) startDepositListener() (error, bool) {
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
 			if logger != nil {
-				logger.Infof("[HEARTBEAT] Deposit Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+				logger.Debugf("[HEARTBEAT] Deposit Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
 			}
 			var logs []*evmsync.EthLog
 
@@ -2694,7 +2694,7 @@ func (r *rewardExtensionInfo) startWithdrawalListener() (error, bool) {
 		Chain:      r.ChainInfo.Name,
 		GetLogs: func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*evmsync.EthLog, error) {
 			if logger != nil {
-				logger.Infof("[HEARTBEAT] Withdrawal Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
+				logger.Debugf("[HEARTBEAT] Withdrawal Listener (%s) syncing blocks %d -> %d", instanceIDStr, startBlock, endBlock)
 			}
 			bridgeFilt, err := abigen.NewTrufNetworkBridgeFilterer(escrowCopy, client)
 			if err != nil {
