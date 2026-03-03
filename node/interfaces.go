@@ -39,6 +39,11 @@ type ConsensusEngine interface {
 
 	// PromoteLeader is used to promote a validator to leader starting from the specified height
 	PromoteLeader(leader crypto.PublicKey, height int64) error
+
+	// CanReannounce returns true if it's safe to re-announce transactions from the mempool.
+	// Returns false if a block is currently being executed to avoid re-announcing transactions
+	// with nonces that will be invalidated once the block commits.
+	CanReannounce() bool
 }
 
 type BlockProcessor interface {
