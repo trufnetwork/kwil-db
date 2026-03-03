@@ -3,8 +3,8 @@ package validation
 // max name lengths
 const (
 	// postgres limits identifiers to 63, but we need to reserve space
-	// for prefixes. 32 is a reasonable limit.
-	MAX_IDENT_NAME_LENGTH = 32
+	// for prefixes. 64 is a reasonable limit.
+	MAX_IDENT_NAME_LENGTH = 64
 )
 
 // table restrictions
