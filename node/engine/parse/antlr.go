@@ -2507,8 +2507,8 @@ func (s *schemaVisitor) validateVariableIdentifier(i antlr.ParserRuleContext, st
 	}
 }
 
-// pg max is 63, but Kwil sometimes adds extra characters
-var maxIdentifierLength = 32
+// pg max is 63, but we use 64 to support existing long identifiers.
+var maxIdentifierLength = 64
 
 // createDefaultValueFromLiteral creates a DefaultValue from a literal value.
 // Only literal values are supported for security and performance reasons.
