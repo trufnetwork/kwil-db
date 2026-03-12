@@ -240,10 +240,11 @@ func (tc SchemaTest) Run(ctx context.Context, opts *Options) error {
 				defer tx2.Rollback(ctx)
 
 				platform := &Platform{
-					Engine:   interp,
-					DB:       tx2,
-					Deployer: deployer,
-					Logger:   opts.Logger,
+					Engine:     interp,
+					DB:         tx2,
+					Deployer:   deployer,
+					Logger:     opts.Logger,
+					Validators: votes,
 				}
 
 				// deploy schemas
@@ -450,6 +451,10 @@ type Platform struct {
 
 	// Logger is for logging information during execution of the test.
 	Logger Logger
+
+	// Validators provides access to the validator set for testing.
+	// Use voting.VoteStore's ForTestingAddValidator to inject validators.
+	Validators *voting.VoteStore
 
 	// lastTxid is the last transaction ID that was used.
 	lastTxid []byte
