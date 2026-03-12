@@ -12,7 +12,7 @@ func TestGetChainConf(t *testing.T) {
 	baseCfg := func() config.ERC20BridgeConfig {
 		return config.ERC20BridgeConfig{
 			RPC: map[string]string{
-				"ethereum":        "ws://localhost:8546",
+				"ethereum":         "ws://localhost:8546",
 				"arbitrum_sepolia": "ws://localhost:8547",
 			},
 		}
@@ -30,7 +30,7 @@ func TestGetChainConf(t *testing.T) {
 	t.Run("per-chain BlockSyncChunkSize", func(t *testing.T) {
 		cfg := baseCfg()
 		cfg.BlockSyncChuckSize = map[string]string{
-			"ethereum":        "500",
+			"ethereum":         "500",
 			"arbitrum_sepolia": "2000",
 		}
 		ethConf, err := getChainConf(cfg, chains.Ethereum)

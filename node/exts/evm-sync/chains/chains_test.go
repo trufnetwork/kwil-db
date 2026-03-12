@@ -24,9 +24,9 @@ func TestChainValid(t *testing.T) {
 
 func TestGetChainInfo(t *testing.T) {
 	tests := []struct {
-		chain  Chain
-		id     string
-		confs  int64
+		chain Chain
+		id    string
+		confs int64
 	}{
 		{Ethereum, "1", 12},
 		{Sepolia, "11155111", 12},
