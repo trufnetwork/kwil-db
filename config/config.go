@@ -626,8 +626,12 @@ type ERC20BridgeConfig struct {
 // Signer config will be validated by erc20 signerSvc.
 func (cfg ERC20BridgeConfig) Validate() error {
 	for chain, rpc := range cfg.RPC {
-		if err := chains.Chain(strings.ToLower(chain)).Valid(); err != nil {
-			return fmt.Errorf("erc20_bridge.rpc: %s", chain)
+		canonical := chains.Chain(strings.ToLower(chain))
+		if err := canonical.Valid(); err != nil {
+			return fmt.Errorf("erc20_bridge.rpc: invalid chain %s", chain)
+		}
+		if canonical.String() != chain {
+			return fmt.Errorf("erc20_bridge.rpc: use canonical chain name %q instead of %q", canonical.String(), chain)
 		}
 
 		// enforce websocket
@@ -739,6 +743,11 @@ func LoadConfig(filename string) (*Config, error) {
 	// Validate BlacklistConfig
 	if err := nc.P2P.Blacklist.Validate(); err != nil {
 		return nil, fmt.Errorf("p2p.blacklist: %w", err)
+	}
+
+	// Validate ERC20BridgeConfig
+	if err := nc.Erc20Bridge.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &nc, nil

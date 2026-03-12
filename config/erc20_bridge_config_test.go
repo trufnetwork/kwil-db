@@ -60,3 +60,29 @@ func TestERC20BridgeConfig_Validate_StartBlock(t *testing.T) {
 		require.Contains(t, err.Error(), "canonical chain name")
 	})
 }
+
+func TestERC20BridgeConfig_Validate_RPC(t *testing.T) {
+	t.Run("non-canonical chain key in rpc", func(t *testing.T) {
+		cfg := ERC20BridgeConfig{
+			RPC: map[string]string{
+				"Ethereum": "ws://localhost:8546",
+			},
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "erc20_bridge.rpc")
+		require.Contains(t, err.Error(), "canonical chain name")
+	})
+
+	t.Run("invalid chain in rpc", func(t *testing.T) {
+		cfg := ERC20BridgeConfig{
+			RPC: map[string]string{
+				"fake_chain": "ws://localhost:8546",
+			},
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "erc20_bridge.rpc")
+		require.Contains(t, err.Error(), "invalid chain")
+	})
+}
