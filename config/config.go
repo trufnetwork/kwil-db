@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -642,6 +643,20 @@ func (cfg ERC20BridgeConfig) Validate() error {
 		}
 		if !ethCommon.FileExist(pkPath) {
 			return fmt.Errorf("erc20_bridge.signer: private key file %s not found", pkPath)
+		}
+	}
+
+	for chain, val := range cfg.StartBlock {
+		if err := chains.Chain(strings.ToLower(chain)).Valid(); err != nil {
+			return fmt.Errorf("erc20_bridge.start_block: invalid chain %s", chain)
+		}
+
+		v, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("erc20_bridge.start_block: invalid value for chain %s: %w", chain, err)
+		}
+		if v < 0 {
+			return fmt.Errorf("erc20_bridge.start_block: value for chain %s must be non-negative", chain)
 		}
 	}
 

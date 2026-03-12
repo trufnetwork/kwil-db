@@ -196,11 +196,11 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 	if err != nil {
 		return fmt.Errorf("failed to get last seen height: %w", err)
 	}
-	logger.Infof("StartBlock of %s: %d", i.orderedSyncTopic, startBlock)
 	// If eventstore has no last seen height (returns 0), use StartBlock from config if configured
 	if startBlock == 0 && i.chainConf.StartBlock > 0 {
 		startBlock = i.chainConf.StartBlock
 	}
+	logger.Infof("effective start block of %s: %d", i.orderedSyncTopic, startBlock)
 
 	currentBlock, err := i.client.GetLatestBlock(ctx)
 	if err != nil {
