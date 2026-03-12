@@ -51,4 +51,12 @@ func TestERC20BridgeConfig_Validate_StartBlock(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "non-negative")
 	})
+
+	t.Run("non-canonical chain key in start_block", func(t *testing.T) {
+		cfg := base()
+		cfg.StartBlock = map[string]string{"Ethereum": "100"}
+		err := cfg.Validate()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "canonical chain name")
+	})
 }

@@ -200,7 +200,7 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 	if startBlock == 0 && i.chainConf.StartBlock > 0 {
 		startBlock = i.chainConf.StartBlock
 	}
-	logger.Infof("effective start block of %s: %d", i.orderedSyncTopic, startBlock)
+	logger.Infof("effective start block of %s: %d", i.chain.Name, startBlock)
 
 	currentBlock, err := i.client.GetLatestBlock(ctx)
 	if err != nil {

@@ -647,8 +647,12 @@ func (cfg ERC20BridgeConfig) Validate() error {
 	}
 
 	for chain, val := range cfg.StartBlock {
-		if err := chains.Chain(strings.ToLower(chain)).Valid(); err != nil {
+		canonical := chains.Chain(strings.ToLower(chain))
+		if err := canonical.Valid(); err != nil {
 			return fmt.Errorf("erc20_bridge.start_block: invalid chain %s", chain)
+		}
+		if canonical.String() != chain {
+			return fmt.Errorf("erc20_bridge.start_block: use canonical chain name %q instead of %q", canonical.String(), chain)
 		}
 
 		v, err := strconv.ParseInt(val, 10, 64)
