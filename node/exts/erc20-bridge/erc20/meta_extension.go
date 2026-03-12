@@ -3076,10 +3076,7 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 		return nil, fmt.Errorf("expand amount decimal failed: %w", err)
 	}
 
-	scale := n.Scale()
-	if scale > decimals {
-		scale = decimals
-	}
+	scale := min(n.Scale(), decimals)
 
 	err = n.SetPrecisionAndScale(uint256Precision-decimals, scale)
 	if err != nil {

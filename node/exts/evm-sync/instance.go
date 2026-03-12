@@ -257,10 +257,7 @@ func (l *listenerInfo) listen(ctx context.Context, service *common.Service, even
 				return
 			case <-time.After(recoveryDelay):
 				// Increase delay with exponential backoff, capped at max
-				recoveryDelay = recoveryDelay * recoveryBackoffMultiplier
-				if recoveryDelay > maxRecoveryDelay {
-					recoveryDelay = maxRecoveryDelay
-				}
+				recoveryDelay = min(recoveryDelay*recoveryBackoffMultiplier, maxRecoveryDelay)
 				continue
 			}
 		}
@@ -312,10 +309,7 @@ func (l *listenerInfo) listen(ctx context.Context, service *common.Service, even
 				return
 			case <-time.After(recoveryDelay):
 				// Increase delay with exponential backoff, capped at max
-				recoveryDelay = recoveryDelay * recoveryBackoffMultiplier
-				if recoveryDelay > maxRecoveryDelay {
-					recoveryDelay = maxRecoveryDelay
-				}
+				recoveryDelay = min(recoveryDelay*recoveryBackoffMultiplier, maxRecoveryDelay)
 			}
 		} else {
 			// Listener returned without error (shouldn't happen in normal operation)
