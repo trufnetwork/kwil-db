@@ -212,13 +212,12 @@ func TestApplyDepositLogSkipsInactiveInstance(t *testing.T) {
 	require.NoError(t, err, "deposit to inactive instance should be silently skipped")
 }
 
-// TestEmptyEpochStalenessTimeout verifies that the staleness timeout logic
-// correctly distinguishes between epochs within the grace period (should wait)
-// and epochs past the grace period (should auto-finalize).
+// TestEmptyEpochStalenessTimeout verifies the isWithinEmptyEpochGracePeriod
+// helper that the endblock handler uses to decide whether to wait or
+// auto-finalize an empty epoch.
 func TestEmptyEpochStalenessTimeout(t *testing.T) {
 	distributionPeriod := int64(600) // 10 minutes
-	graceMultiplier := int64(3)
-	graceThreshold := distributionPeriod * graceMultiplier // 1800 seconds
+	graceThreshold := distributionPeriod * emptyEpochGraceMultiplier // 1800 seconds
 
 	tests := []struct {
 		name           string
@@ -261,8 +260,7 @@ func TestEmptyEpochStalenessTimeout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			staleness := tc.blockTimestamp - tc.epochStartTime
-			withinGrace := staleness < graceThreshold
-			assert.Equal(t, tc.shouldWait, withinGrace,
+			assert.Equal(t, tc.shouldWait, isWithinEmptyEpochGracePeriod(staleness, distributionPeriod),
 				"staleness=%ds, threshold=%ds", staleness, graceThreshold)
 		})
 	}

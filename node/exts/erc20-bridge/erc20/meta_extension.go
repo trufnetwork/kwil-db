@@ -60,7 +60,18 @@ const (
 	// EthereumSignedMessagePrefix is the prefix used for EIP-191 compliant message signing.
 	// This matches OpenZeppelin's MessageHashUtils.toEthSignedMessageHash() format.
 	EthereumSignedMessagePrefix = "\x19Ethereum Signed Message:\n32"
+
+	// emptyEpochGraceMultiplier is the multiplier applied to the distribution period
+	// to determine how long to wait before auto-finalizing an empty epoch.
+	emptyEpochGraceMultiplier = int64(3)
 )
+
+// isWithinEmptyEpochGracePeriod returns true if the given staleness (seconds since
+// epoch start) is still within the grace period for an empty epoch. The grace period
+// is emptyEpochGraceMultiplier × distributionPeriod.
+func isWithinEmptyEpochGracePeriod(staleness, distributionPeriod int64) bool {
+	return staleness < distributionPeriod*emptyEpochGraceMultiplier
+}
 
 var (
 	rewardExtUUIDNamespace = *types.MustParseUUID("b1f140d1-91cf-4bbe-8f78-8f17f6282fc2")
@@ -1775,14 +1786,15 @@ func init() {
 
 				if leafNum == 0 {
 					staleness := block.Timestamp - info.currentEpoch.StartTime
+					graceThreshold := info.userProvidedData.DistributionPeriod * emptyEpochGraceMultiplier
 
 					// Grace period: wait up to 3× the distribution period for rewards
 					// to arrive (deposits confirming on Ethereum, issue() calls, etc.).
 					// After that, auto-finalize the empty epoch to stop the retry loop.
-					if staleness < info.userProvidedData.DistributionPeriod*3 {
+					if isWithinEmptyEpochGracePeriod(staleness, info.userProvidedData.DistributionPeriod) {
 						if app.Service != nil && app.Service.Logger != nil {
 							app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: 0 rewards for epoch %s, waiting for grace period (%d/%ds)",
-								id, info.currentEpoch.ID, staleness, info.userProvidedData.DistributionPeriod*3)
+								id, info.currentEpoch.ID, staleness, graceThreshold)
 						}
 						return nil
 					}
@@ -1790,7 +1802,7 @@ func init() {
 					// Grace period exceeded — finalize empty epoch and advance.
 					if app.Service != nil && app.Service.Logger != nil {
 						app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Auto-finalizing empty epoch %s after %ds with 0 rewards (grace period %ds exceeded)",
-							id, info.currentEpoch.ID, staleness, info.userProvidedData.DistributionPeriod*3)
+							id, info.currentEpoch.ID, staleness, graceThreshold)
 					}
 
 					err = finalizeEmptyEpoch(ctx, app, info.currentEpoch.ID, block.Height, block.Hash[:])
