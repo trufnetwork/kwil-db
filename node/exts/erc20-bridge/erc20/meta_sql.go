@@ -93,8 +93,8 @@ func finalizeEmptyEpoch(ctx context.Context, app *common.App, epochID *types.UUI
 		confirmed = true
 	WHERE id = $id
 	`, map[string]any{
-		"id":        epochID,
-		"ended_at":  endHeight,
+		"id":         epochID,
+		"ended_at":   endHeight,
 		"block_hash": blockHash,
 	}, nil)
 }
