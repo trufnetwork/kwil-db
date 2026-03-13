@@ -37,11 +37,19 @@ func makeTestInstance(active bool) *rewardExtensionInfo {
 	}
 }
 
+// saveSingleton saves the current _SINGLETON and registers a t.Cleanup
+// to restore it, ensuring test isolation of global state.
+func saveSingleton(t *testing.T) {
+	t.Helper()
+	orig := _SINGLETON
+	t.Cleanup(func() { _SINGLETON = orig })
+}
+
 // TestEndBlockSkipsInactiveInstances verifies that the endblock ForEachInstance
 // callback skips deactivated instances. This prevents wasted CPU and ANTLR
 // parser cache growth from processing stale/misconfigured instances every block.
 func TestEndBlockSkipsInactiveInstances(t *testing.T) {
-	// Reset singleton for test isolation
+	saveSingleton(t)
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
 
 	activeInstance := makeTestInstance(true)
@@ -80,6 +88,7 @@ func TestEndBlockSkipsInactiveInstances(t *testing.T) {
 // TestEndBlockProcessesActiveInstances verifies that active instances are
 // still fully processed by the endblock callback after adding the inactive skip.
 func TestEndBlockProcessesActiveInstances(t *testing.T) {
+	saveSingleton(t)
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
 
 	inst1 := makeTestInstance(true)
@@ -112,6 +121,7 @@ func TestEndBlockProcessesActiveInstances(t *testing.T) {
 // TestEndBlockEpochUpdateSkipsInactive verifies the second ForEachInstance
 // callback (which updates in-memory epoch state) also skips inactive instances.
 func TestEndBlockEpochUpdateSkipsInactive(t *testing.T) {
+	saveSingleton(t)
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
 
 	activeInst := makeTestInstance(true)
@@ -167,6 +177,7 @@ func TestEndBlockEpochUpdateSkipsInactive(t *testing.T) {
 // TestApplyDepositLogSkipsInactiveInstance verifies that applyDepositLog
 // returns nil without processing when the instance is inactive.
 func TestApplyDepositLogSkipsInactiveInstance(t *testing.T) {
+	saveSingleton(t)
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
 
 	inactiveInst := makeTestInstance(false)

@@ -42,11 +42,24 @@ func getHeapInuse() uint64 {
 	return m.HeapInuse
 }
 
+// saveAndRestoreParseState captures the current parseCount and registers a
+// t.Cleanup that restores it and clears ANTLR caches, ensuring test isolation.
+func saveAndRestoreParseState(t *testing.T) {
+	t.Helper()
+	origCount := parseCount.Load()
+	t.Cleanup(func() {
+		parseCount.Store(origCount)
+		clearANTLRCaches()
+	})
+}
+
 // TestClearANTLRCaches verifies that clearANTLRCaches resets the ANTLR
 // global caches and that parsing still works correctly afterward.
 func TestClearANTLRCaches(t *testing.T) {
+	saveAndRestoreParseState(t)
+
 	// Parse some SQL to populate ANTLR caches
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		sql := generateUniqueSQL(i)
 		_, _ = Parse(sql) // errors expected (tables don't exist), but caches still grow
 	}
@@ -79,6 +92,8 @@ func TestClearANTLRCaches(t *testing.T) {
 // 2. ANTLR never clears these caches
 // 3. Over time (hours/days), memory grows until OOM kill
 func TestPeriodicCacheClearingBoundsMemory(t *testing.T) {
+	saveAndRestoreParseState(t)
+
 	// Reset the parse counter so we control when clearing happens
 	parseCount.Store(0)
 
@@ -91,7 +106,7 @@ func TestPeriodicCacheClearingBoundsMemory(t *testing.T) {
 	// Phase 1: Parse many unique SQL statements (enough to trigger multiple cache clears)
 	// With clearInterval=1000, parsing 3000 unique statements should trigger ~3 clears
 	const totalParses = 3000
-	for i := 0; i < totalParses; i++ {
+	for i := range totalParses {
 		sql := generateUniqueSQL(i)
 		_, _ = Parse(sql)
 	}
@@ -132,7 +147,7 @@ func TestPeriodicCacheClearingBoundsMemory(t *testing.T) {
 
 	// Parse without hitting clear threshold (stay under clearInterval)
 	const batchSize = clearInterval - 1 // just under threshold, no clear triggered
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		sql := generateUniqueSQL(totalParses + i) // use new unique SQL
 		_, _ = Parse(sql)
 	}
@@ -146,7 +161,7 @@ func TestPeriodicCacheClearingBoundsMemory(t *testing.T) {
 	beforeWithClearHeap := getHeapInuse()
 
 	// Parse 2x the batch to guarantee at least one clear cycle
-	for i := 0; i < batchSize*2; i++ {
+	for i := range batchSize * 2 {
 		sql := generateUniqueSQL(totalParses + batchSize + i)
 		_, _ = Parse(sql)
 	}
@@ -169,11 +184,13 @@ func TestPeriodicCacheClearingBoundsMemory(t *testing.T) {
 // TestParseCounterTriggersClear verifies that the parse counter correctly
 // triggers cache clearing at the expected interval.
 func TestParseCounterTriggersClear(t *testing.T) {
+	saveAndRestoreParseState(t)
+
 	// Reset counter
 	parseCount.Store(0)
 
 	// Parse exactly clearInterval-1 times — should NOT trigger a clear
-	for i := 0; i < clearInterval-1; i++ {
+	for i := range clearInterval - 1 {
 		_, _ = Parse(fmt.Sprintf("SELECT col_%d FROM tbl_%d;", i, i))
 	}
 	countBefore := parseCount.Load()
