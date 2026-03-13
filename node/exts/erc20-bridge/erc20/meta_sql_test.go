@@ -168,6 +168,72 @@ func TestCreateNewRewardInstance(t *testing.T) {
 	// These will get added when we implement the rest of the extension.
 }
 
+// TestFinalizeEmptyEpoch verifies that finalizeEmptyEpoch marks an epoch as
+// finalized and confirmed with no reward_root, and that previousEpochConfirmed
+// correctly sees it as confirmed so the next epoch can advance.
+func TestFinalizeEmptyEpoch(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	// Create instance + epoch
+	instanceID := newUUID()
+	chainInfo, _ := chains.GetChainInfoByID("1")
+	require.NoError(t, createNewRewardInstance(ctx, app, &userProvidedData{
+		ID:                 instanceID,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      zeroHex,
+		DistributionPeriod: 600,
+	}))
+
+	epoch1 := &PendingEpoch{ID: newUUID(), StartHeight: 100, StartTime: 1000}
+	require.NoError(t, createEpoch(ctx, app, epoch1, instanceID))
+
+	// Finalize empty epoch (0 rewards)
+	err = finalizeEmptyEpoch(ctx, app, epoch1.ID, 200, []byte{0xAB, 0xCD})
+	require.NoError(t, err)
+
+	// previousEpochConfirmed should now see this as existing and confirmed
+	exists, confirmed, err := previousEpochConfirmed(ctx, app, instanceID, 200)
+	require.NoError(t, err)
+	require.True(t, exists, "empty finalized epoch should exist")
+	require.True(t, confirmed, "empty finalized epoch should be auto-confirmed")
+
+	// Create next epoch — should succeed since previous is confirmed
+	epoch2 := &PendingEpoch{ID: newUUID(), StartHeight: 200, StartTime: 2000}
+	require.NoError(t, createEpoch(ctx, app, epoch2, instanceID))
+
+	// Verify the next epoch can also be finalized normally
+	amt, _ := erc20ValueFromBigInt(big.NewInt(500))
+	root := []byte{0x01, 0x02, 0x03}
+	err = finalizeEpoch(ctx, app, epoch2.ID, 300, []byte{0xEF}, root, amt)
+	require.NoError(t, err)
+
+	// Confirm epoch2 via its root
+	err = confirmEpoch(ctx, app, root)
+	require.NoError(t, err)
+
+	// previousEpochConfirmed for epoch2's end height should also work
+	exists, confirmed, err = previousEpochConfirmed(ctx, app, instanceID, 300)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.True(t, confirmed)
+}
+
 var zeroHex = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
 
 // TestWithdrawalsTableExists verifies that the withdrawals table is created by the schema

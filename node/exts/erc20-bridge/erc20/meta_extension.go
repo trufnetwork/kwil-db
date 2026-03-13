@@ -1774,10 +1774,37 @@ func init() {
 				}
 
 				if leafNum == 0 {
-					if app.Service != nil && app.Service.Logger != nil {
-						app.Service.Logger.Warnf("[ENDBLOCK] Instance %s: genMerkleTreeForEpoch returned 0 rewards for epoch ID=%s - delaying finalization",
-							id, info.currentEpoch.ID)
+					staleness := block.Timestamp - info.currentEpoch.StartTime
+
+					// Grace period: wait up to 3× the distribution period for rewards
+					// to arrive (deposits confirming on Ethereum, issue() calls, etc.).
+					// After that, auto-finalize the empty epoch to stop the retry loop.
+					if staleness < info.userProvidedData.DistributionPeriod*3 {
+						if app.Service != nil && app.Service.Logger != nil {
+							app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: 0 rewards for epoch %s, waiting for grace period (%d/%ds)",
+								id, info.currentEpoch.ID, staleness, info.userProvidedData.DistributionPeriod*3)
+						}
+						return nil
 					}
+
+					// Grace period exceeded — finalize empty epoch and advance.
+					if app.Service != nil && app.Service.Logger != nil {
+						app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Auto-finalizing empty epoch %s after %ds with 0 rewards (grace period %ds exceeded)",
+							id, info.currentEpoch.ID, staleness, info.userProvidedData.DistributionPeriod*3)
+					}
+
+					err = finalizeEmptyEpoch(ctx, app, info.currentEpoch.ID, block.Height, block.Hash[:])
+					if err != nil {
+						return err
+					}
+
+					newEpoch := newPendingEpoch(id, block)
+					err = createEpoch(ctx, app, newEpoch, id)
+					if err != nil {
+						return err
+					}
+
+					newEpochs[*id] = newEpoch
 					return nil
 				}
 

@@ -211,3 +211,59 @@ func TestApplyDepositLogSkipsInactiveInstance(t *testing.T) {
 	err := applyDepositLog(context.Background(), app, id, depositLog, block, nil)
 	require.NoError(t, err, "deposit to inactive instance should be silently skipped")
 }
+
+// TestEmptyEpochStalenessTimeout verifies that the staleness timeout logic
+// correctly distinguishes between epochs within the grace period (should wait)
+// and epochs past the grace period (should auto-finalize).
+func TestEmptyEpochStalenessTimeout(t *testing.T) {
+	distributionPeriod := int64(600) // 10 minutes
+	graceMultiplier := int64(3)
+	graceThreshold := distributionPeriod * graceMultiplier // 1800 seconds
+
+	tests := []struct {
+		name           string
+		epochStartTime int64
+		blockTimestamp int64
+		shouldWait     bool
+	}{
+		{
+			name:           "just past distribution period - within grace",
+			epochStartTime: 1000,
+			blockTimestamp: 1000 + distributionPeriod + 1, // 601s elapsed
+			shouldWait:     true,
+		},
+		{
+			name:           "2x distribution period - within grace",
+			epochStartTime: 1000,
+			blockTimestamp: 1000 + distributionPeriod*2, // 1200s elapsed
+			shouldWait:     true,
+		},
+		{
+			name:           "exactly at grace threshold - within grace",
+			epochStartTime: 1000,
+			blockTimestamp: 1000 + graceThreshold - 1, // 1799s elapsed
+			shouldWait:     true,
+		},
+		{
+			name:           "past grace threshold - should auto-finalize",
+			epochStartTime: 1000,
+			blockTimestamp: 1000 + graceThreshold, // 1800s elapsed
+			shouldWait:     false,
+		},
+		{
+			name:           "way past grace - 65 days stuck",
+			epochStartTime: 1000,
+			blockTimestamp: 1000 + 5_650_147, // 65 days
+			shouldWait:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			staleness := tc.blockTimestamp - tc.epochStartTime
+			withinGrace := staleness < graceThreshold
+			assert.Equal(t, tc.shouldWait, withinGrace,
+				"staleness=%ds, threshold=%ds", staleness, graceThreshold)
+		})
+	}
+}

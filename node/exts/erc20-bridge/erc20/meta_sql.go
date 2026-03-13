@@ -80,6 +80,25 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 	}, nil)
 }
 
+// finalizeEmptyEpoch marks an epoch as finalized and confirmed in one step
+// when it has zero rewards. It sets ended_at and block_hash but leaves
+// reward_root and reward_amount as NULL/zero. The epoch is auto-confirmed
+// because there are no rewards to distribute and nothing for validators to vote on.
+// This prevents the stuck epoch loop where empty epochs retry finalization every block.
+func finalizeEmptyEpoch(ctx context.Context, app *common.App, epochID *types.UUID, endHeight int64, blockHash []byte) error {
+	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+	{kwil_erc20_meta}UPDATE epochs
+	SET ended_at = $ended_at,
+		block_hash = $block_hash,
+		confirmed = true
+	WHERE id = $id
+	`, map[string]any{
+		"id":        epochID,
+		"ended_at":  endHeight,
+		"block_hash": blockHash,
+	}, nil)
+}
+
 // confirmEpoch confirms an epoch was received on-chain.
 // Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
