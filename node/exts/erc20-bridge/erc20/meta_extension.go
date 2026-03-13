@@ -1836,7 +1836,10 @@ func init() {
 
 		// now that we are done with recursive calls, we can update the singleton
 		return getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
-			if !info.active {
+			info.mu.RLock()
+			active := info.active
+			info.mu.RUnlock()
+			if !active {
 				return nil
 			}
 
