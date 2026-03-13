@@ -174,7 +174,7 @@ func ForTestingAddValidatorSignatureToEpoch(ctx context.Context, platform *kwilT
 	err := platform.Engine.ExecuteWithoutEngineCtx(ctx, platform.DB, `
 		{kwil_erc20_meta}SELECT id, reward_root, block_hash
 		FROM epochs
-		WHERE instance_id = $id AND confirmed IS TRUE
+		WHERE instance_id = $id AND confirmed IS TRUE AND reward_root IS NOT NULL
 		ORDER BY created_at_block DESC
 		LIMIT 1`,
 		map[string]any{"id": id},
