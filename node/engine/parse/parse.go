@@ -7,10 +7,43 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	"github.com/antlr4-go/antlr/v4"
 	"github.com/trufnetwork/kwil-db/node/engine/parse/gen"
 )
+
+// parseCount tracks the number of parse calls since the last ANTLR cache clear.
+var parseCount atomic.Int64
+
+// clearInterval controls how often the ANTLR caches are cleared.
+// The ANTLR4 PredictionContextCache and DFA states are shared global
+// caches that grow unboundedly over time, causing memory leaks in
+// long-running processes. Periodically resetting them bounds memory
+// usage at the cost of briefly re-warming the caches.
+const clearInterval = 1000
+
+// clearANTLRCaches resets the shared ANTLR4 global caches
+// (PredictionContextCache and DFA states) to prevent unbounded memory growth.
+// These caches are shared across all parser/lexer instances via static data
+// and are never cleared by ANTLR itself.
+func clearANTLRCaches() {
+	// Reset parser caches
+	gen.KuneiformParserParserStaticData.PredictionContextCache = antlr.NewPredictionContextCache()
+	if parserATN := gen.ParserATN(); parserATN != nil {
+		for i, state := range parserATN.DecisionToState {
+			gen.SetParserDFA(i, antlr.NewDFA(state, i))
+		}
+	}
+
+	// Reset lexer caches
+	gen.KuneiformLexerLexerStaticData.PredictionContextCache = antlr.NewPredictionContextCache()
+	if lexerATN := gen.LexerATN(); lexerATN != nil {
+		for i, state := range lexerATN.DecisionToState {
+			gen.SetLexerDFA(i, antlr.NewDFA(state, i))
+		}
+	}
+}
 
 // ParseResult is the result of parsing a SQL statement.
 // It can be any statement, including:
@@ -79,6 +112,13 @@ func ParseWithErrListener(sql string) (p *ParseResult, err error) {
 }
 
 func setupParser(sql string) (parser *gen.KuneiformParser, errList *errorListener, parserVisitor *schemaVisitor, deferFn func(any) error, err error) {
+	// Periodically clear ANTLR caches to prevent unbounded memory growth.
+	// The ANTLR4 PredictionContextCache and DFA states are global singletons
+	// that accumulate entries over time and are never cleared by the library.
+	if parseCount.Add(1)%clearInterval == 0 {
+		clearANTLRCaches()
+	}
+
 	// trim whitespace
 	sql = strings.TrimSpace(sql)
 

@@ -1707,6 +1707,13 @@ func init() {
 			info.mu.RLock()
 			defer info.mu.RUnlock()
 
+			// Skip deactivated instances — they cannot receive deposits or
+			// distribute rewards, so running epoch finalization is wasted work
+			// and unnecessarily grows the ANTLR parser cache.
+			if !info.active {
+				return nil
+			}
+
 			// DEBUG: Log entry into end_block check
 			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
 			if app.Service != nil && app.Service.Logger != nil {
@@ -1829,6 +1836,10 @@ func init() {
 
 		// now that we are done with recursive calls, we can update the singleton
 		return getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
+			if !info.active {
+				return nil
+			}
+
 			newEpoch, ok := newEpochs[*id]
 			if ok {
 				info.mu.Lock()
@@ -2810,6 +2821,20 @@ func (nilEthFilterer) SubscribeFilterLogs(ctx context.Context, q ethereum.Filter
 //
 // TODO(migration): Simplify to only TrufNetworkBridge format once all deployments migrated.
 func applyDepositLog(ctx context.Context, app *common.App, id *types.UUID, log ethtypes.Log, block *common.BlockContext, fromAddr *ethcommon.Address) error {
+	// Skip deposits to inactive instances — listeners are stopped on disable,
+	// so this only catches rare in-flight resolutions proposed before deactivation.
+	if info, ok := getSingleton().instances.Get(*id); ok {
+		info.mu.RLock()
+		active := info.active
+		info.mu.RUnlock()
+		if !active {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("skipping deposit for inactive instance %s (tx=%s)", id, log.TxHash.Hex())
+			}
+			return nil
+		}
+	}
+
 	var recipient ethcommon.Address
 	var amount *big.Int
 	var err error
