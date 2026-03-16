@@ -20,6 +20,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/rpc/transport"
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/extensions/hooks"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node"
 	"github.com/trufnetwork/kwil-db/node/accounts"
@@ -172,6 +173,12 @@ func buildServer(ctx context.Context, d *coreDependencies) *server {
 		jsonRPCAdminServer.RegisterSvc(jsonRPCTxSvc)
 		jsonRPCAdminServer.RegisterSvc(&funcsvc.Service{})
 		jsonRPCAdminServer.RegisterSvc(jsonChainSvc)
+
+		for _, hook := range hooks.ListAdminServerHooks() {
+			if err := hook(jsonRPCAdminServer); err != nil {
+				failBuild(err, "admin server hook failed")
+			}
+		}
 	}
 
 	erc20BridgeSignerMgr := buildErc20BridgeSignerMgr(d, db, e, node, bp)

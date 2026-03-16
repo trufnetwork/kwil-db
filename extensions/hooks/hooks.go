@@ -6,6 +6,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/utils/order"
+	rpcserver "github.com/trufnetwork/kwil-db/node/services/jsonrpc"
 )
 
 // GenesisHook is a function that is run exactly once, at network genesis.
@@ -126,8 +127,37 @@ func ListEngineReadyHooks() []EngineReadyHook {
 	return hooks
 }
 
+// AdminServerHook is called after the admin JSON-RPC server is created.
+// Extensions can use it to register additional services on the admin server.
+type AdminServerHook func(server *rpcserver.Server) error
+
+var adminServerHooks map[string]AdminServerHook
+
+// RegisterAdminServerHook registers an AdminServerHook to be called after the admin server is created.
+// The name can be anything, as long as it is unique.
+func RegisterAdminServerHook(name string, hook AdminServerHook) error {
+	_, ok := adminServerHooks[name]
+	if ok {
+		return fmt.Errorf("admin server hook with name %s already exists", name)
+	}
+
+	adminServerHooks[name] = hook
+	return nil
+}
+
+// ListAdminServerHooks returns a list of all registered AdminServerHooks.
+func ListAdminServerHooks() []AdminServerHook {
+	var hooks []AdminServerHook
+	for _, hook := range order.OrderMap(adminServerHooks) {
+		hooks = append(hooks, hook.Value)
+	}
+
+	return hooks
+}
+
 func init() {
 	genesisHooks = make(map[string]GenesisHook)
 	endBlockHooks = make(map[string]EndBlockHook)
 	engineReadyHooks = make(map[string]EngineReadyHook)
+	adminServerHooks = make(map[string]AdminServerHook)
 }
