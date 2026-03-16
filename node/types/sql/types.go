@@ -25,7 +25,7 @@ type Int64er interface {
 
 // Int64 attempts to convert a value to an int64. This works for any built-in
 // integer type, an Int64Valuer, an Int64er, or an Int64errer.
-func Int64(val interface{}) (int64, bool) {
+func Int64(val any) (int64, bool) {
 	switch v := val.(type) {
 	case Int64Valuer:
 		iv, err := v.Int64Value()

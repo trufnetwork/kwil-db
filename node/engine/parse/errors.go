@@ -185,7 +185,7 @@ func (e *errorListener) RuleErr(ctx antlr.ParserRuleContext, err error, msg stri
 }
 
 // SyntaxError implements the Antlr error listener interface.
-func (e *errorListener) SyntaxError(recognizer antlr.Recognizer, offendingSymbol interface{}, line, column int,
+func (e *errorListener) SyntaxError(recognizer antlr.Recognizer, offendingSymbol any, line, column int,
 	msg string, ex antlr.RecognitionException) {
 
 	pos := unaryNode(line, column)

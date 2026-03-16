@@ -9,7 +9,7 @@ import (
 func TestInt64(t *testing.T) {
 	tests := []struct {
 		name   string
-		val    interface{}
+		val    any
 		want   int64
 		wantOK bool
 	}{

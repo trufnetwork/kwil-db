@@ -21,10 +21,10 @@ func GenRewardMerkleTree(users []string, amounts []*big.Int, contractAddress str
 		return nil, nil, fmt.Errorf("users and amounts length not equal")
 	}
 
-	values := [][]interface{}{}
+	values := [][]any{}
 	for i, v := range users {
 		values = append(values,
-			[]interface{}{
+			[]any{
 				smt.SolAddress(v),
 				amounts[i],
 				smt.SolAddress(contractAddress),

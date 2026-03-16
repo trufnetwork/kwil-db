@@ -726,7 +726,7 @@ func (s *schemaVisitor) VisitCreate_table_statement(ctx *gen.Create_table_statem
 	return stmt
 }
 
-func (s *schemaVisitor) VisitTable_column_def(ctx *gen.Table_column_defContext) interface{} {
+func (s *schemaVisitor) VisitTable_column_def(ctx *gen.Table_column_defContext) any {
 	column := &Column{
 		Name:        s.getIdent(ctx.Identifier()),
 		Type:        ctx.Type_().Accept(s).(*types.DataType),
@@ -787,7 +787,7 @@ func (s *schemaVisitor) VisitFk_constraint(ctx *gen.Fk_constraintContext) any {
 	return c
 }
 
-func (s *schemaVisitor) VisitFk_action(ctx *gen.Fk_actionContext) interface{} {
+func (s *schemaVisitor) VisitFk_action(ctx *gen.Fk_actionContext) any {
 	act := &ForeignKeyAction{}
 	switch {
 	case ctx.UPDATE() != nil:
@@ -1018,7 +1018,7 @@ func (s *schemaVisitor) VisitCreate_index_statement(ctx *gen.Create_index_statem
 	return a
 }
 
-func (s *schemaVisitor) VisitDrop_index_statement(ctx *gen.Drop_index_statementContext) interface{} {
+func (s *schemaVisitor) VisitDrop_index_statement(ctx *gen.Drop_index_statementContext) any {
 	a := &DropIndexStatement{
 		Name: s.getIdent(ctx.Identifier()),
 	}
@@ -2482,8 +2482,7 @@ func (s *schemaVisitor) VisitWindow(ctx *gen.WindowContext) any {
 	return win
 }
 
-func (s *schemaVisitor) Visit(tree antlr.ParseTree) interface {
-} {
+func (s *schemaVisitor) Visit(tree antlr.ParseTree) any {
 	return tree.Accept(s)
 }
 

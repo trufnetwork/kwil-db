@@ -95,7 +95,7 @@ func TestBeaconClient_SkipCheckForL2(t *testing.T) {
 func TestBeaconClient_MockFinality(t *testing.T) {
 	testCases := []struct {
 		name              string
-		serverResponse    interface{}
+		serverResponse    any
 		serverStatusCode  int
 		serverError       bool
 		expectedFinalized bool

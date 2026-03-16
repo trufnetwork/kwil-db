@@ -1597,7 +1597,7 @@ type LoopTermRange struct {
 	End Expression
 }
 
-func (e *LoopTermRange) Accept(v Visitor) interface{} {
+func (e *LoopTermRange) Accept(v Visitor) any {
 	return v.VisitLoopTermRange(e)
 }
 
@@ -1607,7 +1607,7 @@ type LoopTermSQL struct {
 	Statement *SQLStatement
 }
 
-func (e *LoopTermSQL) Accept(v Visitor) interface{} {
+func (e *LoopTermSQL) Accept(v Visitor) any {
 	return v.VisitLoopTermSQL(e)
 }
 
@@ -1622,7 +1622,7 @@ type LoopTermExpression struct {
 	Expression Expression
 }
 
-func (e *LoopTermExpression) Accept(v Visitor) interface{} {
+func (e *LoopTermExpression) Accept(v Visitor) any {
 	return v.VisitLoopTermExpression(e)
 }
 

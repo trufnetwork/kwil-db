@@ -1307,7 +1307,7 @@ type Expression interface {
 
 // Literal value
 type Literal struct {
-	Value interface{}
+	Value any
 	Type  *types.DataType
 }
 
