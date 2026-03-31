@@ -216,7 +216,7 @@ func TestApplyDepositLogSkipsInactiveInstance(t *testing.T) {
 // helper that the endblock handler uses to decide whether to wait or
 // auto-finalize an empty epoch.
 func TestEmptyEpochStalenessTimeout(t *testing.T) {
-	distributionPeriod := int64(600) // 10 minutes
+	distributionPeriod := int64(600)                                 // 10 minutes
 	graceThreshold := distributionPeriod * emptyEpochGraceMultiplier // 1800 seconds
 
 	tests := []struct {
