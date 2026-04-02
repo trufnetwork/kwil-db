@@ -11,10 +11,6 @@ import (
 	"github.com/trufnetwork/kwil-db/node/utils/syncmap"
 )
 
-type releaser interface {
-	Release()
-}
-
 // nestedTx is returned from the BeginTx method of both dbTx or another
 // nestedTx. The underlying pgx.Tx is embedded so we do not need to redefine the
 // Commit and Rollback methods.
@@ -74,7 +70,6 @@ func (tx *nestedTx) AccessMode() sql.AccessMode {
 type dbTx struct {
 	*nestedTx      // should embed pgx.Tx
 	db         *DB // for top level DB lifetime mgmt
-	tracked    *trackedTx
 	accessMode sql.AccessMode
 }
 

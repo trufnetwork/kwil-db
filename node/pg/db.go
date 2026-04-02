@@ -405,7 +405,6 @@ func (db *DB) beginTx(ctx context.Context, sequenced bool) (*dbTx, error) {
 	return &dbTx{
 		nestedTx:   ntx,
 		db:         db,
-		tracked:    tracked,
 		accessMode: sql.ReadWrite,
 	}, nil
 }
@@ -665,6 +664,9 @@ func (db *DB) commit(ctx context.Context) error {
 	}
 
 	// Case 2: Prepared tx → commit prepared (single-tx backward compatible path).
+	// This commits the last entry in preparedTxns (LIFO) because in the single-tx
+	// path there is exactly one. For multi-tx blocks, use CommitAll() instead,
+	// which iterates preparedTxns in FIFO order.
 	if len(db.preparedTxns) == 0 {
 		return errors.New("no tx exists")
 	}
