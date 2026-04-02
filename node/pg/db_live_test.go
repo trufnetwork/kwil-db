@@ -1867,6 +1867,168 @@ func Test_CancelListen(t *testing.T) {
 	require.Len(t, received, 10)
 }
 
+// TestMultiPreparedTxns tests the multi-transaction tracking introduced
+// in Phase 1 of the 2PC refactor. It verifies:
+//  1. Two transactions can be prepared sequentially and committed with CommitAll
+//  2. Two transactions can be prepared and rolled back with RollbackAll
+//  3. Prepare 1 tx, begin 2nd (unprepared), RollbackAll cleans up both
+func TestMultiPreparedTxns(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := NewDB(ctx, cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Setup: create test table.
+	db.AutoCommit(true)
+	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS multi_tx_test (id INT8, val TEXT)`)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `DELETE FROM multi_tx_test`)
+	require.NoError(t, err)
+	db.AutoCommit(false)
+
+	t.Run("CommitAll", func(t *testing.T) {
+		// Tx 1: insert row.
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (1, 'tx1')`)
+		require.NoError(t, err)
+		cid1, err := tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+		require.NotEmpty(t, cid1)
+
+		// Tx 2: insert different row.
+		tx2, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx2.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (2, 'tx2')`)
+		require.NoError(t, err)
+		cid2, err := tx2.Precommit(ctx, nil)
+		require.NoError(t, err)
+		require.NotEmpty(t, cid2)
+
+		// Commit IDs should differ (different data).
+		require.NotEqual(t, cid1, cid2)
+
+		// CommitAll.
+		err = db.CommitAll(ctx)
+		require.NoError(t, err)
+
+		// Verify both rows visible.
+		res, err := db.Query(ctx, `SELECT id, val FROM multi_tx_test ORDER BY id`)
+		require.NoError(t, err)
+		require.Len(t, res.Rows, 2)
+		require.Equal(t, int64(1), res.Rows[0][0])
+		require.Equal(t, "tx1", res.Rows[0][1])
+		require.Equal(t, int64(2), res.Rows[1][0])
+		require.Equal(t, "tx2", res.Rows[1][1])
+
+		// Cleanup.
+		db.AutoCommit(true)
+		_, _ = db.Execute(ctx, `DELETE FROM multi_tx_test`)
+		db.AutoCommit(false)
+	})
+
+	t.Run("RollbackAll_prepared", func(t *testing.T) {
+		// Tx 1.
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (3, 'tx3')`)
+		require.NoError(t, err)
+		_, err = tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		// Tx 2.
+		tx2, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx2.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (4, 'tx4')`)
+		require.NoError(t, err)
+		_, err = tx2.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		// RollbackAll.
+		err = db.RollbackAll(ctx)
+		require.NoError(t, err)
+
+		// Verify no rows.
+		res, err := db.Query(ctx, `SELECT id FROM multi_tx_test`)
+		require.NoError(t, err)
+		require.Len(t, res.Rows, 0)
+	})
+
+	t.Run("RollbackAll_mixed", func(t *testing.T) {
+		// Tx 1: prepared.
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (5, 'tx5')`)
+		require.NoError(t, err)
+		_, err = tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		// Tx 2: active (not prepared).
+		tx2, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx2.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (6, 'tx6')`)
+		require.NoError(t, err)
+		// Don't precommit tx2 — it's still active.
+
+		// RollbackAll should clean up both.
+		err = db.RollbackAll(ctx)
+		require.NoError(t, err)
+
+		// Verify no rows.
+		res, err := db.Query(ctx, `SELECT id FROM multi_tx_test`)
+		require.NoError(t, err)
+		require.Len(t, res.Rows, 0)
+	})
+
+	// Cleanup: drop table.
+	db.AutoCommit(true)
+	_, _ = db.Execute(ctx, `DROP TABLE IF EXISTS multi_tx_test`)
+	db.AutoCommit(false)
+}
+
+// TestSingleTxPathUnchanged verifies the original single-tx path
+// (BeginPreparedTx → Precommit → Commit) still works after the refactor.
+func TestSingleTxPathUnchanged(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := NewDB(ctx, cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	db.AutoCommit(true)
+	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS single_tx_test (id INT8, val TEXT)`)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `DELETE FROM single_tx_test`)
+	require.NoError(t, err)
+	db.AutoCommit(false)
+
+	// Classic single-tx path.
+	tx, err := db.BeginPreparedTx(ctx)
+	require.NoError(t, err)
+
+	_, err = tx.Execute(ctx, `INSERT INTO single_tx_test (id, val) VALUES (1, 'hello')`)
+	require.NoError(t, err)
+
+	cid, err := tx.Precommit(ctx, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, cid)
+
+	err = tx.Commit(ctx)
+	require.NoError(t, err)
+
+	// Verify.
+	res, err := db.Query(ctx, `SELECT id, val FROM single_tx_test`)
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1)
+	require.Equal(t, int64(1), res.Rows[0][0])
+
+	// Cleanup.
+	db.AutoCommit(true)
+	_, _ = db.Execute(ctx, `DROP TABLE IF EXISTS single_tx_test`)
+	db.AutoCommit(false)
+}
+
 func Test_DeleteMe(t *testing.T) {
 	ctx := context.Background()
 
