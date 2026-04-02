@@ -74,6 +74,7 @@ func (tx *nestedTx) AccessMode() sql.AccessMode {
 type dbTx struct {
 	*nestedTx      // should embed pgx.Tx
 	db         *DB // for top level DB lifetime mgmt
+	tracked    *trackedTx
 	accessMode sql.AccessMode
 }
 
@@ -102,17 +103,11 @@ func (tx *dbTx) Subscribe(ctx context.Context) (ch <-chan string, done func(cont
 
 // Commit commits the transaction. This partly satisfies sql.Tx.
 func (tx *dbTx) Commit(ctx context.Context) error {
-	if rel, ok := tx.nestedTx.Tx.(releaser); ok {
-		defer rel.Release()
-	}
 	return tx.db.commit(ctx)
 }
 
 // Rollback rolls back the transaction. This partly satisfies sql.Tx.
 func (tx *dbTx) Rollback(ctx context.Context) error {
-	if rel, ok := tx.nestedTx.Tx.(releaser); ok {
-		defer rel.Release()
-	}
 	return tx.db.rollback(ctx)
 }
 

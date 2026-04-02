@@ -50,18 +50,44 @@ type DB struct {
 
 	// Guarantee that we are in-session by tracking and using a Tx for the write methods.
 	mtx        sync.Mutex
-	autoCommit bool   // skip the explicit transaction (begin/commit automatically)
-	tx         pgx.Tx // interface
-	txid       string // uid of the prepared transaction
-	seq        int64
+	autoCommit bool // skip the explicit transaction (begin/commit automatically)
 
-	// NOTE: this was initially designed for a single ongoing write transaction,
-	// held in the tx field, and the (*DB).Execute method using it *implicitly*.
-	// We have moved toward using the Execute method of the transaction returned
-	// by BeginTx/BeginPreparedTx/BeginReadTx, and we can potentially allow
-	// multiple uncommitted write transactions to support a 2 phase commit of
-	// different stores using the same pg.DB instance. This will take refactoring
-	// of the DB and concrete transaction type methods.
+	// Writer connection lifecycle: acquired on first BeginPreparedTx/BeginTx,
+	// released after all transactions are committed/rolled back.
+	writerConn    *pgx.Conn // raw connection from the writer pool
+	writerRelease func()    // returns the connection to the pool
+
+	// Multiple write transaction tracking for two-phase commit.
+	// activeTx is the current in-progress transaction (not yet prepared).
+	// preparedTxns are transactions that have been prepared but not yet committed.
+	activeTx     *trackedTx
+	preparedTxns []*trackedTx
+}
+
+// trackedTx represents a single tracked write transaction.
+type trackedTx struct {
+	tx   pgx.Tx // the pgx transaction (nil after PREPARE TRANSACTION cleanup)
+	txid string // prepared transaction name (empty if not yet prepared)
+	seq  int64  // sentry sequence (-1 if not sequenced)
+}
+
+// releaseWriter releases the writer connection back to the pool.
+// Must be called with db.mtx held (or during close).
+func (db *DB) releaseWriter() {
+	if db.writerRelease != nil {
+		db.writerRelease()
+		db.writerConn = nil
+		db.writerRelease = nil
+	}
+}
+
+// releaseWriterIfDone releases the writer connection if there are
+// no active or prepared transactions remaining.
+// Must be called with db.mtx held.
+func (db *DB) releaseWriterIfDone() {
+	if db.activeTx == nil && len(db.preparedTxns) == 0 {
+		db.releaseWriter()
+	}
 }
 
 func isConnClosed(err error) bool {
@@ -76,14 +102,9 @@ func (db *DB) failConn(err error) error {
 	// To preserve deterministic replay we surface a fatal ErrDBFailure so the node
 	// restarts and replays the block from the last committed height.
 	logger.Errorf("writer transaction connection lost: %v", err)
-	if db.tx != nil {
-		if rel, ok := db.tx.(releaser); ok {
-			rel.Release()
-		}
-	}
-	db.tx = nil
-	db.txid = ""
-	db.seq = -1
+	db.activeTx = nil
+	db.preparedTxns = nil
+	db.releaseWriter()
 	return errors.Join(sql.ErrDBFailure, err)
 }
 
@@ -172,7 +193,7 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 	// Clean up orphaned prepared transaction that may have been left over from
 	// an unclean shutdown. If we don't, postgres will hang on query.
 	if _, err = rollbackPreparedTxns(ctx, conn); err != nil {
-		return nil, fmt.Errorf("failed to create publication: %w", err)
+		return nil, fmt.Errorf("failed to rollback orphaned prepared transactions: %w", err)
 	}
 
 	// Create the NOCASE collation to emulate SQLite's collation.
@@ -237,7 +258,6 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 		repl:   repl,
 		cancel: cancel,
 		ctx:    runCtx,
-		seq:    -1,
 	}
 
 	// Supervise the replication stream monitor. If it dies (repl.done chan
@@ -296,7 +316,7 @@ func (db *DB) EnsureFullReplicaIdentityDatasets(ctx context.Context) error {
 func (db *DB) Close() error {
 	db.cancel(nil)
 	db.repl.stop()
-	if db.tx == nil {
+	if db.activeTx == nil && len(db.preparedTxns) == 0 {
 		return db.pool.Close()
 	}
 
@@ -304,24 +324,30 @@ func (db *DB) Close() error {
 	// ignored, but we will rollback the tx so we don't hang or leak
 	// postgresql resources.
 
-	if db.txid != "" {
-		logger.Warnln("Rolling back PREPARED transaction", db.txid)
-		// With PREPARE TRANSACTION already done, rollback the prepared transaction.
-		sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.txid)
-		if _, err := db.tx.Exec(context.Background(), sqlRollback); err != nil {
-			return fmt.Errorf("ROLLBACK PREPARED failed: %w", err)
+	if db.activeTx != nil {
+		if db.activeTx.txid != "" {
+			logger.Warnln("Rolling back PREPARED active transaction", db.activeTx.txid)
+			sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.activeTx.txid)
+			if _, err := db.writerConn.Exec(context.Background(), sqlRollback); err != nil {
+				logger.Warnf("ROLLBACK PREPARED failed: %v", err)
+			}
+		} else if db.activeTx.tx != nil {
+			logger.Warnln("Rolling back regular transaction")
+			db.activeTx.tx.Rollback(context.Background())
 		}
-		// We don't use Rollback, which normally releases automatically.
-		if rel, ok := db.tx.(releaser); ok {
-			rel.Release()
-		}
-		db.txid = ""
-	} else { // otherwise regular rollback
-		logger.Warnln("Rolling back regular transaction")
-		db.tx.Rollback(context.Background())
+		db.activeTx = nil
 	}
 
-	db.tx = nil
+	for _, prepared := range db.preparedTxns {
+		logger.Warnln("Rolling back PREPARED transaction", prepared.txid)
+		sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, prepared.txid)
+		if _, err := db.writerConn.Exec(context.Background(), sqlRollback); err != nil {
+			logger.Warnf("ROLLBACK PREPARED failed: %v", err)
+		}
+	}
+	db.preparedTxns = nil
+
+	db.releaseWriter()
 	db.pool.Close()
 	panic("Closed the DB with an active transaction, probably forgot to rollback the tx somewhere!")
 }
@@ -347,7 +373,7 @@ func (db *DB) Err() error {
 func (db *DB) AutoCommit(auto bool) {
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
-	if db.tx != nil {
+	if db.activeTx != nil {
 		panic("already in a tx")
 	}
 	db.autoCommit = auto
@@ -366,19 +392,20 @@ var _ sql.PreparedTxMaker = (*DB)(nil) // for dataset Registry
 // it will work as intended, but the replication monitor will warn about an
 // unexpected sequence update in the transaction.
 func (db *DB) beginTx(ctx context.Context, sequenced bool) (*dbTx, error) {
-	tx, err := db.beginWriterTx(ctx, sequenced)
+	tracked, err := db.beginWriterTx(ctx, sequenced)
 	if err != nil {
 		return nil, err
 	}
 
 	ntx := &nestedTx{
-		Tx:         tx,
+		Tx:         tracked.tx,
 		accessMode: sql.ReadWrite,
 		oidTypes:   db.pool.idTypes,
 	}
 	return &dbTx{
 		nestedTx:   ntx,
 		db:         db,
+		tracked:    tracked,
 		accessMode: sql.ReadWrite,
 	}, nil
 }
@@ -496,59 +523,45 @@ func (db *DB) BeginDelayedReadTx() sql.OuterReadTx {
 	return &delayedReadTx{db: db}
 }
 
-type writeTxWrapper struct {
-	pgx.Tx
-	release func()
-}
-
-func (txw *writeTxWrapper) Release() {
-	txw.release()
-}
-
-func (txw *writeTxWrapper) Commit(ctx context.Context) error {
-	defer txw.release()
-	return txw.Tx.Commit(ctx)
-}
-
-func (txw *writeTxWrapper) Rollback(ctx context.Context) error {
-	defer txw.release()
-	return txw.Tx.Rollback(ctx)
-}
-
 // beginWriterTx is the critical section of BeginTx.
 // It creates a new transaction on the write connection, and stores it in the
 // DB's tx field. It is not exported, and is only called from BeginTx.
-func (db *DB) beginWriterTx(ctx context.Context, sequenced bool) (pgx.Tx, error) {
+func (db *DB) beginWriterTx(ctx context.Context, sequenced bool) (*trackedTx, error) {
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	if db.tx != nil {
+	if db.activeTx != nil {
 		return nil, errors.New("writer tx exists")
 	}
 
-	writer, err := db.pool.writer.Acquire(ctx)
-	if err != nil {
-		return nil, err
+	// Acquire writer connection if not already held (held across multiple
+	// prepared transactions within a block).
+	if db.writerConn == nil {
+		writer, err := db.pool.writer.Acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		db.writerConn = writer.Conn()
+		db.writerRelease = writer.Release
 	}
 
-	tx, err := writer.BeginTx(ctx, pgx.TxOptions{
+	tx, err := db.writerConn.BeginTx(ctx, pgx.TxOptions{
 		AccessMode: pgx.ReadWrite,
 		IsoLevel:   pgx.ReadUncommitted, // consider if ReadCommitted would be fine. uncommitted refers to other transactions, not needed
 	})
 	if err != nil {
-		writer.Release()
+		db.releaseWriterIfDone()
 		return nil, err
 	}
 
-	// Make the tx available to Execute and QueryPending.
-	db.tx = &writeTxWrapper{
-		Tx:      tx,
-		release: writer.Release,
+	tracked := &trackedTx{
+		tx:  tx,
+		seq: -1,
 	}
+	db.activeTx = tracked
 
 	if !sequenced {
-		db.seq = -1 // should already be
-		return db.tx, nil
+		return tracked, nil
 	}
 
 	// Do the seq update in sentry table. This ensures a replication message
@@ -556,18 +569,19 @@ func (db *DB) beginWriterTx(ctx context.Context, sequenced bool) (pgx.Tx, error)
 	// from it includes the expected seq value.
 	seq, err := incrementSeq(ctx, tx)
 	if err != nil {
-		// writeTxWrapper.Rollback will release the connection
-		if err2 := db.tx.Rollback(context.Background()); err2 != nil {
-			db.tx = nil // clear the tx regardless of error
+		if err2 := tx.Rollback(context.Background()); err2 != nil {
+			db.activeTx = nil
+			db.releaseWriterIfDone()
 			return nil, fmt.Errorf("failed to rollback: %w", errors.Join(err, err2))
 		}
-		db.tx = nil
+		db.activeTx = nil
+		db.releaseWriterIfDone()
 		return nil, err
 	}
 	logger.Debugf("updated seq to %d", seq)
-	db.seq = seq
+	tracked.seq = seq
 
-	return db.tx, nil
+	return tracked, nil
 }
 
 // precommit finalizes the transaction with a prepared transaction and returns
@@ -578,37 +592,50 @@ func (db *DB) precommit(ctx context.Context, changes chan<- any) ([]byte, error)
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	if db.tx == nil || db.seq == -1 {
+	if db.activeTx == nil || db.activeTx.seq == -1 {
 		return nil, errors.New("no tx exists")
 	}
 
 	// track the changes, and set the changeset writer
-	resChan, ok := db.repl.recvID(db.seq, changes)
+	resChan, ok := db.repl.recvID(db.activeTx.seq, changes)
 	if !ok { // commitID will not be available, error. There is no recovery presently.
 		return nil, errors.New("replication connection is down")
 	}
 
 	txid := random.String(10)
 	sqlPrepareTx := fmt.Sprintf(`PREPARE TRANSACTION '%s'`, txid)
-	if _, err := db.tx.Exec(ctx, sqlPrepareTx); err != nil {
+	if _, err := db.activeTx.tx.Exec(ctx, sqlPrepareTx); err != nil {
 		if isConnClosed(err) {
 			return nil, db.failConn(err)
 		}
 		return nil, err
 	}
-	db.txid = txid
+	db.activeTx.txid = txid
 
-	logger.Debugf("prepared transaction %q", db.txid)
+	logger.Debugf("prepared transaction %q", db.activeTx.txid)
+
+	// Clean up the pgx.Tx state since PREPARE TRANSACTION ended the PG-level
+	// transaction. The pgx.Tx sends COMMIT which PG responds to with
+	// "WARNING: there is no transaction in progress" — this is expected and
+	// allows the writer connection to be reused for subsequent transactions.
+	if err := db.activeTx.tx.Commit(ctx); err != nil && isConnClosed(err) {
+		return nil, db.failConn(err)
+	}
+	db.activeTx.tx = nil
 
 	// Wait for the "commit id" from the replication monitor.
+	// NOTE: activeTx is not moved to preparedTxns until commitID is received.
+	// If the wait fails, the caller can rollback the active tx (which has txid set).
 	select {
 	case commitID, ok := <-resChan:
 		if !ok {
 			return nil, errors.New("resChan unexpectedly closed")
 		}
 		logger.Debugf("received commit ID %x", commitID)
-		// The transaction is ready to commit, stored in a file with postgres in
-		// the pg_twophase folder of the pg cluster data_directory.
+		// Success — move to prepared list. The transaction is ready to commit,
+		// stored in a file with postgres in the pg_twophase folder.
+		db.preparedTxns = append(db.preparedTxns, db.activeTx)
+		db.activeTx = nil
 		return commitID, nil
 	case <-db.repl.done: // the replMon has died after we executed PREPARE TRANSACTION
 		return nil, errors.New("replication stream interrupted")
@@ -623,14 +650,11 @@ func (db *DB) commit(ctx context.Context) error {
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	if db.tx == nil {
-		return errors.New("no tx exists")
-	}
-	if db.txid == "" {
-		// Allow commit without two-phase prepare
-		err := db.tx.Commit(ctx)
-		db.tx = nil
-		db.seq = -1
+	// Case 1: Active non-prepared tx → regular commit.
+	if db.activeTx != nil && db.activeTx.txid == "" {
+		err := db.activeTx.tx.Commit(ctx)
+		db.activeTx = nil
+		db.releaseWriterIfDone()
 		if err != nil {
 			if isConnClosed(err) {
 				return db.failConn(err)
@@ -640,38 +664,31 @@ func (db *DB) commit(ctx context.Context) error {
 		return nil
 	}
 
-	defer func() {
-		if db.tx == nil {
-			return
-		}
-		sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.txid)
-		db.txid = ""
-		db.seq = -1
-		if _, err := db.tx.Exec(ctx, sqlRollback); err != nil {
-			logger.Warnf("ROLLBACK PREPARED failed: %v", err)
-		}
-		// We don't use Commit, which normally releases automatically.
-		if rel, ok := db.tx.(releaser); ok {
-			rel.Release()
-		}
-		db.tx = nil
-	}()
+	// Case 2: Prepared tx → commit prepared (single-tx backward compatible path).
+	if len(db.preparedTxns) == 0 {
+		return errors.New("no tx exists")
+	}
 
-	sqlCommit := fmt.Sprintf(`COMMIT PREPARED '%s'`, db.txid)
-	if _, err := db.tx.Exec(ctx, sqlCommit); err != nil {
+	prepared := db.preparedTxns[len(db.preparedTxns)-1]
+
+	sqlCommit := fmt.Sprintf(`COMMIT PREPARED '%s'`, prepared.txid)
+	if _, err := db.writerConn.Exec(ctx, sqlCommit); err != nil {
 		if isConnClosed(err) {
 			return db.failConn(fmt.Errorf("commit prepared: %w", err))
 		}
+		// Commit failed — try to rollback the prepared tx.
+		sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, prepared.txid)
+		if _, rbErr := db.writerConn.Exec(ctx, sqlRollback); rbErr != nil {
+			logger.Warnf("ROLLBACK PREPARED failed: %v", rbErr)
+		}
+		db.preparedTxns = db.preparedTxns[:len(db.preparedTxns)-1]
+		db.releaseWriterIfDone()
 		return fmt.Errorf("COMMIT PREPARED failed: %w", err)
 	}
 
-	// Success, the defer should not try to rollback, and we should forget about
-	// this prepared transaction's name, otherwise a future tx rollback prior to
-	// prepare will try to rollback this old prepared txn.
-	db.tx = nil
-	db.txid = ""
-	db.seq = -1
-
+	// Success.
+	db.preparedTxns = db.preparedTxns[:len(db.preparedTxns)-1]
+	db.releaseWriterIfDone()
 	return nil
 }
 
@@ -681,19 +698,18 @@ func (db *DB) rollback(ctx context.Context) error {
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	if db.tx == nil {
+	if db.activeTx == nil {
 		return errors.New("no tx exists")
 	}
 
 	defer func() {
-		db.tx = nil
-		db.txid = ""
-		db.seq = -1
+		db.activeTx = nil
+		db.releaseWriterIfDone()
 	}()
 
 	// If precommit not yet done, do a regular rollback.
-	if db.txid == "" {
-		err := db.tx.Rollback(ctx)
+	if db.activeTx.txid == "" {
+		err := db.activeTx.tx.Rollback(ctx)
 		if err == nil {
 			return nil
 		}
@@ -703,18 +719,10 @@ func (db *DB) rollback(ctx context.Context) error {
 		return err
 	}
 
-	defer func() {
-		// We don't use Rollback, which normally releases automatically.
-		if rel, ok := db.tx.(releaser); ok {
-			rel.Release()
-		}
-	}()
-
-	// With precommit already done, rollback the prepared transaction, and do
-	// not do the regular rollback, which is a no-op that emits a warning
-	// notice: "WARNING:  there is no transaction in progress".
-	sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.txid)
-	if _, err := db.tx.Exec(ctx, sqlRollback); err != nil {
+	// With precommit done (txid set, pgx.Tx already cleaned up), rollback
+	// the prepared transaction via the writer connection.
+	sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.activeTx.txid)
+	if _, err := db.writerConn.Exec(ctx, sqlRollback); err != nil {
 		if isConnClosed(err) {
 			return db.failConn(fmt.Errorf("rollback prepared: %w", err))
 		}
@@ -722,6 +730,87 @@ func (db *DB) rollback(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// CommitAll commits all prepared transactions in order, then releases
+// the writer connection. This is the multi-transaction commit path.
+func (db *DB) CommitAll(ctx context.Context) error {
+	db.mtx.Lock()
+	defer db.mtx.Unlock()
+
+	if db.activeTx != nil {
+		return errors.New("cannot CommitAll with an active (non-prepared) transaction")
+	}
+
+	if len(db.preparedTxns) == 0 {
+		return errors.New("no prepared transactions to commit")
+	}
+
+	for i, prepared := range db.preparedTxns {
+		sqlCommit := fmt.Sprintf(`COMMIT PREPARED '%s'`, prepared.txid)
+		if _, err := db.writerConn.Exec(ctx, sqlCommit); err != nil {
+			// Rollback remaining (uncommitted) prepared txns.
+			for j := i; j < len(db.preparedTxns); j++ {
+				sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.preparedTxns[j].txid)
+				if _, rbErr := db.writerConn.Exec(ctx, sqlRollback); rbErr != nil {
+					logger.Warnf("ROLLBACK PREPARED %q failed: %v", db.preparedTxns[j].txid, rbErr)
+				}
+			}
+			db.preparedTxns = nil
+			db.releaseWriter()
+			if isConnClosed(err) {
+				return db.failConn(fmt.Errorf("commit prepared %q: %w", prepared.txid, err))
+			}
+			return fmt.Errorf("COMMIT PREPARED %q failed: %w", prepared.txid, err)
+		}
+	}
+
+	db.preparedTxns = nil
+	db.releaseWriter()
+	return nil
+}
+
+// RollbackAll rolls back all prepared transactions and any active transaction,
+// then releases the writer connection.
+func (db *DB) RollbackAll(ctx context.Context) error {
+	db.mtx.Lock()
+	defer db.mtx.Unlock()
+
+	var firstErr error
+
+	// Rollback active transaction.
+	if db.activeTx != nil {
+		if db.activeTx.txid == "" && db.activeTx.tx != nil {
+			// Regular rollback.
+			if err := db.activeTx.tx.Rollback(ctx); err != nil && !isConnClosed(err) {
+				firstErr = err
+			}
+		} else if db.activeTx.txid != "" && db.writerConn != nil {
+			// Prepared but not yet moved to preparedTxns (precommit wait failed).
+			sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.activeTx.txid)
+			if _, err := db.writerConn.Exec(ctx, sqlRollback); err != nil {
+				firstErr = fmt.Errorf("ROLLBACK PREPARED %q failed: %w", db.activeTx.txid, err)
+			}
+		}
+		db.activeTx = nil
+	}
+
+	// Rollback all prepared transactions.
+	if db.writerConn != nil {
+		for _, prepared := range db.preparedTxns {
+			sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, prepared.txid)
+			if _, err := db.writerConn.Exec(ctx, sqlRollback); err != nil {
+				logger.Warnf("ROLLBACK PREPARED %q failed: %v", prepared.txid, err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("ROLLBACK PREPARED %q failed: %w", prepared.txid, err)
+				}
+			}
+		}
+	}
+	db.preparedTxns = nil
+
+	db.releaseWriter()
+	return firstErr
 }
 
 // Query performs a read-only query on a read connection.
@@ -753,13 +842,11 @@ func (db *DB) Execute(ctx context.Context, stmt string, args ...any) (*sql.Resul
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	// NOTE: if we remove the db.tx field, we'd have this top level method
-	// always function in "autoCommit" mode, with an ephemeral transaction.
-	if db.tx != nil {
+	if db.activeTx != nil {
 		if db.autoCommit {
 			return nil, errors.New("tx already created, cannot use auto commit")
 		}
-		res, err := query(ctx, db.pool.idTypes, db.tx, stmt, args...)
+		res, err := query(ctx, db.pool.idTypes, db.activeTx.tx, stmt, args...)
 		if err != nil && isConnClosed(err) {
 			return nil, db.failConn(err)
 		}
@@ -810,11 +897,11 @@ func Exec(ctx context.Context, tx sql.Executor, stmt string) error {
 	case *DB:
 		tx.mtx.Lock()
 		defer tx.mtx.Unlock()
-		if tx.tx == nil {
+		if tx.activeTx == nil {
 			return sql.ErrNoTransaction
 		}
 
-		conn = tx.tx.(conner).Conn()
+		conn = tx.activeTx.tx.(conner).Conn()
 	case conner:
 		conn = tx.Conn()
 	default:
