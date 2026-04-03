@@ -195,7 +195,6 @@ const (
 	sqlCreateSentryTable = `CREATE TABLE IF NOT EXISTS ` + sentryTableNameFull + ` (seq INT8);`
 	sqlCreateSentrySeq   = `CREATE SEQUENCE IF NOT EXISTS ` + sentrySeqName
 
-	sqlInsertSentryRow = `INSERT INTO ` + sentryTableNameFull + ` (seq) VALUES ($1);`
 	// incrementSeq uses INSERT (not UPDATE) so that each prepared transaction
 	// gets its own row, avoiding row-level lock contention between concurrent
 	// prepared transactions that would deadlock on a single-row UPDATE.
