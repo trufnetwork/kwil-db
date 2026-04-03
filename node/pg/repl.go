@@ -366,6 +366,21 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 			return false, 0, fmt.Errorf("insert: unknown relation ID %d", logicalMsg.RelationID)
 		}
 
+		// capture the seq value from sentry INSERT, before target schema filter
+		if rel.Namespace == InternalSchemaName && rel.RelationName == sentryTableName {
+			cols := logicalMsg.Tuple.Columns
+			if len(cols) != 1 {
+				logger.Warnf("not one column in sentry table insert (%d)", len(cols))
+			} else {
+				newSeq, err := cols[0].Int64()
+				if err != nil {
+					logger.Warnf("invalid sequence number in sentry table insert: %v", err)
+				} else {
+					seq = newSeq
+				}
+			}
+		}
+
 		relName := rel.Namespace + "." + rel.RelationName
 		if !okSchema(rel.Namespace) {
 			// logger.Debugf("ignoring update to relation %v", relName)

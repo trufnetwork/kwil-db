@@ -66,7 +66,12 @@ func Test_repl(t *testing.T) {
 		t.Fatalf("failed to create publication: %v", err)
 	}
 
-	_, err = connQ.Exec(ctx, sqlUpdateSentrySeq, 0)
+	// Reset sentry table to a known state.
+	_, err = connQ.Exec(ctx, `DELETE FROM `+sentryTableNameFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = connQ.Exec(ctx, sqlInsertSentryRow, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +97,7 @@ func Test_repl(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantCommitHash, _ := hex.DecodeString("d42916cd1980b7370b9adca989af0a4c5ad7e31544fd795cbfa8c2e11556d85a")
+	wantCommitHash, _ := hex.DecodeString("f8c652299dcf878f8c3f3e076d60a338f218bcc012123c28f9f54bd82d14d1cf")
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -128,8 +133,8 @@ func Test_repl(t *testing.T) {
 	tx.Exec(ctx, `update blah SET stuff = 33;`)
 	tx.Exec(ctx, `delete FROM blah where id = '{11}';`)
 	// sends on commitChan are only expected from sequenced transactions.
-	// Bump seq in the sentry table!
-	_, err = tx.Exec(ctx, sqlUpdateSentrySeq, 1)
+	// Insert a new sentry row to sequence this transaction.
+	_, err = tx.Exec(ctx, sqlInsertSentryRow, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
