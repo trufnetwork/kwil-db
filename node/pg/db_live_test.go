@@ -2280,9 +2280,9 @@ func TestAggregateChangesetHash(t *testing.T) {
 
 	// Final cleanup.
 	db.AutoCommit(true)
-	defer db.AutoCommit(false)
 	_, err = db.Execute(ctx, `DROP SCHEMA IF EXISTS ds_agghash CASCADE`, QueryModeExec)
 	require.NoError(t, err)
+	db.AutoCommit(false)
 }
 
 func Test_DeleteMe(t *testing.T) {
