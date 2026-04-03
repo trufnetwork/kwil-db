@@ -366,6 +366,19 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 			return false, 0, fmt.Errorf("insert: unknown relation ID %d", logicalMsg.RelationID)
 		}
 
+		// capture the seq value from sentry INSERT, before target schema filter
+		if rel.Namespace == InternalSchemaName && rel.RelationName == sentryTableName {
+			cols := logicalMsg.Tuple.Columns
+			if len(cols) != 1 {
+				return false, 0, fmt.Errorf("sentry table insert: expected 1 column, got %d", len(cols))
+			}
+			newSeq, err := cols[0].Int64()
+			if err != nil {
+				return false, 0, fmt.Errorf("sentry table insert: invalid sequence number: %w", err)
+			}
+			seq = newSeq
+		}
+
 		relName := rel.Namespace + "." + rel.RelationName
 		if !okSchema(rel.Namespace) {
 			// logger.Debugf("ignoring update to relation %v", relName)
@@ -396,15 +409,13 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 		if rel.Namespace == InternalSchemaName && rel.RelationName == sentryTableName {
 			cols := logicalMsg.NewTuple.Columns
 			if len(cols) != 1 {
-				logger.Warnf("not one column in sentry table update (%d)", len(cols))
-			} else {
-				newSeq, err := cols[0].Int64()
-				if err != nil {
-					logger.Warnf("invalid sequence number in sentry table update: %v", err)
-				} else {
-					seq = newSeq
-				}
+				return false, 0, fmt.Errorf("sentry table update: expected 1 column, got %d", len(cols))
 			}
+			newSeq, err := cols[0].Int64()
+			if err != nil {
+				return false, 0, fmt.Errorf("sentry table update: invalid sequence number: %w", err)
+			}
+			seq = newSeq
 		}
 
 		relName := rel.Namespace + "." + rel.RelationName

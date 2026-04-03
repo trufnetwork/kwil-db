@@ -188,13 +188,17 @@ func rollbackPreparedTxns(ctx context.Context, conn *pgx.Conn) (int, error) {
 const (
 	InternalSchemaName = "kwild_internal"
 
-	sentryTableName      = `sentry`
-	sentryTableNameFull  = InternalSchemaName + "." + sentryTableName
-	sqlCreateSentryTable = `CREATE TABLE IF NOT EXISTS ` + sentryTableNameFull + ` (seq INT8);`
+	sentryTableName     = `sentry`
+	sentryTableNameFull = InternalSchemaName + "." + sentryTableName
+	sentrySeqName       = InternalSchemaName + "." + "sentry_seq"
 
-	sqlInsertSentryRow = `INSERT INTO ` + sentryTableNameFull + ` (seq) VALUES ($1);`
-	sqlSelectSentrySeq = `SELECT seq FROM ` + sentryTableNameFull
-	sqlUpdateSentrySeq = `UPDATE ` + sentryTableNameFull + ` SET seq = $1;`
+	sqlCreateSentryTable = `CREATE TABLE IF NOT EXISTS ` + sentryTableNameFull + ` (seq INT8);`
+	sqlCreateSentrySeq   = `CREATE SEQUENCE IF NOT EXISTS ` + sentrySeqName
+
+	// incrementSeq uses INSERT (not UPDATE) so that each prepared transaction
+	// gets its own row, avoiding row-level lock contention between concurrent
+	// prepared transactions that would deadlock on a single-row UPDATE.
+	sqlInsertSentrySeq = `INSERT INTO ` + sentryTableNameFull + ` (seq) VALUES (nextval('` + sentrySeqName + `')) RETURNING seq;`
 
 	sqlCreateSchemaTemplate = `CREATE SCHEMA IF NOT EXISTS %s;`
 	sqlSchemaExists         = `SELECT schema_name
@@ -239,35 +243,49 @@ func ensureSentryTable(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-	if exists {
-		return nil
+
+	if !exists {
+		createStmt := fmt.Sprintf(sqlCreateSchemaTemplate, InternalSchemaName)
+		if _, err = conn.Exec(ctx, createStmt); err != nil {
+			return err
+		}
+		if _, err = conn.Exec(ctx, sqlCreateSentryTable); err != nil {
+			return err
+		}
 	}
 
-	createStmt := fmt.Sprintf(sqlCreateSchemaTemplate, InternalSchemaName)
-	_, err = conn.Exec(ctx, createStmt)
-	if err != nil {
+	// Create the sequence if it doesn't exist yet. This is the one-time
+	// migration from UPDATE-based sentry to INSERT-based sentry.
+	// Seed from existing rows so nextval picks up where the old approach left off.
+	// Use GREATEST to never lower the sequence below 1 (PG minimum).
+	if _, err = conn.Exec(ctx, sqlCreateSentrySeq); err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx, sqlCreateSentryTable)
-	if err != nil {
+	var maxSeq int64
+	if err = conn.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM `+sentryTableNameFull).Scan(&maxSeq); err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx, sqlInsertSentryRow, 0)
+	if maxSeq > 0 {
+		// Advance the sequence if table rows are ahead (migration path).
+		// Use GREATEST to never lower the sequence — it may be ahead due to
+		// rolled-back transactions whose nextval calls are not reversed.
+		if _, err = conn.Exec(ctx,
+			`SELECT setval('`+sentrySeqName+`', GREATEST((SELECT last_value FROM `+sentrySeqName+`), $1))`, maxSeq); err != nil {
+			return err
+		}
+	}
+
+	// Clean up old sentry rows. At startup there are no active prepared
+	// transactions (rollbackPreparedTxns already ran), so all rows are
+	// stale. This prevents unbounded table growth from INSERT-based sequencing.
+	_, err = conn.Exec(ctx, `DELETE FROM `+sentryTableNameFull)
 	return err
 }
 
 func incrementSeq(ctx context.Context, tx pgx.Tx) (int64, error) {
 	var seq int64
-	if err := tx.QueryRow(ctx, sqlSelectSentrySeq).Scan(&seq); err != nil {
-		return 0, fmt.Errorf("sentry seq scan failed: %w", err)
-	}
-	seq++
-	if res, err := tx.Exec(ctx, sqlUpdateSentrySeq, seq); err != nil {
-		return 0, fmt.Errorf("sentry seq update failed: %w", err)
-	} else if n := res.RowsAffected(); n != 1 {
-		return 0, fmt.Errorf("sentry seq update affected %d rows, not 1", n)
+	if err := tx.QueryRow(ctx, sqlInsertSentrySeq).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("sentry seq insert failed: %w", err)
 	}
 	return seq, nil
-	// NOTE: I'd like the above to be a single statement with `RETURNING seq`,
-	// but we can't get that value with Exec. At least we have a mutex locked.
 }

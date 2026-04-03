@@ -47,10 +47,9 @@ type replMon struct {
 
 	mtx      sync.Mutex
 	promises map[int64]chan []byte
-	// the map above was used to support multiple concurrent write txns, but
-	// this is never the case where one replMon is only used by one pg.DB since
-	// pg.DB disallows multiple outer write transactions. consider just making
-	// this a chan field
+	// The promise map supports multiple concurrent sentry sequences,
+	// which is required for per-transaction 2PC where each kwil tx gets
+	// its own PG transaction with a unique sentry sequence number.
 
 	// changesetWriters map[int64]io.Writer // maps the sequence number to the changeset writer
 	changesetWriter *changesetIoWriter
