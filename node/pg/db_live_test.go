@@ -2192,6 +2192,99 @@ func TestMultiSequenceReplication(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestAggregateChangesetHash verifies that AggregateChangesetHash produces
+// a deterministic, non-zero hash from multiple prepared transactions, and
+// that the result matches manually aggregating the individual commitIDs.
+func TestAggregateChangesetHash(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := NewDB(ctx, cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Setup: create test table in ds_ schema for changeset capture.
+	db.AutoCommit(true)
+	_, err = db.Execute(ctx, `CREATE SCHEMA IF NOT EXISTS ds_agghash`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `DROP TABLE IF EXISTS ds_agghash.test`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `CREATE TABLE ds_agghash.test (id INT PRIMARY KEY, val TEXT)`, QueryModeExec)
+	require.NoError(t, err)
+	db.AutoCommit(false)
+
+	t.Run("matches_manual_aggregation", func(t *testing.T) {
+		t.Cleanup(func() {
+			require.NoError(t, db.RollbackAll(ctx))
+		})
+
+		// Prepare two transactions.
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_agghash.test (id, val) VALUES (1, 'first')`)
+		require.NoError(t, err)
+		cid1, err := tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		tx2, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx2.Execute(ctx, `INSERT INTO ds_agghash.test (id, val) VALUES (2, 'second')`)
+		require.NoError(t, err)
+		cid2, err := tx2.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		// AggregateChangesetHash should return the same result as manual aggregation.
+		aggHash, err := db.AggregateChangesetHash()
+		require.NoError(t, err)
+		require.Len(t, aggHash, 32)
+
+		manualHash := aggregateCommitIDs([][]byte{cid1, cid2})
+		require.Equal(t, manualHash, aggHash,
+			"AggregateChangesetHash should match manual aggregation of [cid1, cid2]")
+
+		// The aggregated hash should differ from either individual commitID.
+		require.NotEqual(t, cid1, aggHash)
+		require.NotEqual(t, cid2, aggHash)
+
+		err = db.CommitAll(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("single_tx_aggregation", func(t *testing.T) {
+		t.Cleanup(func() {
+			require.NoError(t, db.RollbackAll(ctx))
+		})
+
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_agghash.test (id, val) VALUES (10, 'solo')`)
+		require.NoError(t, err)
+		cid1, err := tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		aggHash, err := db.AggregateChangesetHash()
+		require.NoError(t, err)
+
+		// Single ID: aggregate = SHA256(cid1), NOT cid1 itself.
+		require.NotEqual(t, cid1, aggHash,
+			"aggregated single commitID should differ from raw commitID")
+		require.Equal(t, aggregateCommitIDs([][]byte{cid1}), aggHash)
+
+		err = db.CommitAll(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("error_without_prepared_txns", func(t *testing.T) {
+		_, err := db.AggregateChangesetHash()
+		require.Error(t, err)
+	})
+
+	// Final cleanup.
+	db.AutoCommit(true)
+	_, err = db.Execute(ctx, `DROP SCHEMA IF EXISTS ds_agghash CASCADE`, QueryModeExec)
+	require.NoError(t, err)
+	db.AutoCommit(false)
+}
+
 func Test_DeleteMe(t *testing.T) {
 	ctx := context.Background()
 

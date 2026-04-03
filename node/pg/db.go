@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -66,9 +67,10 @@ type DB struct {
 
 // trackedTx represents a single tracked write transaction.
 type trackedTx struct {
-	tx   pgx.Tx // the pgx transaction (nil after PREPARE TRANSACTION cleanup)
-	txid string // prepared transaction name (empty if not yet prepared)
-	seq  int64  // sentry sequence (-1 if not sequenced)
+	tx       pgx.Tx // the pgx transaction (nil after PREPARE TRANSACTION cleanup)
+	txid     string // prepared transaction name (empty if not yet prepared)
+	seq      int64  // sentry sequence (-1 if not sequenced)
+	commitID []byte // changeset hash from WAL replication (set after successful precommit)
 }
 
 // releaseWriter releases the writer connection back to the pool.
@@ -633,6 +635,7 @@ func (db *DB) precommit(ctx context.Context, changes chan<- any) ([]byte, error)
 		logger.Debugf("received commit ID %x", commitID)
 		// Success — move to prepared list. The transaction is ready to commit,
 		// stored in a file with postgres in the pg_twophase folder.
+		db.activeTx.commitID = commitID
 		db.preparedTxns = append(db.preparedTxns, db.activeTx)
 		db.activeTx = nil
 		return commitID, nil
@@ -837,6 +840,40 @@ func (db *DB) RollbackAll(ctx context.Context) error {
 
 	db.releaseWriter()
 	return firstErr
+}
+
+// aggregateCommitIDs computes a single changeset hash from multiple per-transaction
+// commit IDs using ordered SHA256 concatenation. The hash depends on both the
+// content and order of the IDs, which is deterministic since transaction order
+// within a block is fixed.
+func aggregateCommitIDs(ids [][]byte) []byte {
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write(id)
+	}
+	return h.Sum(nil)
+}
+
+// AggregateChangesetHash returns the aggregated changeset hash from all
+// prepared transactions. For multi-transaction blocks, this produces a single
+// hash from all per-tx changeset hashes in deterministic order.
+func (db *DB) AggregateChangesetHash() ([]byte, error) {
+	db.mtx.Lock()
+	defer db.mtx.Unlock()
+
+	if len(db.preparedTxns) == 0 {
+		return nil, errors.New("no prepared transactions")
+	}
+
+	ids := make([][]byte, len(db.preparedTxns))
+	for i, ptx := range db.preparedTxns {
+		if len(ptx.commitID) == 0 {
+			return nil, fmt.Errorf("prepared tx %d has no commitID", i)
+		}
+		ids[i] = ptx.commitID
+	}
+
+	return aggregateCommitIDs(ids), nil
 }
 
 // Query performs a read-only query on a read connection.
