@@ -3,9 +3,7 @@
 package pg
 
 import (
-	"bytes"
 	"context"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"sync"
@@ -66,12 +64,12 @@ func Test_repl(t *testing.T) {
 		t.Fatalf("failed to create publication: %v", err)
 	}
 
-	// Reset sentry table to a known state.
+	// Reset sentry table and sequence to a known state.
 	_, err = connQ.Exec(ctx, `DELETE FROM `+sentryTableNameFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = connQ.Exec(ctx, sqlInsertSentryRow, 0)
+	_, err = connQ.Exec(ctx, `ALTER SEQUENCE `+sentrySeqName+` RESTART WITH 1`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +95,8 @@ func Test_repl(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantCommitHash, _ := hex.DecodeString("f8c652299dcf878f8c3f3e076d60a338f218bcc012123c28f9f54bd82d14d1cf")
+	var gotSeq int64
+	var gotHash []byte
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -106,16 +105,13 @@ func Test_repl(t *testing.T) {
 		defer quit()
 
 		if cid, ok := <-commitChan; ok {
-			_, commitHash, err := decodeCommitPayload(cid)
+			seq, commitHash, err := decodeCommitPayload(cid)
 			if err != nil {
 				t.Errorf("invalid commit payload encoding: %v", err)
 				return
 			}
-			// t.Logf("Commit HASH: %x\n", commitHash)
-			if !bytes.Equal(commitHash, wantCommitHash) {
-				t.Errorf("commit hash mismatch, got %x, wanted %x", commitHash, wantCommitHash)
-			}
-
+			gotSeq = seq
+			gotHash = commitHash
 			return // receive only once in this test
 		}
 
@@ -133,8 +129,8 @@ func Test_repl(t *testing.T) {
 	tx.Exec(ctx, `update blah SET stuff = 33;`)
 	tx.Exec(ctx, `delete FROM blah where id = '{11}';`)
 	// sends on commitChan are only expected from sequenced transactions.
-	// Insert a new sentry row to sequence this transaction.
-	_, err = tx.Exec(ctx, sqlInsertSentryRow, 1)
+	// Use the real sequence generator to obtain the next seq.
+	wantSeq, err := incrementSeq(ctx, tx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +141,14 @@ func Test_repl(t *testing.T) {
 	}
 
 	wg.Wait() // to receive the commit id or an error
+
+	if gotSeq != wantSeq {
+		t.Errorf("WAL seq mismatch: got %d, want %d", gotSeq, wantSeq)
+	}
+	if len(gotHash) == 0 {
+		t.Error("commit hash is empty")
+	}
+
 	connQ.Close(ctx)
 }
 

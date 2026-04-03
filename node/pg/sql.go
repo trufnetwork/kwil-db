@@ -253,18 +253,33 @@ func ensureSentryTable(ctx context.Context, conn *pgx.Conn) error {
 		if _, err = conn.Exec(ctx, sqlCreateSentryTable); err != nil {
 			return err
 		}
-		if _, err = conn.Exec(ctx, sqlInsertSentryRow, 0); err != nil {
+	}
+
+	// Create the sequence if it doesn't exist yet. This is the one-time
+	// migration from UPDATE-based sentry to INSERT-based sentry.
+	// Seed from existing rows so nextval picks up where the old approach left off.
+	// Use GREATEST to never lower the sequence below 1 (PG minimum).
+	if _, err = conn.Exec(ctx, sqlCreateSentrySeq); err != nil {
+		return err
+	}
+	var maxSeq int64
+	if err = conn.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM `+sentryTableNameFull).Scan(&maxSeq); err != nil {
+		return err
+	}
+	if maxSeq > 0 {
+		// Advance the sequence if table rows are ahead (migration path).
+		// Use GREATEST to never lower the sequence — it may be ahead due to
+		// rolled-back transactions whose nextval calls are not reversed.
+		if _, err = conn.Exec(ctx,
+			`SELECT setval('`+sentrySeqName+`', GREATEST((SELECT last_value FROM `+sentrySeqName+`), $1))`, maxSeq); err != nil {
 			return err
 		}
 	}
 
-	// Create the sequence (idempotent) and seed it from the current max seq
-	// so that new INSERT-based incrementSeq picks up where UPDATE-based left off.
-	if _, err = conn.Exec(ctx, sqlCreateSentrySeq); err != nil {
-		return err
-	}
-	_, err = conn.Exec(ctx,
-		`SELECT setval('`+sentrySeqName+`', GREATEST(COALESCE((SELECT MAX(seq) FROM `+sentryTableNameFull+`), 0), 1))`)
+	// Clean up old sentry rows. At startup there are no active prepared
+	// transactions (rollbackPreparedTxns already ran), so all rows are
+	// stale. This prevents unbounded table growth from INSERT-based sequencing.
+	_, err = conn.Exec(ctx, `DELETE FROM `+sentryTableNameFull)
 	return err
 }
 
