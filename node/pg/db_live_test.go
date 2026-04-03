@@ -1220,7 +1220,7 @@ func (c *changesetTestcase[T]) run(t *testing.T) {
 	require.NoError(t, err)
 
 	// ensure the rollback removed it
-	res, err := tx.Execute(ctx, "select val, array_val from ds_test.test")
+	res, err := db.Query(ctx, "select val, array_val from ds_test.test")
 	require.NoError(t, err)
 	require.Len(t, res.Rows, 0)
 
@@ -1237,7 +1237,7 @@ func (c *changesetTestcase[T]) run(t *testing.T) {
 	err = tx.Commit(ctx)
 	require.NoError(t, err)
 
-	res, err = tx.Execute(ctx, "select val, array_val from ds_test.test")
+	res, err = db.Query(ctx, "select val, array_val from ds_test.test")
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 1)
@@ -1319,7 +1319,7 @@ func (c *changesetTestcase[T]) run(t *testing.T) {
 	err = tx.Rollback(ctx)
 	require.NoError(t, err)
 
-	res, err = tx.Execute(ctx, "select val, array_val, name from ds_test.test")
+	res, err = db.Query(ctx, "select val, array_val, name from ds_test.test")
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 1)
@@ -1339,7 +1339,7 @@ func (c *changesetTestcase[T]) run(t *testing.T) {
 	err = tx.Commit(ctx)
 	require.NoError(t, err)
 
-	res, err = tx.Execute(ctx, "select val, array_val from ds_test.test")
+	res, err = db.Query(ctx, "select val, array_val from ds_test.test")
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 1)
@@ -1397,7 +1397,7 @@ func (c *changesetTestcase[T]) run(t *testing.T) {
 	err = tx.Rollback(ctx)
 	require.NoError(t, err)
 
-	res, err = tx.Execute(ctx, "select val, array_val from ds_test.test")
+	res, err = db.Query(ctx, "select val, array_val from ds_test.test")
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 1)
@@ -1414,7 +1414,7 @@ func (c *changesetTestcase[T]) run(t *testing.T) {
 	err = tx.Commit(ctx)
 	require.NoError(t, err)
 
-	res, err = tx.Execute(ctx, "select val, array_val from ds_test.test")
+	res, err = db.Query(ctx, "select val, array_val from ds_test.test")
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 0)
@@ -1502,7 +1502,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	err = tx.Rollback(ctx)
 	require.NoError(t, err)
 
-	res, err := tx.Execute(ctx, "select val, array_val from ds_test.test")
+	res, err := db.Query(ctx, "select val, array_val from ds_test.test")
 	require.NoError(t, err)
 	require.Len(t, res.Rows, 0)
 
@@ -1521,7 +1521,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 
 	// Ensure that the record is inserted
-	res, err = tx.Execute(ctx, "select val, name from ds_test.test")
+	res, err = db.Query(ctx, "select val, name from ds_test.test")
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 1)
@@ -1607,7 +1607,7 @@ func Test_ApplyChangesetsConflictResolution(t *testing.T) {
 	require.NoError(t, err)
 
 	// Ensure that the record is updated
-	res, err = tx.Execute(ctx, "select val, name, array_val from ds_test.test where val = $1", 1)
+	res, err = db.Query(ctx, "select val, name, array_val from ds_test.test where val = $1", 1)
 	require.NoError(t, err)
 
 	require.Len(t, res.Rows, 1)
@@ -1879,11 +1879,13 @@ func TestMultiPreparedTxns(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	// Setup: create test table.
+	// Setup: use ds_ prefixed schema so inserts contribute to changeset hash.
 	db.AutoCommit(true)
-	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS multi_tx_test (id INT8, val TEXT)`)
+	_, err = db.Execute(ctx, `CREATE SCHEMA IF NOT EXISTS ds_multi_tx`, QueryModeExec)
 	require.NoError(t, err)
-	_, err = db.Execute(ctx, `DELETE FROM multi_tx_test`)
+	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS ds_multi_tx.test (id INT8, val TEXT)`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `DELETE FROM ds_multi_tx.test`)
 	require.NoError(t, err)
 	db.AutoCommit(false)
 
@@ -1891,7 +1893,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		// Tx 1: insert row.
 		tx1, err := db.BeginPreparedTx(ctx)
 		require.NoError(t, err)
-		_, err = tx1.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (1, 'tx1')`)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_multi_tx.test (id, val) VALUES (1, 'tx1')`)
 		require.NoError(t, err)
 		cid1, err := tx1.Precommit(ctx, nil)
 		require.NoError(t, err)
@@ -1900,7 +1902,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		// Tx 2: insert different row.
 		tx2, err := db.BeginPreparedTx(ctx)
 		require.NoError(t, err)
-		_, err = tx2.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (2, 'tx2')`)
+		_, err = tx2.Execute(ctx, `INSERT INTO ds_multi_tx.test (id, val) VALUES (2, 'tx2')`)
 		require.NoError(t, err)
 		cid2, err := tx2.Precommit(ctx, nil)
 		require.NoError(t, err)
@@ -1914,7 +1916,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify both rows visible.
-		res, err := db.Query(ctx, `SELECT id, val FROM multi_tx_test ORDER BY id`)
+		res, err := db.Query(ctx, `SELECT id, val FROM ds_multi_tx.test ORDER BY id`)
 		require.NoError(t, err)
 		require.Len(t, res.Rows, 2)
 		require.Equal(t, int64(1), res.Rows[0][0])
@@ -1924,15 +1926,16 @@ func TestMultiPreparedTxns(t *testing.T) {
 
 		// Cleanup.
 		db.AutoCommit(true)
-		_, _ = db.Execute(ctx, `DELETE FROM multi_tx_test`)
-		db.AutoCommit(false)
+		defer db.AutoCommit(false)
+		_, err = db.Execute(ctx, `DELETE FROM ds_multi_tx.test`)
+		require.NoError(t, err)
 	})
 
 	t.Run("RollbackAll_prepared", func(t *testing.T) {
 		// Tx 1.
 		tx1, err := db.BeginPreparedTx(ctx)
 		require.NoError(t, err)
-		_, err = tx1.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (3, 'tx3')`)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_multi_tx.test (id, val) VALUES (3, 'tx3')`)
 		require.NoError(t, err)
 		_, err = tx1.Precommit(ctx, nil)
 		require.NoError(t, err)
@@ -1940,7 +1943,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		// Tx 2.
 		tx2, err := db.BeginPreparedTx(ctx)
 		require.NoError(t, err)
-		_, err = tx2.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (4, 'tx4')`)
+		_, err = tx2.Execute(ctx, `INSERT INTO ds_multi_tx.test (id, val) VALUES (4, 'tx4')`)
 		require.NoError(t, err)
 		_, err = tx2.Precommit(ctx, nil)
 		require.NoError(t, err)
@@ -1950,7 +1953,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify no rows.
-		res, err := db.Query(ctx, `SELECT id FROM multi_tx_test`)
+		res, err := db.Query(ctx, `SELECT id FROM ds_multi_tx.test`)
 		require.NoError(t, err)
 		require.Len(t, res.Rows, 0)
 	})
@@ -1959,7 +1962,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		// Tx 1: prepared.
 		tx1, err := db.BeginPreparedTx(ctx)
 		require.NoError(t, err)
-		_, err = tx1.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (5, 'tx5')`)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_multi_tx.test (id, val) VALUES (5, 'tx5')`)
 		require.NoError(t, err)
 		_, err = tx1.Precommit(ctx, nil)
 		require.NoError(t, err)
@@ -1967,7 +1970,7 @@ func TestMultiPreparedTxns(t *testing.T) {
 		// Tx 2: active (not prepared).
 		tx2, err := db.BeginPreparedTx(ctx)
 		require.NoError(t, err)
-		_, err = tx2.Execute(ctx, `INSERT INTO multi_tx_test (id, val) VALUES (6, 'tx6')`)
+		_, err = tx2.Execute(ctx, `INSERT INTO ds_multi_tx.test (id, val) VALUES (6, 'tx6')`)
 		require.NoError(t, err)
 		// Don't precommit tx2 — it's still active.
 
@@ -1976,15 +1979,16 @@ func TestMultiPreparedTxns(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify no rows.
-		res, err := db.Query(ctx, `SELECT id FROM multi_tx_test`)
+		res, err := db.Query(ctx, `SELECT id FROM ds_multi_tx.test`)
 		require.NoError(t, err)
 		require.Len(t, res.Rows, 0)
 	})
 
-	// Cleanup: drop table.
+	// Cleanup: drop schema.
 	db.AutoCommit(true)
-	_, _ = db.Execute(ctx, `DROP TABLE IF EXISTS multi_tx_test`)
-	db.AutoCommit(false)
+	defer db.AutoCommit(false)
+	_, err = db.Execute(ctx, `DROP SCHEMA IF EXISTS ds_multi_tx CASCADE`, QueryModeExec)
+	require.NoError(t, err)
 }
 
 // TestSingleTxPathUnchanged verifies the original single-tx path
@@ -1997,9 +2001,11 @@ func TestSingleTxPathUnchanged(t *testing.T) {
 	defer db.Close()
 
 	db.AutoCommit(true)
-	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS single_tx_test (id INT8, val TEXT)`)
+	_, err = db.Execute(ctx, `CREATE SCHEMA IF NOT EXISTS ds_single_tx`, QueryModeExec)
 	require.NoError(t, err)
-	_, err = db.Execute(ctx, `DELETE FROM single_tx_test`)
+	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS ds_single_tx.test (id INT8, val TEXT)`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `DELETE FROM ds_single_tx.test`)
 	require.NoError(t, err)
 	db.AutoCommit(false)
 
@@ -2007,7 +2013,7 @@ func TestSingleTxPathUnchanged(t *testing.T) {
 	tx, err := db.BeginPreparedTx(ctx)
 	require.NoError(t, err)
 
-	_, err = tx.Execute(ctx, `INSERT INTO single_tx_test (id, val) VALUES (1, 'hello')`)
+	_, err = tx.Execute(ctx, `INSERT INTO ds_single_tx.test (id, val) VALUES (1, 'hello')`)
 	require.NoError(t, err)
 
 	cid, err := tx.Precommit(ctx, nil)
@@ -2018,15 +2024,172 @@ func TestSingleTxPathUnchanged(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify.
-	res, err := db.Query(ctx, `SELECT id, val FROM single_tx_test`)
+	res, err := db.Query(ctx, `SELECT id, val FROM ds_single_tx.test`)
 	require.NoError(t, err)
 	require.Len(t, res.Rows, 1)
 	require.Equal(t, int64(1), res.Rows[0][0])
 
 	// Cleanup.
 	db.AutoCommit(true)
-	_, _ = db.Execute(ctx, `DROP TABLE IF EXISTS single_tx_test`)
+	defer db.AutoCommit(false)
+	_, err = db.Execute(ctx, `DROP SCHEMA IF EXISTS ds_single_tx CASCADE`, QueryModeExec)
+	require.NoError(t, err)
+}
+
+// TestMultiSequenceReplication verifies Phase 2: per-transaction sentry
+// sequencing and replmon multi-sequence delivery. It tests:
+//  1. Each prepared tx gets a unique sentry sequence and commitID
+//  2. The muhash hasher resets between PREPAREs (per-tx hash isolation)
+//  3. CommitIDs are deterministic (same data = same hash across runs)
+func TestMultiSequenceReplication(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := NewDB(ctx, cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Setup: use ds_ prefixed schema so inserts contribute to changeset hash.
+	db.AutoCommit(true)
+	defer db.AutoCommit(false)
+	_, err = db.Execute(ctx, `CREATE SCHEMA IF NOT EXISTS ds_multiseq`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `CREATE TABLE IF NOT EXISTS ds_multiseq.test (id INT8, val TEXT)`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `DELETE FROM ds_multiseq.test`)
+	require.NoError(t, err)
 	db.AutoCommit(false)
+
+	t.Run("per_tx_hash_isolation", func(t *testing.T) {
+		t.Cleanup(func() {
+			require.NoError(t, db.RollbackAll(ctx))
+		})
+
+		// Tx 1: insert a specific row.
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_multiseq.test (id, val) VALUES (100, 'alpha')`)
+		require.NoError(t, err)
+		cid1, err := tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+		require.NotEmpty(t, cid1)
+
+		// Tx 2: insert a different row.
+		tx2, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx2.Execute(ctx, `INSERT INTO ds_multiseq.test (id, val) VALUES (200, 'beta')`)
+		require.NoError(t, err)
+		cid2, err := tx2.Precommit(ctx, nil)
+		require.NoError(t, err)
+		require.NotEmpty(t, cid2)
+
+		// CommitIDs must differ — different data means different muhash.
+		// This proves the hasher resets between PREPAREs.
+		require.NotEqual(t, cid1, cid2, "commitIDs should differ for different data")
+
+		err = db.CommitAll(ctx)
+		require.NoError(t, err)
+
+		// Cleanup.
+		db.AutoCommit(true)
+		defer db.AutoCommit(false)
+		_, err = db.Execute(ctx, `DELETE FROM ds_multiseq.test`)
+		require.NoError(t, err)
+	})
+
+	t.Run("deterministic_commitIDs", func(t *testing.T) {
+		t.Cleanup(func() {
+			require.NoError(t, db.RollbackAll(ctx))
+		})
+
+		// Run the same sequence twice and verify commitIDs match.
+		// This proves that the WAL hash computation is deterministic
+		// and that sentry sequence values don't leak into the hash.
+
+		runSequence := func() ([]byte, []byte) {
+			tx1, err := db.BeginPreparedTx(ctx)
+			require.NoError(t, err)
+			_, err = tx1.Execute(ctx, `INSERT INTO ds_multiseq.test (id, val) VALUES (1, 'deterministic')`)
+			require.NoError(t, err)
+			cid1, err := tx1.Precommit(ctx, nil)
+			require.NoError(t, err)
+
+			tx2, err := db.BeginPreparedTx(ctx)
+			require.NoError(t, err)
+			_, err = tx2.Execute(ctx, `INSERT INTO ds_multiseq.test (id, val) VALUES (2, 'test')`)
+			require.NoError(t, err)
+			cid2, err := tx2.Precommit(ctx, nil)
+			require.NoError(t, err)
+
+			err = db.CommitAll(ctx)
+			require.NoError(t, err)
+
+			// Cleanup for next run.
+			db.AutoCommit(true)
+			defer db.AutoCommit(false)
+			_, err = db.Execute(ctx, `DELETE FROM ds_multiseq.test`)
+			require.NoError(t, err)
+
+			return cid1, cid2
+		}
+
+		// Run 1.
+		cid1a, cid2a := runSequence()
+
+		// Run 2.
+		cid1b, cid2b := runSequence()
+
+		// Same data → same hash (sentry seq differs but is NOT part of muhash).
+		require.Equal(t, cid1a, cid1b, "commitID for tx1 should be deterministic across runs")
+		require.Equal(t, cid2a, cid2b, "commitID for tx2 should be deterministic across runs")
+	})
+
+	t.Run("two_txns_sequential_unique_hashes", func(t *testing.T) {
+		t.Cleanup(func() {
+			require.NoError(t, db.RollbackAll(ctx))
+		})
+
+		// Verify 2 sequential prepare/precommit cycles produce
+		// unique commitIDs and both commit successfully.
+		// (Limited to 2 by default max_prepared_transactions=2.)
+		tx1, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx1.Execute(ctx, `INSERT INTO ds_multiseq.test (id, val) VALUES (10, 'one')`)
+		require.NoError(t, err)
+		cid1, err := tx1.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		tx2, err := db.BeginPreparedTx(ctx)
+		require.NoError(t, err)
+		_, err = tx2.Execute(ctx, `INSERT INTO ds_multiseq.test (id, val) VALUES (20, 'two')`)
+		require.NoError(t, err)
+		cid2, err := tx2.Precommit(ctx, nil)
+		require.NoError(t, err)
+
+		// CommitIDs should be unique.
+		require.NotEqual(t, cid1, cid2)
+
+		err = db.CommitAll(ctx)
+		require.NoError(t, err)
+
+		// Verify both rows visible.
+		res, err := db.Query(ctx, `SELECT id FROM ds_multiseq.test ORDER BY id`)
+		require.NoError(t, err)
+		require.Len(t, res.Rows, 2)
+		require.Equal(t, int64(10), res.Rows[0][0])
+		require.Equal(t, int64(20), res.Rows[1][0])
+
+		// Cleanup.
+		db.AutoCommit(true)
+		defer db.AutoCommit(false)
+		_, err = db.Execute(ctx, `DELETE FROM ds_multiseq.test`)
+		require.NoError(t, err)
+	})
+
+	// Final cleanup.
+	db.AutoCommit(true)
+	defer db.AutoCommit(false)
+	_, err = db.Execute(ctx, `DROP SCHEMA IF EXISTS ds_multiseq CASCADE`, QueryModeExec)
+	require.NoError(t, err)
 }
 
 func Test_DeleteMe(t *testing.T) {

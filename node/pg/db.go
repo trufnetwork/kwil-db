@@ -700,37 +700,61 @@ func (db *DB) rollback(ctx context.Context) error {
 	db.mtx.Lock()
 	defer db.mtx.Unlock()
 
-	if db.activeTx == nil {
+	// Case 1: Active transaction exists.
+	if db.activeTx != nil {
+		// If precommit not yet done, do a regular rollback.
+		if db.activeTx.txid == "" {
+			err := db.activeTx.tx.Rollback(ctx)
+			if err != nil && isConnClosed(err) {
+				return db.failConn(err)
+			}
+			// Clear tracked state on success or non-fatal error (e.g. ErrTxClosed).
+			// A plain ROLLBACK failing without a dead connection leaves pgx.Tx
+			// unusable, so keeping activeTx would not help recovery.
+			db.activeTx = nil
+			db.releaseWriterIfDone()
+			return err
+		}
+
+		// With precommit done (txid set, pgx.Tx already cleaned up), rollback
+		// the prepared transaction via the writer connection.
+		sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.activeTx.txid)
+		if _, err := db.writerConn.Exec(ctx, sqlRollback); err != nil {
+			if isConnClosed(err) {
+				return db.failConn(fmt.Errorf("rollback prepared: %w", err))
+			}
+			// Keep activeTx intact so the txid is preserved for
+			// retry or cleanup by Close().
+			return fmt.Errorf("ROLLBACK PREPARED failed: %w", err)
+		}
+
+		db.activeTx = nil
+		db.releaseWriterIfDone()
+		return nil
+	}
+
+	// Case 2: No active tx but prepared txns exist (single-tx backward compatible
+	// path, mirrors commit Case 2). This handles the scenario where Precommit
+	// moved activeTx to preparedTxns but Commit was never called (e.g., consensus
+	// halted due to AppHash mismatch).
+	if len(db.preparedTxns) == 0 {
 		return errors.New("no tx exists")
 	}
 
-	defer func() {
-		db.activeTx = nil
-		db.releaseWriterIfDone()
-	}()
+	prepared := db.preparedTxns[len(db.preparedTxns)-1]
 
-	// If precommit not yet done, do a regular rollback.
-	if db.activeTx.txid == "" {
-		err := db.activeTx.tx.Rollback(ctx)
-		if err == nil {
-			return nil
-		}
-		if isConnClosed(err) {
-			return db.failConn(err)
-		}
-		return err
-	}
-
-	// With precommit done (txid set, pgx.Tx already cleaned up), rollback
-	// the prepared transaction via the writer connection.
-	sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.activeTx.txid)
+	sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, prepared.txid)
 	if _, err := db.writerConn.Exec(ctx, sqlRollback); err != nil {
 		if isConnClosed(err) {
 			return db.failConn(fmt.Errorf("rollback prepared: %w", err))
 		}
+		// Keep preparedTxns intact so the txid is preserved for
+		// retry or cleanup by Close().
 		return fmt.Errorf("ROLLBACK PREPARED failed: %w", err)
 	}
 
+	db.preparedTxns = db.preparedTxns[:len(db.preparedTxns)-1]
+	db.releaseWriterIfDone()
 	return nil
 }
 
