@@ -55,9 +55,6 @@ type BlockProcessor struct {
 	// nodeStatus tracks runtime node state for extensions
 	nodeStatus *nodeStatus
 
-	// consensus TX
-	consensusTx sql.PreparedTx
-
 	// interfaces
 	db          DB
 	txapp       TxApp
@@ -183,11 +180,8 @@ func (bp *BlockProcessor) Close() error {
 	bp.mtx.Lock()
 	defer bp.mtx.Unlock()
 
-	if bp.consensusTx != nil {
-		bp.log.Info("Rolling back the consensus transaction")
-		if err := bp.consensusTx.Rollback(context.Background()); err != nil {
-			return fmt.Errorf("failed to rollback the consensus transaction: %w", err)
-		}
+	if err := bp.db.RollbackAll(context.Background()); err != nil {
+		return fmt.Errorf("failed to rollback transactions on close: %w", err)
 	}
 
 	return nil
@@ -197,11 +191,9 @@ func (bp *BlockProcessor) Rollback(ctx context.Context, height int64, appHash kt
 	bp.mtx.Lock()
 	defer bp.mtx.Unlock()
 
-	if bp.consensusTx != nil {
-		bp.log.Info("Rolling back the consensus transaction")
-		if err := bp.consensusTx.Rollback(context.Background()); err != nil {
-			return fmt.Errorf("failed to rollback the consensus transaction: %w", err)
-		}
+	// Rollback all prepared and active transactions.
+	if err := bp.db.RollbackAll(ctx); err != nil {
+		return fmt.Errorf("failed to rollback transactions: %w", err)
 	}
 
 	// set the block proposer back to it's previous state
@@ -365,25 +357,12 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	// Update node syncing status for extensions
 	bp.nodeStatus.setSyncing(syncing)
 
-	// TODO: TxApp.Begin is a no-op for now, un-comment when needed
-	// Begin the block execution session
-	// if err = bp.txapp.Begin(ctx, req.Height); err != nil {
-	// 	return nil, fmt.Errorf("failed to begin the block execution: %w", err)
-	// }
-
-	tx, err := bp.db.BeginPreparedTx(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin the consensus transaction: %w", err)
-	}
-	bp.consensusTx = tx
-
 	var success bool
 	defer func() {
 		if !success {
-			if err := bp.consensusTx.Rollback(context.Background()); err != nil {
-				bp.log.Warn("Failed to rollback the consensus transaction", "err", err)
+			if rbErr := bp.db.RollbackAll(context.Background()); rbErr != nil {
+				err = errors.Join(err, fmt.Errorf("rollback failed: %w", rbErr))
 			}
-			bp.consensusTx = nil
 		}
 	}()
 
@@ -407,11 +386,34 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 		Hash:         req.BlockID,
 	}
 
-	// Begin executing transactions. The chain context may be updated during the block execution.
+	// Per-transaction PostgreSQL isolation: each kwil transaction gets its own
+	// PG transaction, prepared individually via PREPARE TRANSACTION.
 	txResults := make([]ktypes.TxResult, len(req.Block.Txns))
 
 	txHashes := bp.initBlockExecutionStatus(req.Block)
 
+	// Dirty marker: prepared and committed FIRST by CommitAll so that crash
+	// recovery sees the dirty flag even if the node fails mid-CommitAll after
+	// some Phase A txns are already committed.
+	dirtyTx, err := bp.db.BeginPreparedTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin dirty marker transaction: %w", err)
+	}
+	if err := meta.SetChainState(ctx, dirtyTx, req.Height, bp.appHash[:], true); err != nil {
+		return nil, fmt.Errorf("failed to set dirty chain state: %w", err)
+	}
+	if _, err = dirtyTx.Precommit(ctx, nil); err != nil {
+		return nil, fmt.Errorf("failed to precommit dirty marker: %w", err)
+	}
+
+	// Phase A: Execute each kwil tx in its own PG transaction.
+	// NOTE: Phase A writes are PREPARED but not committed, so they are
+	// invisible to the Phase B envelope transaction. This is intentional —
+	// committing Phase A before Phase B would break block atomicity (if
+	// Phase B fails, committed Phase A data can't be rolled back). The
+	// tradeoff is that Finalize cannot see current-block user tx writes,
+	// which causes at most a one-block delay for operations like resolution
+	// processing. All nodes see the same delay, so consensus is maintained.
 	for i, tx := range req.Block.Txns {
 		identifier, err := authExt.GetIdentifier(tx.Signature.Type, tx.Sender)
 		if err != nil {
@@ -431,103 +433,121 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err() // notify the caller about the context cancellation or deadline exceeded error
+			return nil, ctx.Err()
 		default:
-			res := bp.txapp.Execute(txCtx, bp.consensusTx, tx)
-			txResult := ktypes.TxResult{
-				Code: uint32(res.ResponseCode),
-				Gas:  res.Spend,
-				Log:  res.Log,
+		}
+
+		// Start a new PG transaction for this kwil tx.
+		ptx, err := bp.db.BeginPreparedTx(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to begin tx %d: %w", i, err)
+		}
+
+		res := bp.txapp.Execute(txCtx, ptx, tx)
+		txResult := ktypes.TxResult{
+			Code: uint32(res.ResponseCode),
+			Gas:  res.Spend,
+			Log:  res.Log,
+		}
+
+		// bookkeeping for the block execution status
+		bp.updateBlockExecutionStatus(txHash)
+
+		if res.Error != nil {
+			if sql.IsFatalDBError(res.Error) {
+				return nil, fmt.Errorf("fatal db error during block execution: %w", res.Error)
 			}
 
-			// bookkeeping for the block execution status
-			bp.updateBlockExecutionStatus(txHash)
-
-			if res.Error != nil {
-				if sql.IsFatalDBError(res.Error) {
-					return nil, fmt.Errorf("fatal db error during block execution: %w", res.Error)
-				}
-
-				if txResult.Log != "" {
-					txResult.Log += "\n"
-				}
-
-				// accounts for Postgres sometimes including
-				// an ERROR: prefix
-				resErr := res.Error.Error()
-				if !strings.HasPrefix(resErr, "ERROR: ") {
-					resErr = "ERROR: " + resErr
-				}
-
-				txResult.Log += resErr
-				bp.log.Info("failed transaction", "tx", txHash, "err", res.Error)
+			if txResult.Log != "" {
+				txResult.Log += "\n"
 			}
 
-			txResults[i] = txResult
-
-			if isLeader && tx.Body.PayloadType == ktypes.PayloadTypeValidatorVoteBodies {
-				body := &ktypes.ValidatorVoteBodies{}
-				if err := body.UnmarshalBinary(tx.Body.Payload); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal validator votebody tx")
-				}
-
-				numEvents := int64(len(body.Events))
-				bp.events.UpdateStats(numEvents)
+			// accounts for Postgres sometimes including
+			// an ERROR: prefix
+			resErr := res.Error.Error()
+			if !strings.HasPrefix(resErr, "ERROR: ") {
+				resErr = "ERROR: " + resErr
 			}
+
+			txResult.Log += resErr
+			bp.log.Info("failed transaction", "tx", txHash, "err", res.Error)
+		}
+
+		txResults[i] = txResult
+
+		if isLeader && tx.Body.PayloadType == ktypes.PayloadTypeValidatorVoteBodies {
+			body := &ktypes.ValidatorVoteBodies{}
+			if err := body.UnmarshalBinary(tx.Body.Payload); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal validator votebody tx")
+			}
+
+			numEvents := int64(len(body.Events))
+			bp.events.UpdateStats(numEvents)
+		}
+
+		// Prepare this tx (makes data durable but invisible to other txns).
+		// Pass nil for changeset — the changesetIoWriter's finalize() closes
+		// the channel on each PREPARE TRANSACTION WAL message, so we cannot
+		// reuse csp.csChan across multiple precommits without a panic.
+		// Migration during per-tx execution only captures envelope changesets.
+		if _, err = ptx.Precommit(ctx, nil); err != nil {
+			return nil, fmt.Errorf("failed to precommit tx %d: %w", i, err)
 		}
 	}
 
 	// record the end time of the block execution
 	bp.recordBlockExecEndTime()
 
+	// Phase B: Envelope transaction for end-block operations (Finalize,
+	// chain state, network parameters). This is a separate PG transaction
+	// that captures operations not tied to any specific kwil tx.
+	envTx, err := bp.db.BeginPreparedTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin envelope transaction: %w", err)
+	}
+
 	// Broadcast any voteID events that have not been broadcasted yet
 	// Skip broadcasting during catch-up/sync since the node cannot process new transactions
 	if bp.broadcastTxFn != nil && !syncing {
-		if err = bp.BroadcastVoteIDTx(ctx, bp.consensusTx); err != nil {
+		if err = bp.BroadcastVoteIDTx(ctx, envTx); err != nil {
 			return nil, fmt.Errorf("failed to broadcast the voteID transactions: %w", err)
 		}
 	}
 
 	// Process resolutions and end-block hooks.
-	approvedJoins, expiredJoins, err := bp.txapp.Finalize(ctx, bp.consensusTx, blockCtx)
+	approvedJoins, expiredJoins, err := bp.txapp.Finalize(ctx, envTx, blockCtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to finalize the block execution: %w", err)
 	}
 
 	// migrator can be updated here within notify height
-	err = bp.migrator.NotifyHeight(ctx, blockCtx, bp.db, bp.consensusTx) // can modify bp.chainCtx.NetworkParameters.MigrationStatus !!!
+	err = bp.migrator.NotifyHeight(ctx, blockCtx, bp.db, envTx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to notify the migrator about the block height: %w", err)
 	}
 
-	// merge params here first
+	// merge params
 	newNetworkParams := bp.chainCtx.NetworkParameters.Clone()
 	if err := ktypes.MergeUpdates(newNetworkParams, bp.chainCtx.NetworkUpdates); err != nil {
 		return nil, err
-	} // NOTE: we could store remember newNetworkParams for Commit(), or run MergeUpdates again
-
-	// store new chain height, but with prev apphash
-	if err := meta.SetChainState(ctx, bp.consensusTx, req.Height, bp.appHash[:], true); err != nil {
-		return nil, fmt.Errorf("failed to set the chain state: %w", err)
 	}
 
-	if err := meta.StoreParams(ctx, bp.consensusTx, newNetworkParams); err != nil {
+	// NOTE: SetChainState(dirty=true) is in the dirtyTx above (committed first).
+	if err := meta.StoreParams(ctx, envTx, newNetworkParams); err != nil {
 		return nil, fmt.Errorf("failed to store the network parameters: %w", err)
 	}
 
 	// Create a new changeset processor
 	csp := newChangesetProcessor()
-	// "migrator" module subscribes to the changeset processor to store changesets during the migration
+	// Buffered so the goroutine's send never blocks even if we return early.
+	// Do NOT close — the goroutine may still send after an early return.
 	csErrChan := make(chan error, 1)
-	defer close(csErrChan)
 
 	if inMigration && !haltNetwork {
 		csChanMigrator, err := csp.Subscribe(ctx, "migrator")
 		if err != nil {
 			return nil, fmt.Errorf("failed to subscribe to changeset processor: %w", err)
 		}
-		// migrator go routine will receive changesets from the changeset processor
-		// give the new channel to the migrator to store changesets
 		go func() {
 			csErrChan <- bp.migrator.StoreChangesets(req.Height, csChanMigrator)
 		}()
@@ -535,9 +555,15 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 
 	go csp.BroadcastChangesets(ctx)
 
-	changesetID, err := bp.consensusTx.Precommit(ctx, csp.csChan)
+	// Precommit the envelope tx (with changeset channel for migration support).
+	if _, err = envTx.Precommit(ctx, csp.csChan); err != nil {
+		return nil, fmt.Errorf("failed to precommit envelope transaction: %w", err)
+	}
+
+	// Aggregate all per-tx changeset hashes + envelope hash into a single block hash.
+	changesetID, err := bp.db.AggregateChangesetHash()
 	if err != nil {
-		return nil, fmt.Errorf("failed to precommit the changeset: %w", err)
+		return nil, fmt.Errorf("failed to aggregate changeset hashes: %w", err)
 	}
 
 	valUpdates := bp.validators.ValidatorUpdates()
@@ -664,12 +690,10 @@ func (bp *BlockProcessor) Commit(ctx context.Context, req *ktypes.CommitRequest)
 	bp.mtx.Lock()
 	defer bp.mtx.Unlock()
 
-	// Commit the Postgres Consensus transaction
-	if err := bp.consensusTx.Commit(ctx); err != nil {
-		// maybe attempt rollback and set nil
+	// Commit all prepared PostgreSQL transactions (per-tx + envelope).
+	if err := bp.db.CommitAll(ctx); err != nil {
 		return err
 	}
-	bp.consensusTx = nil
 
 	// Update the active network parameters for the updates that were just committed.
 	ktypes.MergeUpdates(bp.chainCtx.NetworkParameters, bp.chainCtx.NetworkUpdates) // noop if no updates

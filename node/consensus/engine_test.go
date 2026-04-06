@@ -198,14 +198,25 @@ func generateTestCEConfig(t *testing.T, nodes int, leaderDB bool) ([]*Config, ma
 	return ceConfigs, validatorSet
 }
 
-var blockAppHash = nextHash()
+// appHashCache tracks the last computed AppHash per CE instance, avoiding
+// cross-test pollution from a package-level variable.
+var appHashCache = map[*ConsensusEngine]types.Hash{}
 
-func nextHash() types.Hash {
-	newHash, err := ktypes.NewHashFromString("10453a9c0e733d40132228fc9eae3242d2aa9e62c9e35ecdd3d8318762a29bb4")
-	if err != nil {
-		panic(err)
+// executedAppHash returns the AppHash computed during block execution.
+// If blockResult is nil (after a CE reset), returns the last known AppHash
+// for that specific CE instance.
+func executedAppHash(ce *ConsensusEngine) types.Hash {
+	if res := ce.blockResult(); res != nil {
+		appHashCache[ce] = res.appHash
+		return res.appHash
 	}
-	return newHash
+	return appHashCache[ce]
+}
+
+// clearAppHashCache removes a CE's entry from the cache.
+// Call via t.Cleanup to avoid retaining CE pointers after tests.
+func clearAppHashCache(ce *ConsensusEngine) {
+	delete(appHashCache, ce)
 }
 
 type triggerFn func(*testing.T, *ConsensusEngine, *ConsensusEngine)
@@ -382,7 +393,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commit",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp1.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp1.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp1.blk, ci, blkProp1.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -447,7 +458,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -483,7 +494,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -510,7 +521,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -564,7 +575,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -591,7 +602,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -645,7 +656,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -690,7 +701,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "commitNew",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 						val.NotifyBlockCommit(blkProp2.blk, ci, blkProp2.blkHash, nil)
 					},
 					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
@@ -717,7 +728,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "catchup",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 
 						rawBlk := ktypes.EncodeBlock(blkProp2.blk)
 						cnt := 0
@@ -756,7 +767,7 @@ func TestValidatorStateMachine(t *testing.T) {
 				{
 					name: "catchup",
 					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
-						ci := addVotes(t, blkProp2.blkHash, blockAppHash, leader, val)
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
 
 						rawBlk := ktypes.EncodeBlock(blkProp2.blk)
 						bestHeight := blkProp2.height + 10 // TODO: update test when this is used
@@ -780,9 +791,11 @@ func TestValidatorStateMachine(t *testing.T) {
 
 			leader, err := New(ceConfigs[0])
 			require.NoError(t, err)
+			t.Cleanup(func() { clearAppHashCache(leader) })
 
 			val, err := New(ceConfigs[1])
 			require.NoError(t, err)
+			t.Cleanup(func() { clearAppHashCache(val) })
 
 			ctxM := context.Background()
 			proposals := createBlockProposals(t, leader, valset)
@@ -814,6 +827,10 @@ func TestValidatorStateMachine(t *testing.T) {
 					}
 					return true
 				}, 6*time.Second, 500*time.Millisecond)
+				// Cache the AppHash after verify succeeds. When status is
+				// Executed, blockResult is available; after resets it may be
+				// nil but the cached value persists for later triggers.
+				executedAppHash(val)
 			}
 		})
 	}
@@ -912,14 +929,18 @@ func TestCELeaderTwoNodesMajorityAcks(t *testing.T) {
 		Sender:     ceConfigs[1].PrivateKey.Public().Bytes(),
 	}
 
-	time.Sleep(500 * time.Millisecond)
-	_, _, blProp := n1.info()
-	// appHash := nextAppHash()
+	// Wait for block execution to complete (same pattern as TestCELeaderTwoNodesMajorityNacks).
+	require.Eventually(t, func() bool {
+		blockRes := n1.blockResult()
+		return blockRes != nil && !blockRes.appHash.IsZero()
+	}, 6*time.Second, 100*time.Millisecond)
 
+	_, _, blProp := n1.info()
 	require.NotNil(t, blProp)
 
 	// node2 should send a vote to node1
-	sig, err := ktypes.SignVote(blProp.blkHash, true, &blockAppHash, ceConfigs[1].PrivateKey)
+	appHash := executedAppHash(n1)
+	sig, err := ktypes.SignVote(blProp.blkHash, true, &appHash, ceConfigs[1].PrivateKey)
 	assert.NoError(t, err)
 
 	vote := &vote{
@@ -927,7 +948,7 @@ func TestCELeaderTwoNodesMajorityAcks(t *testing.T) {
 			Height:    1,
 			ACK:       true,
 			BlkHash:   blProp.blkHash,
-			AppHash:   &blockAppHash,
+			AppHash:   &appHash,
 			Signature: sig,
 		},
 	}
