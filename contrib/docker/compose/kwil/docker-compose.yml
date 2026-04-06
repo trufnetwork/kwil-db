@@ -5,7 +5,7 @@ volumes:
 services:
   pg:
     container_name: postgres-kwild-single
-    image: kwildb/postgres:16.8-1
+    image: ghcr.io/trufnetwork/kwil-postgres:16.8-2
     ports:
       - "15432:5432"
     restart: always

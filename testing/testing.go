@@ -679,7 +679,7 @@ const ContainerName = "kwil-testing-postgres"
 // dockerStartArgs returns the docker start command args
 func dockerStartArgs(port string) (args []string) {
 	return []string{"run", "-d", "-p", port + ":5432", "--name", ContainerName,
-		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "kwildb/postgres:16.8-1"}
+		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "ghcr.io/trufnetwork/kwil-postgres:16.8-2"}
 }
 
 // connectWithRetry tries to connect to Postgres, and will retry n times at

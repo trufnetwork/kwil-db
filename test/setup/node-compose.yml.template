@@ -34,7 +34,7 @@
       retries: 10
 
   {{ .PGServicePrefix }}{{ .NodeNumber }}:
-    image: kwildb/postgres:16.8-1
+    image: ghcr.io/trufnetwork/kwil-postgres:16.8-2
     ports:
       - "5432"
     restart: always

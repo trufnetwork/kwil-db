@@ -73,11 +73,11 @@ easiest is to run our pre-configured Docker image:
 ```shell
 docker run -p 5432:5432 -v kwil-pg-demo:/var/lib/postgresql/data \
     --shm-size 512m -e "POSTGRES_HOST_AUTH_METHOD=trust" \
-    --name kwil-pg-demo kwildb/postgres:latest
+    --name kwil-pg-demo ghcr.io/trufnetwork/kwil-postgres:16.8-2
 ```
 
-The first time this is run, it will pull the `kwildb/postgres` image from Docker
-Hub and create a new persistent Docker volume named `kwil-pg-demo`. NOTE: This
+The first time this is run, it will pull the `kwil-postgres` image from GHCR
+and create a new persistent Docker volume named `kwil-pg-demo`. NOTE: This
 command requires no authentication with `postgres`, and should not be used in
 production.
 
