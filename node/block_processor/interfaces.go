@@ -26,6 +26,14 @@ type DB interface {
 	sql.SnapshotTxMaker
 	sql.DelayedReadTxMaker
 	sql.ReservedReadTxMaker
+
+	// CommitAll commits all prepared transactions in FIFO order.
+	CommitAll(ctx context.Context) error
+	// RollbackAll rolls back all prepared and active transactions.
+	RollbackAll(ctx context.Context) error
+	// AggregateChangesetHash combines per-tx changeset hashes into a single
+	// block-level hash using ordered SHA256 concatenation.
+	AggregateChangesetHash() ([]byte, error)
 }
 
 type Accounts interface {

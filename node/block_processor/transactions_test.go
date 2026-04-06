@@ -765,6 +765,14 @@ func (m *mockDB) BeginTx(ctx context.Context) (sql.Tx, error) {
 
 func (m *mockDB) AutoCommit(on bool) {}
 
+func (m *mockDB) CommitAll(ctx context.Context) error { return nil }
+
+func (m *mockDB) RollbackAll(ctx context.Context) error { return nil }
+
+func (m *mockDB) AggregateChangesetHash() ([]byte, error) {
+	return make([]byte, 32), nil
+}
+
 type mockTx struct{}
 
 func (m *mockTx) Subscribe(ctx context.Context) (<-chan string, func(context.Context) error, error) {

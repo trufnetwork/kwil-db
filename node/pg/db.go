@@ -775,22 +775,53 @@ func (db *DB) CommitAll(ctx context.Context) error {
 		return errors.New("no prepared transactions to commit")
 	}
 
+	// Track max sentry seq for cleanup after all commits succeed.
+	var maxSeq int64 = -1
+	for _, prepared := range db.preparedTxns {
+		if prepared.seq > maxSeq {
+			maxSeq = prepared.seq
+		}
+	}
+
 	for i, prepared := range db.preparedTxns {
 		sqlCommit := fmt.Sprintf(`COMMIT PREPARED '%s'`, prepared.txid)
 		if _, err := db.writerConn.Exec(ctx, sqlCommit); err != nil {
+			if isConnClosed(err) {
+				return db.failConn(fmt.Errorf("commit prepared %q: %w", prepared.txid, err))
+			}
 			// Rollback remaining (uncommitted) prepared txns.
+			var rollbackFailed bool
 			for j := i; j < len(db.preparedTxns); j++ {
 				sqlRollback := fmt.Sprintf(`ROLLBACK PREPARED '%s'`, db.preparedTxns[j].txid)
 				if _, rbErr := db.writerConn.Exec(ctx, sqlRollback); rbErr != nil {
 					logger.Warnf("ROLLBACK PREPARED %q failed: %v", db.preparedTxns[j].txid, rbErr)
+					if isConnClosed(rbErr) {
+						return db.failConn(fmt.Errorf("rollback after commit failure: %w", errors.Join(err, rbErr)))
+					}
+					rollbackFailed = true
 				}
 			}
+			// If rollbacks failed, txids are orphaned — force restart for recovery.
+			// If earlier txns already committed (i > 0), partial block commit
+			// also requires restart via the dirty-flag recovery path.
+			if rollbackFailed || i > 0 {
+				return db.failConn(fmt.Errorf("COMMIT PREPARED %q failed (committed %d/%d, rollback ok: %v): %w",
+					prepared.txid, i, len(db.preparedTxns), !rollbackFailed, err))
+			}
+			// i == 0 and all rollbacks succeeded: clean recovery is possible.
 			db.preparedTxns = nil
 			db.releaseWriter()
-			if isConnClosed(err) {
-				return db.failConn(fmt.Errorf("commit prepared %q: %w", prepared.txid, err))
-			}
 			return fmt.Errorf("COMMIT PREPARED %q failed: %w", prepared.txid, err)
+		}
+	}
+
+	// Clean up sentry rows from committed transactions. INSERT-based sentry
+	// sequencing creates one row per prepared transaction; delete them to
+	// prevent unbounded table growth during long uptimes.
+	if maxSeq >= 0 {
+		sqlCleanup := fmt.Sprintf(`DELETE FROM %s WHERE seq <= %d`, sentryTableNameFull, maxSeq)
+		if _, err := db.writerConn.Exec(ctx, sqlCleanup); err != nil {
+			logger.Warnf("sentry cleanup failed (non-fatal): %v", err)
 		}
 	}
 
