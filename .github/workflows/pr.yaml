@@ -43,7 +43,7 @@ jobs:
 
     services: # for unit test
       postgres:
-        image: kwildb/postgres:16.8-1
+        image: ghcr.io/trufnetwork/kwil-postgres:16.8-2
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         options: >-

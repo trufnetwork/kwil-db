@@ -20,5 +20,5 @@ COPY ./pginit.sql /docker-entrypoint-initdb.d/init.sql
 # Override the default entrypoint/command to include the additional configuration.
 # 'track_commit_timestamp' is not required, but may be useful for debugging.
 CMD ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10", \
-	"-c", "track_commit_timestamp=true", "-c", "wal_sender_timeout=0", "-c", "max_prepared_transactions=2", \
+	"-c", "track_commit_timestamp=true", "-c", "wal_sender_timeout=0", "-c", "max_prepared_transactions=200", \
 	"-c", "max_locks_per_transaction=4096", "-c", "max_connections=128"]

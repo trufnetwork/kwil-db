@@ -176,7 +176,7 @@ var settingValidations = map[string]settingValidFn{
 
 	"max_wal_senders":           wantMinIntFn(10),
 	"max_replication_slots":     wantMinIntFn(10),
-	"max_prepared_transactions": wantMinIntFn(2),
+	"max_prepared_transactions": wantMinIntFn(200),
 	"wal_sender_timeout":        orValidFn(wantIntFn(0), wantMinIntFn(3_600_000)), // ms units, 0 for no limit or 1 hr min
 
 	// We shouldn't have idle abandoned transactions, but we need to investigate
