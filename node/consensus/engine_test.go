@@ -213,6 +213,12 @@ func executedAppHash(ce *ConsensusEngine) types.Hash {
 	return appHashCache[ce]
 }
 
+// clearAppHashCache removes a CE's entry from the cache.
+// Call via t.Cleanup to avoid retaining CE pointers after tests.
+func clearAppHashCache(ce *ConsensusEngine) {
+	delete(appHashCache, ce)
+}
+
 type triggerFn func(*testing.T, *ConsensusEngine, *ConsensusEngine)
 type verifyFn func(*testing.T, *ConsensusEngine, *ConsensusEngine) error
 
@@ -785,9 +791,11 @@ func TestValidatorStateMachine(t *testing.T) {
 
 			leader, err := New(ceConfigs[0])
 			require.NoError(t, err)
+			t.Cleanup(func() { clearAppHashCache(leader) })
 
 			val, err := New(ceConfigs[1])
 			require.NoError(t, err)
+			t.Cleanup(func() { clearAppHashCache(val) })
 
 			ctxM := context.Background()
 			proposals := createBlockProposals(t, leader, valset)
