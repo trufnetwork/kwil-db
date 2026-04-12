@@ -2,6 +2,7 @@ package logical
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 )
@@ -467,8 +468,8 @@ func (r *rewriteVisitor) VisitWindowFunction(p0 *WindowFunction) any {
 // execFields executes the given fields in the correct order.
 func (r *rewriteVisitor) execFields(fields []func()) {
 	if r.reverseFieldOrder {
-		for i := len(fields) - 1; i >= 0; i-- {
-			fields[i]()
+		for _, v := range slices.Backward(fields) {
+			v()
 		}
 	} else {
 		for _, f := range fields {
