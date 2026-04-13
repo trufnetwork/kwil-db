@@ -28,12 +28,9 @@ var mets metrics.ConsensusMetrics = metrics.Consensus
 
 const (
 	// maxNumTxnsInBlock is the maximum number of transactions we will put in a
-	// block proposal. Remaining transactions stay in the mempool and are
-	// included in the next block (~1s later via ProposeTimeout).
-	// Combined with per-insert row caps, this bounds worst-case block
-	// execution time and prevents superlinear compounding within a single
-	// PostgreSQL transaction.
-	maxNumTxnsInBlock = 15
+	// block proposal. Currently set to a billion, which is basically no limit
+	// since block size in bytes will hit first.
+	maxNumTxnsInBlock = 1 << 30
 
 	defaultProposeTimeout = 1 * time.Second
 )
