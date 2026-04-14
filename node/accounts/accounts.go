@@ -407,14 +407,15 @@ func (a *Accounts) createAccount(ctx context.Context, tx sql.Executor, account *
 	if !ok {
 		return fmt.Errorf("invalid key type: %s", account.KeyType)
 	}
+
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
 	if err := createAccount(ctx, tx, account.Identifier, kd.EncodeFlag(), amt, nonce); err != nil {
 		return err
 	}
 
-	// Record the account creation in the updates
-	a.mtx.Lock()
-	defer a.mtx.Unlock()
-
+	// Record in-memory
 	a.updates[acctMapKey(account)] = &types.Account{
 		ID:      account,
 		Balance: big.NewInt(0).Set(amt),
@@ -429,14 +430,15 @@ func (a *Accounts) updateAccount(ctx context.Context, tx sql.Executor, account *
 	if !ok {
 		return fmt.Errorf("invalid key type: %s", account.KeyType)
 	}
+
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
 	if err := updateAccount(ctx, tx, account.Identifier, kd.EncodeFlag(), amount, nonce); err != nil {
 		return err
 	}
 
-	// Record the account update in the updates
-	a.mtx.Lock()
-	defer a.mtx.Unlock()
-
+	// Update the in-memory cache.
 	a.updates[acctMapKey(account)] = &types.Account{
 		ID:      account,
 		Balance: big.NewInt(0).Set(amount),
