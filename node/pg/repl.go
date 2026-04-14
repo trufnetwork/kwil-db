@@ -66,7 +66,12 @@ func startRepl(ctx context.Context, conn *pgconn.PgConn, publicationName, slotNa
 	// means: (1) there must only be one pg.DB instance per postgres database,
 	// and (2) other unsequenced writers such as a pg.Pool must not make updates
 	// to the sentry table that would cause a send with no receiver.
-	commitHash := make(chan []byte, 1)
+	// Buffer must accommodate all tracked commits in a single block.
+	// With per-transaction 2PC, each block produces up to maxTxnsPerBlock + 2
+	// prepared transactions (dirty marker + N user txns + envelope).
+	// A buffer of 1 caused the replication stream to die under load,
+	// leading to a consensus freeze (see INCIDENT_2PC_HANG_2026-04-13).
+	commitHash := make(chan []byte, 32)
 
 	// Tie captureRepl goroutine to a new context now that connections are established.
 	ctx2, cancel := context.WithCancel(context.Background())
