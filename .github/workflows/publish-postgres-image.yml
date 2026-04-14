@@ -42,7 +42,9 @@ jobs:
           context: ./contrib/docker
           file: ./contrib/docker/postgres.dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/kwil-postgres:${{ inputs.tag }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/kwil-postgres:${{ inputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/kwil-postgres:latest
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
