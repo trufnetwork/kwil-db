@@ -125,13 +125,14 @@ func (v *validatorSignerImpl) CreateSecp256k1Signer() (auth.Signer, error) {
 	return &auth.EthPersonalSigner{Key: *secp256k1Key}, nil
 }
 
-// validatePurpose checks if the signing purpose is allowed.
+// validatePurpose checks if the signing purpose is allowed. The allowed set
+// is common.AllValidatorPurposes — the same list the signprofiles coverage
+// test iterates, so authz and registry cannot drift apart silently.
 func (v *validatorSignerImpl) validatePurpose(purpose string) error {
-	switch purpose {
-	case common.PurposeEpochVoting, common.PurposeWithdrawalSig, common.PurposeGnosisSafeSigning:
-		return nil
-	default:
-		return fmt.Errorf("unauthorized signing purpose: %s", purpose)
+	for _, allowed := range common.AllValidatorPurposes {
+		if purpose == allowed {
+			return nil
+		}
 	}
+	return fmt.Errorf("unauthorized signing purpose: %s", purpose)
 }
-

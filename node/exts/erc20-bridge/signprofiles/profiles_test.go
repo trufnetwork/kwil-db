@@ -43,19 +43,13 @@ func TestAllProfilesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestForPurpose_AllKnownPurposesHaveProfiles asserts the authz list
-// (common.Purpose*) and the format registry agree. If someone adds a new
-// purpose constant without a profile (or vice versa), this fails and points
-// at the specific missing pairing.
+// TestForPurpose_AllKnownPurposesHaveProfiles asserts the authz list and the
+// format registry agree. Both sides read common.AllValidatorPurposes, so the
+// test verifies every validator-authorized purpose has a registered profile.
+// Adding a purpose to the canonical list without registering a profile (or
+// vice versa) fails here and points at the specific missing pairing.
 func TestForPurpose_AllKnownPurposesHaveProfiles(t *testing.T) {
-	// The full set of currently-valid purposes. Keep in sync with
-	// app/node/validator_signer.go:validatePurpose.
-	knownPurposes := []string{
-		common.PurposeEpochVoting,
-		common.PurposeWithdrawalSig,
-		common.PurposeGnosisSafeSigning,
-	}
-	for _, purpose := range knownPurposes {
+	for _, purpose := range common.AllValidatorPurposes {
 		t.Run(purpose, func(t *testing.T) {
 			p, err := signprofiles.ForPurpose(purpose)
 			require.NoErrorf(t, err, "purpose %q has no profile in signprofiles.byPurpose", purpose)

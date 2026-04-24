@@ -88,8 +88,11 @@ func ForPurpose(purpose string) (*SigningProfile, error) {
 }
 
 // All returns every registered profile, used by the round-trip property test
-// and by any tooling that enumerates signing formats. The returned slice is a
-// fresh copy; callers may append without affecting the registry.
+// and by any tooling that enumerates signing formats. The slice header is
+// fresh (callers may append without affecting the registry), but its elements
+// are *SigningProfile pointers that alias the registry entries — treat them
+// as read-only. Mutating a returned element's Format or Verify field would
+// corrupt every future lookup. Clone the value first if mutation is needed.
 func All() []*SigningProfile {
 	out := make([]*SigningProfile, 0, len(byPurpose))
 	for _, p := range byPurpose {
@@ -99,13 +102,26 @@ func All() []*SigningProfile {
 }
 
 // addToV builds a Format closure that adds c to the V byte of a 65-byte
-// ECDSA signature. Non-65-byte inputs pass through unchanged so Format never
-// panics on malformed input — callers should have length-checked already.
+// ECDSA signature. It panics on malformed input rather than silently
+// producing a wrong signature that fails verification somewhere downstream:
+//   - len(raw) != 65: crypto.Sign always returns 65 bytes; anything else is
+//     a programming error at the caller.
+//   - raw[64] >= 2: crypto.Sign returns V ∈ {0, 1}. A V already ≥ 2 means
+//     Format has been applied twice, which would wrap V into an unverifiable
+//     value silently.
+//
+// Both conditions are invariants, not runtime states, so panic is the right
+// loudness — an accidental double-Format would otherwise reproduce exactly
+// the 2026-04-24 eth_usdc failure mode this package was built to prevent.
 func addToV(c byte) func([]byte) []byte {
 	return func(raw []byte) []byte {
-		if len(raw) == 65 {
-			raw[64] += c
+		if len(raw) != 65 {
+			panic(fmt.Sprintf("signprofiles: expected 65-byte signature, got %d", len(raw)))
 		}
+		if raw[64] >= 2 {
+			panic(fmt.Sprintf("signprofiles: V byte already formatted (V=%d); Format applied twice?", raw[64]))
+		}
+		raw[64] += c
 		return raw
 	}
 }
