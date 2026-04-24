@@ -31,7 +31,7 @@ type SigningProfile struct {
 
 	// Format adjusts a raw ECDSA signature (V ∈ {0, 1}, as returned by
 	// crypto.Sign) into whatever final on-wire encoding Verify expects.
-	// Mutates raw in place and returns it for chaining.
+	// Returns a fresh slice; raw is not modified.
 	Format func(raw []byte) []byte
 
 	// Verify is the *actual* verifier the signature will meet at runtime —
@@ -101,8 +101,8 @@ func All() []*SigningProfile {
 	return out
 }
 
-// addToV builds a Format closure that adds c to the V byte of a 65-byte
-// ECDSA signature. It panics on malformed input rather than silently
+// addToV builds a Format closure that returns a fresh 65-byte signature with
+// c added to the V byte. It panics on malformed input rather than silently
 // producing a wrong signature that fails verification somewhere downstream:
 //   - len(raw) != 65: crypto.Sign always returns 65 bytes; anything else is
 //     a programming error at the caller.
@@ -113,6 +113,9 @@ func All() []*SigningProfile {
 // Both conditions are invariants, not runtime states, so panic is the right
 // loudness — an accidental double-Format would otherwise reproduce exactly
 // the 2026-04-24 eth_usdc failure mode this package was built to prevent.
+//
+// The input slice is never mutated; the returned slice is a fresh copy. This
+// makes Format safe to call on a buffer the caller still holds.
 func addToV(c byte) func([]byte) []byte {
 	return func(raw []byte) []byte {
 		if len(raw) != 65 {
@@ -121,7 +124,9 @@ func addToV(c byte) func([]byte) []byte {
 		if raw[64] >= 2 {
 			panic(fmt.Sprintf("signprofiles: V byte already formatted (V=%d); Format applied twice?", raw[64]))
 		}
-		raw[64] += c
-		return raw
+		out := make([]byte, 65)
+		copy(out, raw)
+		out[64] += c
+		return out
 	}
 }

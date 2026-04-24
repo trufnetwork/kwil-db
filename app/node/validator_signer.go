@@ -126,10 +126,10 @@ func (v *validatorSignerImpl) CreateSecp256k1Signer() (auth.Signer, error) {
 }
 
 // validatePurpose checks if the signing purpose is allowed. The allowed set
-// is common.AllValidatorPurposes — the same list the signprofiles coverage
-// test iterates, so authz and registry cannot drift apart silently.
+// comes from common.AllValidatorPurposes() — the same list the signprofiles
+// coverage test iterates, so authz and registry cannot drift apart silently.
 func (v *validatorSignerImpl) validatePurpose(purpose string) error {
-	for _, allowed := range common.AllValidatorPurposes {
+	for _, allowed := range common.AllValidatorPurposes() {
 		if purpose == allowed {
 			return nil
 		}

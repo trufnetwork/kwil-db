@@ -49,7 +49,7 @@ func TestAllProfilesRoundTrip(t *testing.T) {
 // Adding a purpose to the canonical list without registering a profile (or
 // vice versa) fails here and points at the specific missing pairing.
 func TestForPurpose_AllKnownPurposesHaveProfiles(t *testing.T) {
-	for _, purpose := range common.AllValidatorPurposes {
+	for _, purpose := range common.AllValidatorPurposes() {
 		t.Run(purpose, func(t *testing.T) {
 			p, err := signprofiles.ForPurpose(purpose)
 			require.NoErrorf(t, err, "purpose %q has no profile in signprofiles.byPurpose", purpose)
