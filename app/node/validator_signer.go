@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -10,6 +9,7 @@ import (
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
+	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/signprofiles"
 )
 
 // validatorSignerImpl implements common.ValidatorSigner interface.
@@ -39,32 +39,52 @@ func NewValidatorSigner(privKey kwilcrypto.PrivateKey, identity []byte, logger l
 	}
 }
 
-// Sign signs a message hash for validator operations.
-// The purpose parameter identifies the operation type and is validated.
+// Sign signs a message hash for a validator operation. It performs two checks:
+// an authorization check (validatePurpose — is this key allowed to sign this
+// kind of thing?) and a format lookup (signprofiles.ForPurpose — which on-wire
+// encoding does the verifier expect?). The two must agree; the signprofiles
+// package's round-trip property test enforces that Format and Verify inside
+// each profile are mutually consistent, so as long as the profile exists this
+// Sign will produce a signature that the verifier accepts.
+//
+// Background: the 2026-04-24 eth_usdc incident was a Format↔Verify mismatch
+// hardcoded directly in this function. The fix is to keep this function
+// dumb — defer format policy to signprofiles. See
+// 0MainnetPredictionMarket/8BridgeSignaturePlan-2026-04-24.md.
 func (v *validatorSignerImpl) Sign(ctx context.Context, messageHash []byte, purpose string) ([]byte, error) {
-	// Validate purpose
 	if err := v.validatePurpose(purpose); err != nil {
 		return nil, err
 	}
 
-	// Log the signing operation for audit trail
-	v.logger.Debugf("validator signing operation: purpose=%s, messageHash=%x", purpose, messageHash)
+	profile, err := signprofiles.ForPurpose(purpose)
+	if err != nil {
+		// Unreachable in practice: validatePurpose above rejects anything the
+		// profile registry doesn't know. Kept as a defense-in-depth backstop
+		// so a future purpose added to validatePurpose without a profile
+		// registration fails loudly at the first Sign call.
+		return nil, fmt.Errorf("validator signing: %w", err)
+	}
 
-	// Only secp256k1 keys are supported for Ethereum-compatible signing
+	v.logger.Debugf("validator signing: purpose=%s profile=%s messageHash=%x",
+		purpose, profile.Name, messageHash)
+
+	// Only secp256k1 keys are supported for Ethereum-compatible signing.
 	secp256k1Key, ok := v.privKey.(*kwilcrypto.Secp256k1PrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("validator signing requires secp256k1 key, but node uses %T", v.privKey)
 	}
 
-	// Convert to ECDSA private key for Ethereum-compatible signing
-	privKeyBytes := secp256k1Key.Bytes()
-	ecdsaKey, err := crypto.ToECDSA(privKeyBytes)
+	ecdsaKey, err := crypto.ToECDSA(secp256k1Key.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert validator key to ECDSA: %w", err)
 	}
 
-	// All validated purposes use Gnosis Safe EIP-191 compatible signature format
-	return signGnosisSafeDigest(messageHash, ecdsaKey)
+	rawSig, err := crypto.Sign(messageHash, ecdsaKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign digest: %w", err)
+	}
+
+	return profile.Format(rawSig), nil
 }
 
 // Identity returns the validator's public key bytes.
@@ -115,23 +135,3 @@ func (v *validatorSignerImpl) validatePurpose(purpose string) error {
 	}
 }
 
-// signGnosisSafeDigest signs a message digest using Gnosis Safe compatible format.
-// Returns a 65-byte signature in [R || S || V] format with V = 31 or 32 (EIP-191 prefixed).
-func signGnosisSafeDigest(digest []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
-	// Sign the digest
-	signature, err := crypto.Sign(digest, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign digest: %w", err)
-	}
-
-	// Adjust V value for Gnosis Safe compatibility
-	// crypto.Sign returns V as 0 or 1, Gnosis Safe expects 31 or 32
-	if len(signature) == 65 {
-		if signature[64] > 1 {
-			return nil, fmt.Errorf("unexpected V value: %d (expected 0 or 1)", signature[64])
-		}
-		signature[64] += 31
-	}
-
-	return signature, nil
-}
