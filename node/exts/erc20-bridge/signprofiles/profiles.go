@@ -41,26 +41,28 @@ type SigningProfile struct {
 	Verify func(sig, digest, addr []byte) error
 }
 
-// EpochVote is the profile for validator votes on ERC20 reward epochs.
+// epochVote is the profile for validator votes on ERC20 reward epochs.
 // Verified inside the voteEpoch Kuneiform action by utils.EthStandardVerifyDigest
-// (OpenZeppelin ECDSA.recover-compatible, V=27/28).
-var EpochVote = &SigningProfile{
+// (OpenZeppelin ECDSA.recover-compatible, V=27/28). Unexported so external
+// callers cannot rebind the var or mutate Format/Verify; the only API surface
+// is ForPurpose/All.
+var epochVote = &SigningProfile{
 	Name:   "epoch_vote",
 	Format: addToV(27),
 	Verify: utils.EthStandardVerifyDigest,
 }
 
-// Withdrawal is the profile for bridge withdrawal-claim signatures, verified
+// withdrawal is the profile for bridge withdrawal-claim signatures, verified
 // on-chain by the bridge's OpenZeppelin-compatible ECDSA.recover (V=27/28).
-var Withdrawal = &SigningProfile{
+var withdrawal = &SigningProfile{
 	Name:   "withdrawal",
 	Format: addToV(27),
 	Verify: utils.EthStandardVerifyDigest,
 }
 
-// SafePrevalidated is the profile for signatures consumed by a Gnosis Safe's
+// safePrevalidated is the profile for signatures consumed by a Gnosis Safe's
 // checkNSignatures in pre-validated form (V=31/32, EIP-191).
-var SafePrevalidated = &SigningProfile{
+var safePrevalidated = &SigningProfile{
 	Name:   "safe_prevalidated",
 	Format: addToV(31),
 	Verify: utils.EthGnosisVerifyDigest,
@@ -71,9 +73,9 @@ var SafePrevalidated = &SigningProfile{
 // statements or inline sig[64]+=N literals — is the shape that let the
 // eth_usdc bug in.
 var byPurpose = map[string]*SigningProfile{
-	common.PurposeEpochVoting:       EpochVote,
-	common.PurposeWithdrawalSig:     Withdrawal,
-	common.PurposeGnosisSafeSigning: SafePrevalidated,
+	common.PurposeEpochVoting:       epochVote,
+	common.PurposeWithdrawalSig:     withdrawal,
+	common.PurposeGnosisSafeSigning: safePrevalidated,
 }
 
 // ForPurpose returns the profile registered for purpose, or an error if none
@@ -93,6 +95,10 @@ func ForPurpose(purpose string) (*SigningProfile, error) {
 // are *SigningProfile pointers that alias the registry entries — treat them
 // as read-only. Mutating a returned element's Format or Verify field would
 // corrupt every future lookup. Clone the value first if mutation is needed.
+//
+// Iteration order is unspecified — Go map iteration is randomized, so two
+// calls may return the slice in different orders. Sort by SigningProfile.Name
+// before use if a deterministic order is required.
 func All() []*SigningProfile {
 	out := make([]*SigningProfile, 0, len(byPurpose))
 	for _, p := range byPurpose {
