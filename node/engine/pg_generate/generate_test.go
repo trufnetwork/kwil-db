@@ -303,9 +303,23 @@ func Test_PgGenerate(t *testing.T) {
 			want: `ALTER TABLE kwil.departments ADD COLUMN department_head UUID;`,
 		},
 		{
+			// Regression: the SQL generator used to drop the IF NOT EXISTS
+			// flag, so a re-run of an idempotent column-add migration
+			// failed with PostgreSQL SQLSTATE 42701.
+			name: "add column if not exists",
+			sql:  `ALTER TABLE departments ADD COLUMN IF NOT EXISTS department_head UUID;`,
+			want: `ALTER TABLE kwil.departments ADD COLUMN IF NOT EXISTS department_head UUID;`,
+		},
+		{
 			name: "drop column",
 			sql:  `ALTER TABLE departments DROP COLUMN department_head;`,
 			want: `ALTER TABLE kwil.departments DROP COLUMN department_head;`,
+		},
+		{
+			// Symmetric regression to "add column if not exists".
+			name: "drop column if exists",
+			sql:  `ALTER TABLE departments DROP COLUMN IF EXISTS department_head;`,
+			want: `ALTER TABLE kwil.departments DROP COLUMN IF EXISTS department_head;`,
 		},
 		{
 			name: "rename column",

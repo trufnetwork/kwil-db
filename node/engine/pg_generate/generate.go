@@ -1103,6 +1103,14 @@ func (s *sqlGenerator) VisitAlterColumnDrop(p0 *parse.AlterColumnDrop) any {
 func (s *sqlGenerator) VisitAddColumn(p0 *parse.AddColumn) any {
 	str := strings.Builder{}
 	str.WriteString("ADD COLUMN ")
+	// Pass IF NOT EXISTS through to PostgreSQL. Without this, an
+	// idempotent migration like `ALTER TABLE t ADD COLUMN IF NOT EXISTS c
+	// TEXT` is generated as plain `ADD COLUMN c TEXT` and PostgreSQL
+	// rejects it with SQLSTATE 42701 on re-run, even though the parser
+	// and the interpreter's validation step both honor the flag.
+	if p0.IfNotExists {
+		str.WriteString("IF NOT EXISTS ")
+	}
 	str.WriteString(p0.Name)
 	str.WriteString(" ")
 
@@ -1118,6 +1126,12 @@ func (s *sqlGenerator) VisitAddColumn(p0 *parse.AddColumn) any {
 func (s *sqlGenerator) VisitDropColumn(p0 *parse.DropColumn) any {
 	str := strings.Builder{}
 	str.WriteString("DROP COLUMN ")
+	// Symmetric with VisitAddColumn: pass IF EXISTS through so a re-run
+	// of `ALTER TABLE t DROP COLUMN IF EXISTS c` is a no-op instead of
+	// SQLSTATE 42703.
+	if p0.IfExists {
+		str.WriteString("IF EXISTS ")
+	}
 	str.WriteString(p0.Name)
 	return str.String()
 }

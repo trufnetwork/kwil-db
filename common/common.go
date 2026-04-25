@@ -32,6 +32,29 @@ const (
 	PurposeGnosisSafeSigning = "gnosis_safe_signing"
 )
 
+// validatorPurposes is the canonical list of signing purposes a validator is
+// authorized to handle. Kept unexported so no external caller can mutate the
+// authz set at runtime (an exported slice var would let any importer append
+// to or overwrite the list). Access through AllValidatorPurposes().
+var validatorPurposes = []string{
+	PurposeEpochVoting,
+	PurposeWithdrawalSig,
+	PurposeGnosisSafeSigning,
+}
+
+// AllValidatorPurposes returns the canonical list of validator signing
+// purposes. It is the single source of truth consumed by the authz check in
+// app/node/validator_signer.go and the profile-coverage test in
+// node/exts/erc20-bridge/signprofiles. Each call returns a fresh slice;
+// callers may sort/append freely. Keep additions in lockstep with a new
+// profile registration in signprofiles — the coverage test fails loudly if
+// the two diverge.
+func AllValidatorPurposes() []string {
+	out := make([]string, len(validatorPurposes))
+	copy(out, validatorPurposes)
+	return out
+}
+
 // ValidatorSigner provides controlled access to validator signing operations
 // without exposing the raw private key. Extensions can request signatures and
 // obtain derived information (addresses, signers) without accessing raw key bytes.
