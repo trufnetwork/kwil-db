@@ -158,9 +158,15 @@ func TestIsLocalNodeActiveValidator(t *testing.T) {
 }
 
 // TestIsActiveValidatorAddress covers the defense-in-depth gate inside the
-// vote_epoch action handler. The check converts each validator's pubkey into
-// an Ethereum address and matches against the caller's address.
+// vote_epoch action handler. The handler builds buildValidatorEthAddressMap
+// once per invocation and checks membership with a direct map lookup; this
+// test exercises the same lookup against the same helper.
 func TestIsActiveValidatorAddress(t *testing.T) {
+	isActiveValidatorAddress := func(app *common.App, addr ethcommon.Address) bool {
+		_, ok := buildValidatorEthAddressMap(app)[addr]
+		return ok
+	}
+
 	leader, leaderAddr, _ := genValidator(t, 1)
 	other, otherAddr, _ := genValidator(t, 1)
 	_, sentryAddr, _ := genValidator(t, 1)

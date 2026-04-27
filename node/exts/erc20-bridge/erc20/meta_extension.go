@@ -1352,7 +1352,13 @@ func init() {
 							// Verify signature for non-custodial validator votes (nonce=0)
 							// This prevents forged votes from non-validators
 							const nonCustodialNonce = 0
+							// Built once on the non-custodial path and reused for both the
+							// membership gate below and the BFT power sum after voteEpoch —
+							// per-validator pubkey decompress + Keccak is otherwise paid twice.
+							var validatorEthMap map[ethcommon.Address]int64
 							if nonce == nonCustodialNonce {
+								validatorEthMap = buildValidatorEthAddressMap(app)
+
 								// Defense in depth: a vote_epoch tx is only authoritative if its
 								// caller is a current validator. The signature check below proves
 								// the caller owns the key, but says nothing about whether that key
@@ -1362,7 +1368,7 @@ func init() {
 								// bug); fixing that bug exposed that no membership gate exists
 								// here. Reject up front so non-validator votes never reach
 								// epoch_votes (and thus never appear in withdrawal proofs).
-								if !isActiveValidatorAddress(app, from) {
+								if _, ok := validatorEthMap[from]; !ok {
 									return fmt.Errorf("vote_epoch: caller %s is not in the active validator set", from.Hex())
 								}
 
@@ -1433,8 +1439,10 @@ func init() {
 									return fmt.Errorf("failed to calculate BFT threshold: %w", err)
 								}
 
-								// Sum voting power of all validators who voted for this epoch
-								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
+								// Sum voting power of all validators who voted for this epoch.
+								// Reuses the validatorEthMap built above on the non-custodial path,
+								// so we don't pay the per-validator pubkey derivation cost twice.
+								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID, validatorEthMap)
 								if err != nil {
 									if app.Service != nil && app.Service.Logger != nil {
 										app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
@@ -3278,7 +3286,11 @@ func calculateBFTThreshold(app *common.App) (int64, int64, error) {
 //
 // Note: This function cannot use ctx.TxContext because it's called from a handler.
 // It matches votes by Ethereum address, which requires validators to use EthPersonalSigner.
-func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {
+//
+// validatorPowerMap must be built by buildValidatorEthAddressMap. The vote_epoch handler
+// builds it once per invocation and shares it with the membership check to avoid
+// repeating the per-validator pubkey decompress + Keccak.
+func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID, validatorPowerMap map[ethcommon.Address]int64) (int64, error) {
 	const nonCustodialNonce = 0
 
 	// Get all votes for this epoch (stores Ethereum addresses as voters)
@@ -3289,43 +3301,6 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 	`, epochID, nonCustodialNonce)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query epoch votes: %w", err)
-	}
-
-	// For each vote, we need to find the corresponding validator
-	// Unfortunately, epoch_votes stores Ethereum addresses, not validator pubkeys
-	// We need to iterate through validators and match their Ethereum address
-	validators := app.Validators.GetValidators()
-
-	// Build a map of validator Ethereum addresses -> power
-	// This requires computing each validator's Ethereum address from their pubkey
-	validatorPowerMap := make(map[string]int64)
-	if app.Service != nil && app.Service.Logger != nil {
-		app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
-	}
-	for _, v := range validators {
-		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
-		}
-		// Compute Ethereum address from validator pubkey
-		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
-		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
-			// Parse the pubkey and derive Ethereum address
-			ethAddr, err := ethAddressFromPubKey(v.Identifier)
-			if err != nil {
-				// Skip validators with invalid keys
-				if app.Service != nil && app.Service.Logger != nil {
-					app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
-				}
-				continue
-			}
-			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
-			}
-			validatorPowerMap[ethAddr.Hex()] = v.Power
-		}
-	}
-	if app.Service != nil && app.Service.Logger != nil {
-		app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
 	}
 
 	// Sum voting power for all voters
@@ -3343,12 +3318,54 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 		voter := ethcommon.BytesToAddress(voterBytes)
 
 		// Look up voting power
-		if power, ok := validatorPowerMap[voter.Hex()]; ok {
+		if power, ok := validatorPowerMap[voter]; ok {
 			votingPower += power
 		}
 	}
 
 	return votingPower, nil
+}
+
+// buildValidatorEthAddressMap returns a map from each active secp256k1 validator's
+// Ethereum address to its voting power. Returns an empty (non-nil) map if app or
+// app.Validators is nil so callers don't need separate nil-checks.
+//
+// Each call decompresses every secp256k1 validator pubkey and runs Keccak on it,
+// so callers in a single handler invocation should build the map once and pass it
+// around rather than calling this (or isActiveValidatorAddress, which delegates here)
+// repeatedly.
+func buildValidatorEthAddressMap(app *common.App) map[ethcommon.Address]int64 {
+	powerMap := make(map[ethcommon.Address]int64)
+	if app == nil || app.Validators == nil {
+		return powerMap
+	}
+	validators := app.Validators.GetValidators()
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
+	}
+	for _, v := range validators {
+		if v.Power <= 0 {
+			continue
+		}
+		if v.KeyType != kwilcrypto.KeyTypeSecp256k1 {
+			continue
+		}
+		ethAddr, err := ethAddressFromPubKey(v.Identifier)
+		if err != nil {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
+			}
+			continue
+		}
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
+		}
+		powerMap[ethAddr] = v.Power
+	}
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("validator power map has %d entries", len(powerMap))
+	}
+	return powerMap
 }
 
 // ethAddressFromPubKey derives an Ethereum address from a secp256k1 public key.
@@ -3406,35 +3423,6 @@ func isLocalNodeActiveValidator(app *common.App) bool {
 			continue
 		}
 		if bytes.Equal(v.Identifier, identity) {
-			return true
-		}
-	}
-	return false
-}
-
-// isActiveValidatorAddress reports whether the supplied Ethereum address is the
-// derived address of a current secp256k1 validator with positive voting power.
-//
-// Defense-in-depth pair to isLocalNodeActiveValidator: even if some other node
-// (or a future bug) broadcasts a self-consistent vote_epoch tx, the action
-// rejects it instead of inserting a non-validator row into epoch_votes that
-// withdrawal proofs would later return.
-func isActiveValidatorAddress(app *common.App, addr ethcommon.Address) bool {
-	if app == nil || app.Validators == nil {
-		return false
-	}
-	for _, v := range app.Validators.GetValidators() {
-		if v.Power <= 0 {
-			continue
-		}
-		if v.KeyType != kwilcrypto.KeyTypeSecp256k1 {
-			continue
-		}
-		ethAddr, err := ethAddressFromPubKey(v.Identifier)
-		if err != nil {
-			continue
-		}
-		if ethAddr == addr {
 			return true
 		}
 	}
