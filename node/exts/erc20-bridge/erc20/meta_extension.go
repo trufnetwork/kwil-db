@@ -1353,6 +1353,19 @@ func init() {
 							// This prevents forged votes from non-validators
 							const nonCustodialNonce = 0
 							if nonce == nonCustodialNonce {
+								// Defense in depth: a vote_epoch tx is only authoritative if its
+								// caller is a current validator. The signature check below proves
+								// the caller owns the key, but says nothing about whether that key
+								// is in the active validator set. Sentries / read-only nodes also
+								// hold a nodekey-derived signing key, and pre-2026-04-25 their
+								// votes used to be silently dropped at verification time (V=31/32
+								// bug); fixing that bug exposed that no membership gate exists
+								// here. Reject up front so non-validator votes never reach
+								// epoch_votes (and thus never appear in withdrawal proofs).
+								if !isActiveValidatorAddress(app, from) {
+									return fmt.Errorf("vote_epoch: caller %s is not in the active validator set", from.Hex())
+								}
+
 								// Query epoch's reward_root and block_hash for signature verification
 								result, err := app.DB.Execute(ctx.TxContext.Ctx, `
 									SELECT reward_root, block_hash
@@ -3160,12 +3173,25 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 // getValidatorSigner returns a ValidatorSigner wrapper for the node's validator key.
 // For non-custodial validator voting, this MUST use the node's validator key (not bridge signer key)
 // to ensure signatures map to the validator's registered identity in the validator set.
-// Returns nil if no validator signer is available.
+// Returns nil if no validator signer is available, or if the local node is not
+// a current member of the active validator set (sentries / read-only nodes).
 func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSigner, error) {
 	// Use the ValidatorSigner from Service
 	// This provides controlled access to signing without exposing the raw private key
 	if app.Service.ValidatorSigner == nil {
 		return nil, nil // No validator signer available
+	}
+
+	// Only nodes in the active validator set should run the vote_epoch loop.
+	// See isLocalNodeActiveValidator for the incident this gate prevents.
+	if !isLocalNodeActiveValidator(app) {
+		// One-line operator confirmation that the gate engaged: emitted once per
+		// instance per startup (the caller skips reinit while a signer is
+		// already running), so it does not spam the journal on busy nodes.
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Infof("erc20-bridge: not an active validator — bridge signer disabled for instance %s", instanceID)
+		}
+		return nil, nil
 	}
 
 	// Get Ethereum address for the validator
@@ -3345,6 +3371,74 @@ func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
 	// Derive Ethereum address from public key
 	address := crypto.PubkeyToAddress(*pubkey)
 	return address, nil
+}
+
+// isLocalNodeActiveValidator reports whether the running node's validator key
+// is a current member of the active validator set with positive voting power.
+//
+// Used to gate the bridge's vote_epoch broadcast loop: every node has a
+// nodekey-backed ValidatorSigner, but only validators contribute power. Without
+// this gate, a sentry's vote_epoch tx is signature-valid but power-less — the
+// row lands in epoch_votes anyway and pollutes withdrawal proofs returned to
+// the bridge contract. (2026-04-25 incident: fixing the V=31/32 sig-format bug
+// caused the leader to start accepting the sentry's previously-rejected sigs,
+// which broke 1-of-1 contracts that received 2 sigs per proof.)
+//
+// Returns false when the node has no validator signer, no Validators API, an
+// empty identity, or the identity isn't in the active set. Non-secp256k1
+// validators are excluded — vote_epoch requires Ethereum-compatible signing.
+func isLocalNodeActiveValidator(app *common.App) bool {
+	if app == nil || app.Service == nil || app.Service.ValidatorSigner == nil {
+		return false
+	}
+	if app.Validators == nil {
+		return false
+	}
+	identity := app.Service.ValidatorSigner.Identity()
+	if len(identity) == 0 {
+		return false
+	}
+	for _, v := range app.Validators.GetValidators() {
+		if v.Power <= 0 {
+			continue
+		}
+		if v.KeyType != kwilcrypto.KeyTypeSecp256k1 {
+			continue
+		}
+		if bytes.Equal(v.Identifier, identity) {
+			return true
+		}
+	}
+	return false
+}
+
+// isActiveValidatorAddress reports whether the supplied Ethereum address is the
+// derived address of a current secp256k1 validator with positive voting power.
+//
+// Defense-in-depth pair to isLocalNodeActiveValidator: even if some other node
+// (or a future bug) broadcasts a self-consistent vote_epoch tx, the action
+// rejects it instead of inserting a non-validator row into epoch_votes that
+// withdrawal proofs would later return.
+func isActiveValidatorAddress(app *common.App, addr ethcommon.Address) bool {
+	if app == nil || app.Validators == nil {
+		return false
+	}
+	for _, v := range app.Validators.GetValidators() {
+		if v.Power <= 0 {
+			continue
+		}
+		if v.KeyType != kwilcrypto.KeyTypeSecp256k1 {
+			continue
+		}
+		ethAddr, err := ethAddressFromPubKey(v.Identifier)
+		if err != nil {
+			continue
+		}
+		if ethAddr == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // getEpochSignatures retrieves all validator signatures for an epoch.
