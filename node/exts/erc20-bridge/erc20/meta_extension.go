@@ -108,6 +108,13 @@ var (
 	// runningSignersMu protects both runningSigners and runningSignerCancels maps
 	runningSignersMu sync.Mutex
 
+	// loggedSignerDisabled tracks instance IDs whose "not an active validator —
+	// bridge signer disabled" message has already been logged this process.
+	// Without this guard the EndBlock-driven re-check (which is what auto-starts
+	// signers on late validator promotion) would emit an INFO line every block
+	// on every sentry. The map is process-local; a restart re-arms the log.
+	loggedSignerDisabled sync.Map // key: types.UUID
+
 	// runningDepositListeners tracks which instance IDs have active deposit listeners
 	// to prevent duplicate listeners if OnStart is called multiple times (e.g., when adding a new bridge instance via USE statement)
 	runningDepositListeners = make(map[string]bool)
@@ -478,61 +485,10 @@ func init() {
 						getSingleton().instances.Set(*instance.ID, instance)
 					}
 
-					// Start validator signer services for non-custodial withdrawals
-					// This runs in background and submits validator signatures via transactions
-					for _, instance := range instances {
-						if instance.active && instance.synced {
-							instanceIDStr := instance.ID.String()
-
-							// Check if signer is already running for this instance
-							runningSignersMu.Lock()
-							alreadyRunning := runningSigners[instanceIDStr]
-							if !alreadyRunning {
-								runningSigners[instanceIDStr] = true
-							}
-							runningSignersMu.Unlock()
-
-							if alreadyRunning {
-								if app.Service != nil && app.Service.Logger != nil {
-									app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
-								}
-								continue
-							}
-
-							// Try to get validator signer
-							signer, err := getValidatorSigner(app, instance.ID)
-							if err != nil {
-								if app.Service != nil && app.Service.Logger != nil {
-									app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
-								}
-								// Clean up tracking maps on error
-								runningSignersMu.Lock()
-								delete(runningSigners, instanceIDStr)
-								delete(runningSignerCancels, instanceIDStr)
-								runningSignersMu.Unlock()
-								continue
-							}
-							if signer != nil {
-								// Create cancellable context so we can stop the signer when instance is disabled
-								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
-								signerCtx, cancel := context.WithCancel(context.Background())
-
-								// Store cancel function for cleanup on disable
-								runningSignersMu.Lock()
-								runningSignerCancels[instanceIDStr] = cancel
-								runningSignersMu.Unlock()
-
-								// Start background signer with cancellable context
-								go signer.Start(signerCtx)
-							} else {
-								// No signer available, clean up tracking maps
-								runningSignersMu.Lock()
-								delete(runningSigners, instanceIDStr)
-								delete(runningSignerCancels, instanceIDStr)
-								runningSignersMu.Unlock()
-							}
-						}
-					}
+					// Start validator signer services for non-custodial withdrawals.
+					// Same helper is invoked from EndBlock so a node promoted to
+					// validator after startup auto-starts its signer next block.
+					ensureValidatorSignersForActiveSyncedInstances(app)
 
 					return nil
 				},
@@ -1352,7 +1308,26 @@ func init() {
 							// Verify signature for non-custodial validator votes (nonce=0)
 							// This prevents forged votes from non-validators
 							const nonCustodialNonce = 0
+							// Built once on the non-custodial path and reused for both the
+							// membership gate below and the BFT power sum after voteEpoch —
+							// per-validator pubkey decompress + Keccak is otherwise paid twice.
+							var validatorEthMap map[ethcommon.Address]int64
 							if nonce == nonCustodialNonce {
+								validatorEthMap = buildValidatorEthAddressMap(app)
+
+								// Defense in depth: a vote_epoch tx is only authoritative if its
+								// caller is a current validator. The signature check below proves
+								// the caller owns the key, but says nothing about whether that key
+								// is in the active validator set. Sentries / read-only nodes also
+								// hold a nodekey-derived signing key, and pre-2026-04-25 their
+								// votes used to be silently dropped at verification time (V=31/32
+								// bug); fixing that bug exposed that no membership gate exists
+								// here. Reject up front so non-validator votes never reach
+								// epoch_votes (and thus never appear in withdrawal proofs).
+								if _, ok := validatorEthMap[from]; !ok {
+									return fmt.Errorf("vote_epoch: caller %s is not in the active validator set", from.Hex())
+								}
+
 								// Query epoch's reward_root and block_hash for signature verification
 								result, err := app.DB.Execute(ctx.TxContext.Ctx, `
 									SELECT reward_root, block_hash
@@ -1420,8 +1395,10 @@ func init() {
 									return fmt.Errorf("failed to calculate BFT threshold: %w", err)
 								}
 
-								// Sum voting power of all validators who voted for this epoch
-								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID)
+								// Sum voting power of all validators who voted for this epoch.
+								// Reuses the validatorEthMap built above on the non-custodial path,
+								// so we don't pay the per-validator pubkey derivation cost twice.
+								votingPower, err := sumEpochVotingPower(ctx.TxContext.Ctx, app, epochID, validatorEthMap)
 								if err != nil {
 									if app.Service != nil && app.Service.Logger != nil {
 										app.Service.Logger.Errorf("failed to sum voting power for epoch %s: %v", epochID, err)
@@ -1874,7 +1851,7 @@ func init() {
 		}
 
 		// now that we are done with recursive calls, we can update the singleton
-		return getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
+		updateErr := getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			active := info.active
 			info.mu.RUnlock()
@@ -1898,6 +1875,14 @@ func init() {
 			}
 			return nil
 		})
+
+		// Bring up vote_epoch signers for any instance whose signer is not
+		// already running. This is what makes a node added to the validator
+		// set after process startup begin signing without an operator restart.
+		// On a sentry this is a cheap no-op past the membership check.
+		ensureValidatorSignersForActiveSyncedInstances(app)
+
+		return updateErr
 	})
 	if err != nil {
 		panic(err)
@@ -3160,13 +3145,36 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 // getValidatorSigner returns a ValidatorSigner wrapper for the node's validator key.
 // For non-custodial validator voting, this MUST use the node's validator key (not bridge signer key)
 // to ensure signatures map to the validator's registered identity in the validator set.
-// Returns nil if no validator signer is available.
+// Returns nil if no validator signer is available, or if the local node is not
+// a current member of the active validator set (sentries / read-only nodes).
+//
+// Late-promotion safe: ensureValidatorSignersForActiveSyncedInstances calls
+// this from the EndBlock hook in addition to OnStart, so a node added to the
+// validator set after process startup automatically begins signing next block
+// without operator restart.
 func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSigner, error) {
 	// Use the ValidatorSigner from Service
 	// This provides controlled access to signing without exposing the raw private key
 	if app.Service.ValidatorSigner == nil {
 		return nil, nil // No validator signer available
 	}
+
+	// Only nodes in the active validator set should run the vote_epoch loop.
+	// See isLocalNodeActiveValidator for the incident this gate prevents.
+	if !isLocalNodeActiveValidator(app) {
+		// Operator confirmation that the gate engaged. Logged at most once per
+		// instance per process — without this guard the EndBlock-driven re-check
+		// would fire this line every block on every sentry.
+		if _, alreadyLogged := loggedSignerDisabled.LoadOrStore(*instanceID, struct{}{}); !alreadyLogged {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("erc20-bridge: not an active validator — bridge signer disabled for instance %s", instanceID)
+			}
+		}
+		return nil, nil
+	}
+	// Validator: arm the log for the next demotion so a future
+	// promotion→demotion transition still produces operator output.
+	loggedSignerDisabled.Delete(*instanceID)
 
 	// Get Ethereum address for the validator
 	addressBytes, err := app.Service.ValidatorSigner.EthereumAddress()
@@ -3176,6 +3184,80 @@ func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSign
 
 	// Create ValidatorSigner with the interface
 	return NewValidatorSignerFromInterface(app, instanceID, app.Service.ValidatorSigner, addressBytes), nil
+}
+
+// ensureValidatorSignersForActiveSyncedInstances starts a vote_epoch signer
+// goroutine for every active+synced bridge instance whose signer is not
+// already running on this node. Safe to call repeatedly: the runningSigners
+// bookkeeping prevents duplicate goroutines, and getValidatorSigner returns
+// nil for non-validators (sentries) so calling here on a sentry is a no-op
+// past the cheap membership check.
+//
+// Invoked from two places:
+//   - OnStart, to bring up signers for the initial validator set
+//   - the EndBlock hook, so a node added to the validator set after process
+//     startup automatically begins signing on the next block without needing
+//     an operator restart
+//
+// Iterating the singleton (rather than a fresh DB read) is correct in both
+// callers: OnStart populates the singleton before invoking this helper, and
+// EndBlock runs after the singleton is fully populated.
+func ensureValidatorSignersForActiveSyncedInstances(app *common.App) {
+	_ = getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
+		info.mu.RLock()
+		active := info.active
+		synced := info.synced
+		info.mu.RUnlock()
+		if !active || !synced {
+			return nil
+		}
+
+		instanceIDStr := id.String()
+
+		runningSignersMu.Lock()
+		alreadyRunning := runningSigners[instanceIDStr]
+		if !alreadyRunning {
+			runningSigners[instanceIDStr] = true
+		}
+		runningSignersMu.Unlock()
+
+		if alreadyRunning {
+			return nil
+		}
+
+		signer, err := getValidatorSigner(app, id)
+		if err != nil {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", id, err)
+			}
+			runningSignersMu.Lock()
+			delete(runningSigners, instanceIDStr)
+			delete(runningSignerCancels, instanceIDStr)
+			runningSignersMu.Unlock()
+			return nil
+		}
+
+		if signer == nil {
+			// Not a validator (or no validator signer available). Release the
+			// bookkeeping slot so a future call retries — this is exactly what
+			// makes EndBlock-driven late promotion work.
+			runningSignersMu.Lock()
+			delete(runningSigners, instanceIDStr)
+			delete(runningSignerCancels, instanceIDStr)
+			runningSignersMu.Unlock()
+			return nil
+		}
+
+		// context.Background() so the signer runs for the node's lifetime
+		// (until cancelled when the instance is disabled).
+		signerCtx, cancel := context.WithCancel(context.Background())
+		runningSignersMu.Lock()
+		runningSignerCancels[instanceIDStr] = cancel
+		runningSignersMu.Unlock()
+
+		go signer.Start(signerCtx)
+		return nil
+	})
 }
 
 // computeEpochMessageHash computes the message hash that validators sign.
@@ -3252,7 +3334,11 @@ func calculateBFTThreshold(app *common.App) (int64, int64, error) {
 //
 // Note: This function cannot use ctx.TxContext because it's called from a handler.
 // It matches votes by Ethereum address, which requires validators to use EthPersonalSigner.
-func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {
+//
+// validatorPowerMap must be built by buildValidatorEthAddressMap. The vote_epoch handler
+// builds it once per invocation and shares it with the membership check to avoid
+// repeating the per-validator pubkey decompress + Keccak.
+func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID, validatorPowerMap map[ethcommon.Address]int64) (int64, error) {
 	const nonCustodialNonce = 0
 
 	// Get all votes for this epoch (stores Ethereum addresses as voters)
@@ -3263,43 +3349,6 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 	`, epochID, nonCustodialNonce)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query epoch votes: %w", err)
-	}
-
-	// For each vote, we need to find the corresponding validator
-	// Unfortunately, epoch_votes stores Ethereum addresses, not validator pubkeys
-	// We need to iterate through validators and match their Ethereum address
-	validators := app.Validators.GetValidators()
-
-	// Build a map of validator Ethereum addresses -> power
-	// This requires computing each validator's Ethereum address from their pubkey
-	validatorPowerMap := make(map[string]int64)
-	if app.Service != nil && app.Service.Logger != nil {
-		app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
-	}
-	for _, v := range validators {
-		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Debugf("validator: pubkey=%x, keytype=%s, power=%d", v.Identifier, v.KeyType, v.Power)
-		}
-		// Compute Ethereum address from validator pubkey
-		// Assumes validator is using secp256k1 key (EthPersonalSigner requirement)
-		if v.KeyType == kwilcrypto.KeyTypeSecp256k1 {
-			// Parse the pubkey and derive Ethereum address
-			ethAddr, err := ethAddressFromPubKey(v.Identifier)
-			if err != nil {
-				// Skip validators with invalid keys
-				if app.Service != nil && app.Service.Logger != nil {
-					app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
-				}
-				continue
-			}
-			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
-			}
-			validatorPowerMap[ethAddr.Hex()] = v.Power
-		}
-	}
-	if app.Service != nil && app.Service.Logger != nil {
-		app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
 	}
 
 	// Sum voting power for all voters
@@ -3317,12 +3366,54 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 		voter := ethcommon.BytesToAddress(voterBytes)
 
 		// Look up voting power
-		if power, ok := validatorPowerMap[voter.Hex()]; ok {
+		if power, ok := validatorPowerMap[voter]; ok {
 			votingPower += power
 		}
 	}
 
 	return votingPower, nil
+}
+
+// buildValidatorEthAddressMap returns a map from each active secp256k1 validator's
+// Ethereum address to its voting power. Returns an empty (non-nil) map if app or
+// app.Validators is nil so callers don't need separate nil-checks.
+//
+// Each call decompresses every secp256k1 validator pubkey and runs Keccak on it,
+// so callers in a single handler invocation should build the map once and pass it
+// around rather than calling this (or isActiveValidatorAddress, which delegates here)
+// repeatedly.
+func buildValidatorEthAddressMap(app *common.App) map[ethcommon.Address]int64 {
+	powerMap := make(map[ethcommon.Address]int64)
+	if app == nil || app.Validators == nil {
+		return powerMap
+	}
+	validators := app.Validators.GetValidators()
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("building validator power map from %d validators", len(validators))
+	}
+	for _, v := range validators {
+		if v.Power <= 0 {
+			continue
+		}
+		if v.KeyType != kwilcrypto.KeyTypeSecp256k1 {
+			continue
+		}
+		ethAddr, err := ethAddressFromPubKey(v.Identifier)
+		if err != nil {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("failed to derive Ethereum address for validator %x: %v", v.Identifier, err)
+			}
+			continue
+		}
+		if app.Service != nil && app.Service.Logger != nil {
+			app.Service.Logger.Debugf("mapped validator %x -> eth address %s with power %d", v.Identifier, ethAddr.Hex(), v.Power)
+		}
+		powerMap[ethAddr] = v.Power
+	}
+	if app.Service != nil && app.Service.Logger != nil {
+		app.Service.Logger.Debugf("validator power map has %d entries", len(powerMap))
+	}
+	return powerMap
 }
 
 // ethAddressFromPubKey derives an Ethereum address from a secp256k1 public key.
@@ -3345,6 +3436,45 @@ func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
 	// Derive Ethereum address from public key
 	address := crypto.PubkeyToAddress(*pubkey)
 	return address, nil
+}
+
+// isLocalNodeActiveValidator reports whether the running node's validator key
+// is a current member of the active validator set with positive voting power.
+//
+// Used to gate the bridge's vote_epoch broadcast loop: every node has a
+// nodekey-backed ValidatorSigner, but only validators contribute power. Without
+// this gate, a sentry's vote_epoch tx is signature-valid but power-less — the
+// row lands in epoch_votes anyway and pollutes withdrawal proofs returned to
+// the bridge contract. (2026-04-25 incident: fixing the V=31/32 sig-format bug
+// caused the leader to start accepting the sentry's previously-rejected sigs,
+// which broke 1-of-1 contracts that received 2 sigs per proof.)
+//
+// Returns false when the node has no validator signer, no Validators API, an
+// empty identity, or the identity isn't in the active set. Non-secp256k1
+// validators are excluded — vote_epoch requires Ethereum-compatible signing.
+func isLocalNodeActiveValidator(app *common.App) bool {
+	if app == nil || app.Service == nil || app.Service.ValidatorSigner == nil {
+		return false
+	}
+	if app.Validators == nil {
+		return false
+	}
+	identity := app.Service.ValidatorSigner.Identity()
+	if len(identity) == 0 {
+		return false
+	}
+	for _, v := range app.Validators.GetValidators() {
+		if v.Power <= 0 {
+			continue
+		}
+		if v.KeyType != kwilcrypto.KeyTypeSecp256k1 {
+			continue
+		}
+		if bytes.Equal(v.Identifier, identity) {
+			return true
+		}
+	}
+	return false
 }
 
 // getEpochSignatures retrieves all validator signatures for an epoch.
