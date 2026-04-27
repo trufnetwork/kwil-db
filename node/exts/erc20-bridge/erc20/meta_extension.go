@@ -108,6 +108,13 @@ var (
 	// runningSignersMu protects both runningSigners and runningSignerCancels maps
 	runningSignersMu sync.Mutex
 
+	// loggedSignerDisabled tracks instance IDs whose "not an active validator —
+	// bridge signer disabled" message has already been logged this process.
+	// Without this guard the EndBlock-driven re-check (which is what auto-starts
+	// signers on late validator promotion) would emit an INFO line every block
+	// on every sentry. The map is process-local; a restart re-arms the log.
+	loggedSignerDisabled sync.Map // key: types.UUID
+
 	// runningDepositListeners tracks which instance IDs have active deposit listeners
 	// to prevent duplicate listeners if OnStart is called multiple times (e.g., when adding a new bridge instance via USE statement)
 	runningDepositListeners = make(map[string]bool)
@@ -478,61 +485,10 @@ func init() {
 						getSingleton().instances.Set(*instance.ID, instance)
 					}
 
-					// Start validator signer services for non-custodial withdrawals
-					// This runs in background and submits validator signatures via transactions
-					for _, instance := range instances {
-						if instance.active && instance.synced {
-							instanceIDStr := instance.ID.String()
-
-							// Check if signer is already running for this instance
-							runningSignersMu.Lock()
-							alreadyRunning := runningSigners[instanceIDStr]
-							if !alreadyRunning {
-								runningSigners[instanceIDStr] = true
-							}
-							runningSignersMu.Unlock()
-
-							if alreadyRunning {
-								if app.Service != nil && app.Service.Logger != nil {
-									app.Service.Logger.Debugf("validator signer already running for instance %s, skipping", instance.ID)
-								}
-								continue
-							}
-
-							// Try to get validator signer
-							signer, err := getValidatorSigner(app, instance.ID)
-							if err != nil {
-								if app.Service != nil && app.Service.Logger != nil {
-									app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", instance.ID, err)
-								}
-								// Clean up tracking maps on error
-								runningSignersMu.Lock()
-								delete(runningSigners, instanceIDStr)
-								delete(runningSignerCancels, instanceIDStr)
-								runningSignersMu.Unlock()
-								continue
-							}
-							if signer != nil {
-								// Create cancellable context so we can stop the signer when instance is disabled
-								// Use context.Background() as parent so signer runs for node lifetime (until cancelled)
-								signerCtx, cancel := context.WithCancel(context.Background())
-
-								// Store cancel function for cleanup on disable
-								runningSignersMu.Lock()
-								runningSignerCancels[instanceIDStr] = cancel
-								runningSignersMu.Unlock()
-
-								// Start background signer with cancellable context
-								go signer.Start(signerCtx)
-							} else {
-								// No signer available, clean up tracking maps
-								runningSignersMu.Lock()
-								delete(runningSigners, instanceIDStr)
-								delete(runningSignerCancels, instanceIDStr)
-								runningSignersMu.Unlock()
-							}
-						}
-					}
+					// Start validator signer services for non-custodial withdrawals.
+					// Same helper is invoked from EndBlock so a node promoted to
+					// validator after startup auto-starts its signer next block.
+					ensureValidatorSignersForActiveSyncedInstances(app)
 
 					return nil
 				},
@@ -1895,7 +1851,7 @@ func init() {
 		}
 
 		// now that we are done with recursive calls, we can update the singleton
-		return getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
+		updateErr := getSingleton().ForEachInstance(false, func(id *types.UUID, info *rewardExtensionInfo) error {
 			info.mu.RLock()
 			active := info.active
 			info.mu.RUnlock()
@@ -1919,6 +1875,14 @@ func init() {
 			}
 			return nil
 		})
+
+		// Bring up vote_epoch signers for any instance whose signer is not
+		// already running. This is what makes a node added to the validator
+		// set after process startup begin signing without an operator restart.
+		// On a sentry this is a cheap no-op past the membership check.
+		ensureValidatorSignersForActiveSyncedInstances(app)
+
+		return updateErr
 	})
 	if err != nil {
 		panic(err)
@@ -3183,6 +3147,11 @@ func scaleDownUint256(amount *types.Decimal, decimals uint16) (*types.Decimal, e
 // to ensure signatures map to the validator's registered identity in the validator set.
 // Returns nil if no validator signer is available, or if the local node is not
 // a current member of the active validator set (sentries / read-only nodes).
+//
+// Late-promotion safe: ensureValidatorSignersForActiveSyncedInstances calls
+// this from the EndBlock hook in addition to OnStart, so a node added to the
+// validator set after process startup automatically begins signing next block
+// without operator restart.
 func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSigner, error) {
 	// Use the ValidatorSigner from Service
 	// This provides controlled access to signing without exposing the raw private key
@@ -3193,14 +3162,19 @@ func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSign
 	// Only nodes in the active validator set should run the vote_epoch loop.
 	// See isLocalNodeActiveValidator for the incident this gate prevents.
 	if !isLocalNodeActiveValidator(app) {
-		// One-line operator confirmation that the gate engaged: emitted once per
-		// instance per startup (the caller skips reinit while a signer is
-		// already running), so it does not spam the journal on busy nodes.
-		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Infof("erc20-bridge: not an active validator — bridge signer disabled for instance %s", instanceID)
+		// Operator confirmation that the gate engaged. Logged at most once per
+		// instance per process — without this guard the EndBlock-driven re-check
+		// would fire this line every block on every sentry.
+		if _, alreadyLogged := loggedSignerDisabled.LoadOrStore(*instanceID, struct{}{}); !alreadyLogged {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Infof("erc20-bridge: not an active validator — bridge signer disabled for instance %s", instanceID)
+			}
 		}
 		return nil, nil
 	}
+	// Validator: arm the log for the next demotion so a future
+	// promotion→demotion transition still produces operator output.
+	loggedSignerDisabled.Delete(*instanceID)
 
 	// Get Ethereum address for the validator
 	addressBytes, err := app.Service.ValidatorSigner.EthereumAddress()
@@ -3210,6 +3184,80 @@ func getValidatorSigner(app *common.App, instanceID *types.UUID) (*ValidatorSign
 
 	// Create ValidatorSigner with the interface
 	return NewValidatorSignerFromInterface(app, instanceID, app.Service.ValidatorSigner, addressBytes), nil
+}
+
+// ensureValidatorSignersForActiveSyncedInstances starts a vote_epoch signer
+// goroutine for every active+synced bridge instance whose signer is not
+// already running on this node. Safe to call repeatedly: the runningSigners
+// bookkeeping prevents duplicate goroutines, and getValidatorSigner returns
+// nil for non-validators (sentries) so calling here on a sentry is a no-op
+// past the cheap membership check.
+//
+// Invoked from two places:
+//   - OnStart, to bring up signers for the initial validator set
+//   - the EndBlock hook, so a node added to the validator set after process
+//     startup automatically begins signing on the next block without needing
+//     an operator restart
+//
+// Iterating the singleton (rather than a fresh DB read) is correct in both
+// callers: OnStart populates the singleton before invoking this helper, and
+// EndBlock runs after the singleton is fully populated.
+func ensureValidatorSignersForActiveSyncedInstances(app *common.App) {
+	_ = getSingleton().ForEachInstance(true, func(id *types.UUID, info *rewardExtensionInfo) error {
+		info.mu.RLock()
+		active := info.active
+		synced := info.synced
+		info.mu.RUnlock()
+		if !active || !synced {
+			return nil
+		}
+
+		instanceIDStr := id.String()
+
+		runningSignersMu.Lock()
+		alreadyRunning := runningSigners[instanceIDStr]
+		if !alreadyRunning {
+			runningSigners[instanceIDStr] = true
+		}
+		runningSignersMu.Unlock()
+
+		if alreadyRunning {
+			return nil
+		}
+
+		signer, err := getValidatorSigner(app, id)
+		if err != nil {
+			if app.Service != nil && app.Service.Logger != nil {
+				app.Service.Logger.Warnf("failed to get validator signer for instance %s: %v", id, err)
+			}
+			runningSignersMu.Lock()
+			delete(runningSigners, instanceIDStr)
+			delete(runningSignerCancels, instanceIDStr)
+			runningSignersMu.Unlock()
+			return nil
+		}
+
+		if signer == nil {
+			// Not a validator (or no validator signer available). Release the
+			// bookkeeping slot so a future call retries — this is exactly what
+			// makes EndBlock-driven late promotion work.
+			runningSignersMu.Lock()
+			delete(runningSigners, instanceIDStr)
+			delete(runningSignerCancels, instanceIDStr)
+			runningSignersMu.Unlock()
+			return nil
+		}
+
+		// context.Background() so the signer runs for the node's lifetime
+		// (until cancelled when the instance is disabled).
+		signerCtx, cancel := context.WithCancel(context.Background())
+		runningSignersMu.Lock()
+		runningSignerCancels[instanceIDStr] = cancel
+		runningSignersMu.Unlock()
+
+		go signer.Start(signerCtx)
+		return nil
+	})
 }
 
 // computeEpochMessageHash computes the message hash that validators sign.
