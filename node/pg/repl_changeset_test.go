@@ -6,10 +6,172 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/core/types"
 )
+
+// newTestChangesetWriter builds a changesetIoWriter wired to a buffered channel
+// so tests can drive decodeInsert/decodeUpdate/decodeDelete without a live
+// Postgres connection. The OID-to-type map covers the OID used by the test
+// relations below.
+func newTestChangesetWriter(buffer int) (*changesetIoWriter, chan any) {
+	csChan := make(chan any, buffer)
+	cs := &changesetIoWriter{
+		csChan: csChan,
+		oidToType: map[uint32]*datatype{
+			23: {KwilType: types.IntType}, // pg int4; SerializeChangeset never invoked for Null tuple cols
+		},
+		metadata: &changesetMetadata{relationIdx: map[[2]string]int{}},
+	}
+	return cs, csChan
+}
+
+func testRelation() *pglogrepl.RelationMessageV2 {
+	return &pglogrepl.RelationMessageV2{
+		RelationMessage: pglogrepl.RelationMessage{
+			RelationID:   1,
+			Namespace:    "main",
+			RelationName: "primitive_events",
+			Columns: []*pglogrepl.RelationMessageColumn{
+				{Name: "id", DataType: 23},
+			},
+		},
+	}
+}
+
+// TestDecodeUpdate_NilOldTuple is the regression test for the mainnet leader
+// SIGSEGV in convertPgxTuple at repl_changeset.go:581. Postgres' logical decoder
+// emits UPDATE messages with OldTuple==nil whenever the source table has
+// REPLICA IDENTITY DEFAULT/INDEX/NOTHING and the key columns are unchanged.
+// Pre-fix, decodeUpdate dereferenced that nil and crashed the process; this
+// test asserts the consumer is now nil-tolerant.
+func TestDecodeUpdate_NilOldTuple(t *testing.T) {
+	cs, csChan := newTestChangesetWriter(4)
+	relation := testRelation()
+
+	update := &pglogrepl.UpdateMessageV2{
+		UpdateMessage: pglogrepl.UpdateMessage{
+			RelationID: 1,
+			OldTuple:   nil, // the WAL shape that previously crashed the leader
+			NewTuple: &pglogrepl.TupleData{
+				ColumnNum: 1,
+				Columns: []*pglogrepl.TupleDataColumn{
+					{DataType: pglogrepl.TupleDataTypeNull},
+				},
+			},
+		},
+	}
+
+	require.NotPanics(t, func() {
+		require.NoError(t, cs.decodeUpdate(update, relation))
+	})
+
+	// First message off the channel is the registered relation, second is the
+	// changeset entry. The entry must have no OldTuple but a populated NewTuple.
+	msg := <-csChan
+	_, isRel := msg.(*Relation)
+	require.True(t, isRel, "first csChan element should be *Relation, got %T", msg)
+
+	ce, ok := (<-csChan).(*ChangesetEntry)
+	require.True(t, ok)
+	assert.Nil(t, ce.OldTuple, "OldTuple must remain unset when WAL omits it")
+	require.Len(t, ce.NewTuple, 1)
+	assert.Equal(t, NullValue, ce.NewTuple[0].ValueType)
+}
+
+// TestDecodeUpdate_FullReplicaIdentity confirms that the dedup loop still
+// runs (and marks identical columns as UnchangedUpdate) when the WAL carries
+// both an old and a new tuple — i.e., REPLICA IDENTITY FULL behaves as before.
+func TestDecodeUpdate_FullReplicaIdentity(t *testing.T) {
+	cs, csChan := newTestChangesetWriter(4)
+	relation := testRelation()
+
+	tupleNull := func() *pglogrepl.TupleData {
+		return &pglogrepl.TupleData{
+			ColumnNum: 1,
+			Columns: []*pglogrepl.TupleDataColumn{
+				{DataType: pglogrepl.TupleDataTypeNull},
+			},
+		}
+	}
+
+	update := &pglogrepl.UpdateMessageV2{
+		UpdateMessage: pglogrepl.UpdateMessage{
+			RelationID:   1,
+			OldTupleType: pglogrepl.UpdateMessageTupleTypeOld,
+			OldTuple:     tupleNull(),
+			NewTuple:     tupleNull(),
+		},
+	}
+
+	require.NoError(t, cs.decodeUpdate(update, relation))
+
+	<-csChan // discard relation
+	ce := (<-csChan).(*ChangesetEntry)
+	require.Len(t, ce.OldTuple, 1)
+	require.Len(t, ce.NewTuple, 1)
+	assert.Equal(t, NullValue, ce.OldTuple[0].ValueType)
+	// Identical tuples → NewTuple column is collapsed to UnchangedUpdate.
+	assert.Equal(t, UnchangedUpdate, ce.NewTuple[0].ValueType)
+	assert.Nil(t, ce.NewTuple[0].Data)
+}
+
+// TestDecodeDelete_NilOldTuple covers the defense-in-depth nil-check on
+// decodeDelete. Postgres normally always emits an old tuple for DELETE, but
+// since the same convertPgxTuple deref pattern existed there too, we lock in
+// that the consumer no longer panics if a future PG/replication change ever
+// produces an OldTuple-less DELETE.
+func TestDecodeDelete_NilOldTuple(t *testing.T) {
+	cs, csChan := newTestChangesetWriter(4)
+	relation := testRelation()
+
+	del := &pglogrepl.DeleteMessageV2{
+		DeleteMessage: pglogrepl.DeleteMessage{
+			RelationID: 1,
+			OldTuple:   nil,
+		},
+	}
+
+	require.NotPanics(t, func() {
+		require.NoError(t, cs.decodeDelete(del, relation))
+	})
+
+	<-csChan // relation
+	ce, ok := (<-csChan).(*ChangesetEntry)
+	require.True(t, ok)
+	assert.Nil(t, ce.OldTuple)
+	assert.Nil(t, ce.NewTuple)
+}
+
+// TestDecodeDelete_WithOldTuple confirms the normal DELETE path still records
+// the old tuple unchanged.
+func TestDecodeDelete_WithOldTuple(t *testing.T) {
+	cs, csChan := newTestChangesetWriter(4)
+	relation := testRelation()
+
+	del := &pglogrepl.DeleteMessageV2{
+		DeleteMessage: pglogrepl.DeleteMessage{
+			RelationID:   1,
+			OldTupleType: pglogrepl.DeleteMessageTupleTypeOld,
+			OldTuple: &pglogrepl.TupleData{
+				ColumnNum: 1,
+				Columns: []*pglogrepl.TupleDataColumn{
+					{DataType: pglogrepl.TupleDataTypeNull},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, cs.decodeDelete(del, relation))
+
+	<-csChan // relation
+	ce := (<-csChan).(*ChangesetEntry)
+	require.Len(t, ce.OldTuple, 1)
+	assert.Equal(t, NullValue, ce.OldTuple[0].ValueType)
+	assert.Nil(t, ce.NewTuple)
+}
 
 func TestChangesetEntry_Serialize(t *testing.T) {
 	tests := []struct {

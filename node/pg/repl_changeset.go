@@ -504,25 +504,31 @@ func (c *changesetIoWriter) decodeUpdate(update *pglogrepl.UpdateMessageV2, rela
 		RelationIdx: idx,
 	}
 
-	// write old tuple
-	tup, err := convertPgxTuple(update.OldTuple, relation, c.oidToType)
-	if err != nil {
-		return err
+	// pglogrepl: an UPDATE may carry 'K' (key), 'O' (old tuple), or neither —
+	// the latter when REPLICA IDENTITY is DEFAULT/INDEX/NOTHING and the key
+	// columns did not change. Leave ce.OldTuple unset in that case.
+	if update.OldTuple != nil {
+		tup, err := convertPgxTuple(update.OldTuple, relation, c.oidToType)
+		if err != nil {
+			return err
+		}
+		ce.OldTuple = tup.Columns
 	}
-	ce.OldTuple = tup.Columns
 
 	// write new tuple
-	tup, err = convertPgxTuple(update.NewTuple, relation, c.oidToType)
+	tup, err := convertPgxTuple(update.NewTuple, relation, c.oidToType)
 	if err != nil {
 		return err
 	}
-	// de-duplicate unchanged data
-	for i, old := range ce.OldTuple {
-		updated := tup.Columns[i]
-		if old.ValueType == updated.ValueType &&
-			bytes.Equal(old.Data, updated.Data) {
-			tup.Columns[i].ValueType = UnchangedUpdate
-			tup.Columns[i].Data = nil
+	// de-duplicate unchanged data only when we have an old tuple to compare
+	if ce.OldTuple != nil {
+		for i, old := range ce.OldTuple {
+			updated := tup.Columns[i]
+			if old.ValueType == updated.ValueType &&
+				bytes.Equal(old.Data, updated.Data) {
+				tup.Columns[i].ValueType = UnchangedUpdate
+				tup.Columns[i].Data = nil
+			}
 		}
 	}
 	ce.NewTuple = tup.Columns
@@ -537,17 +543,20 @@ func (c *changesetIoWriter) decodeDelete(delete *pglogrepl.DeleteMessageV2, rela
 	}
 
 	idx := c.registerMetadata(relation)
-
-	// write old tuple
-	tup, err := convertPgxTuple(delete.OldTuple, relation, c.oidToType)
-	if err != nil {
-		return err
-	}
-
 	ce := &ChangesetEntry{
 		RelationIdx: idx,
-		OldTuple:    tup.Columns,
 		// NewTuple is empty for delete
+	}
+
+	// pglogrepl normally always carries an OldTuple for DELETE; defend against
+	// the same nil-tuple shape that was hit on UPDATE so an upstream change in
+	// PG/replica identity behavior cannot crash the consumer.
+	if delete.OldTuple != nil {
+		tup, err := convertPgxTuple(delete.OldTuple, relation, c.oidToType)
+		if err != nil {
+			return err
+		}
+		ce.OldTuple = tup.Columns
 	}
 
 	c.csChan <- ce
