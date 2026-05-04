@@ -400,13 +400,21 @@ func (ce *ChangesetEntry) applyDeletes(ctx context.Context, tx sql.DB, rel *Rela
 		return fmt.Errorf("relation %s.%s has no columns", rel.Schema, rel.Table)
 	}
 
-	var deleteSql strings.Builder
-	fmt.Fprintf(&deleteSql, "DELETE FROM %s.%s WHERE ", rel.Schema, rel.Table)
-
 	record, _, err := ce.DecodeTuples(rel)
 	if err != nil {
 		return err
 	}
+
+	// Guard against an OldTuple-less DELETE (decodeDelete now tolerates that
+	// shape defensively). Without this check we would build a bare
+	// "DELETE FROM x.y WHERE " string and let Postgres reject it as a syntax
+	// error — surfacing a clearer message here keeps the failure mode obvious.
+	if len(record) == 0 {
+		return fmt.Errorf("refusing to apply DELETE on %s.%s: changeset entry carries no old tuple", rel.Schema, rel.Table)
+	}
+
+	var deleteSql strings.Builder
+	fmt.Fprintf(&deleteSql, "DELETE FROM %s.%s WHERE ", rel.Schema, rel.Table)
 
 	var args []any
 	cnt := 1
@@ -504,25 +512,39 @@ func (c *changesetIoWriter) decodeUpdate(update *pglogrepl.UpdateMessageV2, rela
 		RelationIdx: idx,
 	}
 
-	// write old tuple
-	tup, err := convertPgxTuple(update.OldTuple, relation, c.oidToType)
-	if err != nil {
-		return err
+	// pglogrepl: an UPDATE may carry 'K' (key), 'O' (old tuple), or neither —
+	// the latter when REPLICA IDENTITY is DEFAULT/INDEX/NOTHING and the key
+	// columns did not change. Leave ce.OldTuple unset in that case.
+	if update.OldTuple != nil {
+		tup, err := convertPgxTuple(update.OldTuple, relation, c.oidToType)
+		if err != nil {
+			return err
+		}
+		ce.OldTuple = tup.Columns
+	} else {
+		// With OldTuple nil, ChangesetEntry.Kind() reports Insert (len(OldTuple)==0,
+		// len(NewTuple)>0), so ApplyChangesetEntry routes this to applyInserts and
+		// the row's update is silently dropped (ON CONFLICT DO NOTHING) on the
+		// receiving network. Surface this so operators know to set the source
+		// table's REPLICA IDENTITY to FULL.
+		logger.Warn("UPDATE with no old tuple will be applied as INSERT and may be dropped",
+			"schema", relation.Namespace, "table", relation.RelationName)
 	}
-	ce.OldTuple = tup.Columns
 
 	// write new tuple
-	tup, err = convertPgxTuple(update.NewTuple, relation, c.oidToType)
+	tup, err := convertPgxTuple(update.NewTuple, relation, c.oidToType)
 	if err != nil {
 		return err
 	}
-	// de-duplicate unchanged data
-	for i, old := range ce.OldTuple {
-		updated := tup.Columns[i]
-		if old.ValueType == updated.ValueType &&
-			bytes.Equal(old.Data, updated.Data) {
-			tup.Columns[i].ValueType = UnchangedUpdate
-			tup.Columns[i].Data = nil
+	// de-duplicate unchanged data only when we have an old tuple to compare
+	if ce.OldTuple != nil {
+		for i, old := range ce.OldTuple {
+			updated := tup.Columns[i]
+			if old.ValueType == updated.ValueType &&
+				bytes.Equal(old.Data, updated.Data) {
+				tup.Columns[i].ValueType = UnchangedUpdate
+				tup.Columns[i].Data = nil
+			}
 		}
 	}
 	ce.NewTuple = tup.Columns
@@ -537,17 +559,20 @@ func (c *changesetIoWriter) decodeDelete(delete *pglogrepl.DeleteMessageV2, rela
 	}
 
 	idx := c.registerMetadata(relation)
-
-	// write old tuple
-	tup, err := convertPgxTuple(delete.OldTuple, relation, c.oidToType)
-	if err != nil {
-		return err
-	}
-
 	ce := &ChangesetEntry{
 		RelationIdx: idx,
-		OldTuple:    tup.Columns,
 		// NewTuple is empty for delete
+	}
+
+	// pglogrepl normally always carries an OldTuple for DELETE; defend against
+	// the same nil-tuple shape that was hit on UPDATE so an upstream change in
+	// PG/replica identity behavior cannot crash the consumer.
+	if delete.OldTuple != nil {
+		tup, err := convertPgxTuple(delete.OldTuple, relation, c.oidToType)
+		if err != nil {
+			return err
+		}
+		ce.OldTuple = tup.Columns
 	}
 
 	c.csChan <- ce
