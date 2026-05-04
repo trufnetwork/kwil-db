@@ -2,6 +2,7 @@ package pg
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"strings"
 	"testing"
@@ -79,6 +80,11 @@ func TestDecodeUpdate_NilOldTuple(t *testing.T) {
 	assert.Nil(t, ce.OldTuple, "OldTuple must remain unset when WAL omits it")
 	require.Len(t, ce.NewTuple, 1)
 	assert.Equal(t, NullValue, ce.NewTuple[0].ValueType)
+	// Document the downstream consequence: with no OldTuple, Kind() classifies
+	// this entry as Insert and ApplyChangesetEntry will route it to applyInserts
+	// (ON CONFLICT DO NOTHING) on the receiving network. decodeUpdate logs a
+	// warning for operator visibility — see the else-branch in decodeUpdate.
+	assert.Equal(t, CSEntryKindInsert, ce.Kind())
 }
 
 // TestDecodeUpdate_FullReplicaIdentity confirms that the dedup loop still
@@ -171,6 +177,22 @@ func TestDecodeDelete_WithOldTuple(t *testing.T) {
 	require.Len(t, ce.OldTuple, 1)
 	assert.Equal(t, NullValue, ce.OldTuple[0].ValueType)
 	assert.Nil(t, ce.NewTuple)
+}
+
+// TestApplyDeletes_RefusesEmptyOldTuple locks in the guard against building a
+// bare "DELETE FROM x.y WHERE " SQL string. The guard returns before tx is
+// touched, so a nil sql.DB is safe to pass here.
+func TestApplyDeletes_RefusesEmptyOldTuple(t *testing.T) {
+	rel := &Relation{
+		Schema:  "main",
+		Table:   "primitive_events",
+		Columns: []*Column{{Name: "id", Type: types.IntType}},
+	}
+	ce := &ChangesetEntry{RelationIdx: 0} // OldTuple unset
+
+	err := ce.applyDeletes(context.Background(), nil, rel)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no old tuple")
 }
 
 func TestChangesetEntry_Serialize(t *testing.T) {
