@@ -24,7 +24,7 @@ func (d *demoFormat) MarshalJSON() ([]byte, error) {
 }
 
 func (d *demoFormat) MarshalText() ([]byte, error) {
-	return []byte(fmt.Sprintf("Whatever format: %s", d.data)), nil
+	return fmt.Appendf(nil, "Whatever format: %s", d.data), nil
 }
 
 func Example_wrappedMsg_text() {

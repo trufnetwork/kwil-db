@@ -93,8 +93,8 @@ type RespResolutionBroadcast struct {
 }
 
 func (r *RespResolutionBroadcast) MarshalText() ([]byte, error) {
-	return []byte(fmt.Sprintf(`Transaction Hash: %s
-Resolution ID: %s`, r.TxHash, r.ID)), nil
+	return fmt.Appendf(nil, `Transaction Hash: %s
+Resolution ID: %s`, r.TxHash, r.ID), nil
 }
 
 func (r *RespResolutionBroadcast) MarshalJSON() ([]byte, error) {

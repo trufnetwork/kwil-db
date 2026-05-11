@@ -72,7 +72,7 @@ func (p *PrivateKeyInfo) MarshalJSON() ([]byte, error) {
 
 func (p *PrivateKeyInfo) MarshalText() ([]byte, error) {
 	if p.Address != "" {
-		return []byte(fmt.Sprintf(`Key type: %s
+		return fmt.Appendf(nil, `Key type: %s
 Private key (%s): %s
 Public key (plain hex): %v
 Node ID: %s
@@ -83,9 +83,9 @@ Equivalent User Address: %s`,
 			p.PublicKeyHex,
 			p.NodeID,
 			p.Address,
-		)), nil
+		), nil
 	}
-	return []byte(fmt.Sprintf(`Key type: %s
+	return fmt.Appendf(nil, `Key type: %s
 Private key (%s): %s
 Public key (plain hex): %v
 Node ID: %s`,
@@ -94,5 +94,5 @@ Node ID: %s`,
 		p.PrivateKeyText,
 		p.PublicKeyHex,
 		p.NodeID,
-	)), nil
+	), nil
 }
