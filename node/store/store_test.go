@@ -515,7 +515,7 @@ func testLargeBlockStore(t *testing.T, compress bool) {
 
 		// Create and store block
 		block := ktypes.NewBlock(height, prevHash, prevAppHash, types.Hash{}, types.Hash{}, time.Now(), txns)
-		appHash := types.HashBytes([]byte(fmt.Sprintf("app-%d", height)))
+		appHash := types.HashBytes(fmt.Appendf(nil, "app-%d", height))
 		err = bs.Store(block, &ktypes.CommitInfo{AppHash: appHash})
 		if err != nil {
 			t.Fatal(err)

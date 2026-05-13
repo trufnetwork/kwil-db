@@ -151,7 +151,7 @@ type SnapshotKey [sha256.Size]byte
 func (s *SnapshotMetadata) Key() SnapshotKey {
 	// Hash.Write() never returns an error.
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%v:%v:%v", s.Height, s.Format, s.Chunks)))
+	hasher.Write(fmt.Appendf(nil, "%v:%v:%v", s.Height, s.Format, s.Chunks))
 	hasher.Write(s.Hash)
 
 	for _, chunkHash := range s.ChunkHashes {
