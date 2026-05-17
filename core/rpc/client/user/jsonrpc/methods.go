@@ -205,7 +205,7 @@ func (cl *Client) ListMigrations(ctx context.Context) ([]*types.Migration, error
 	return res.Migrations, nil
 }
 
-// LoadChangesets loads changesets from the node's database at the given height.
+// LoadChangeset loads changesets from the node's database at the given height.
 func (cl *Client) LoadChangeset(ctx context.Context, height int64, index int64) ([]byte, error) {
 	cmd := &userjson.ChangesetRequest{
 		Height: height,

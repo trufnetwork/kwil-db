@@ -26,7 +26,7 @@ func WrapText(text string, width int) string {
 	return wrapText(text, width-2) // for safety, sometimes terminal still doesn't wrap properly
 }
 
-// wrapFlag wraps all flag descriptions. It does this by accounting for the characters
+// wrapFlags wraps all flag descriptions. It does this by accounting for the characters
 // that are to the left of the flag description, as well as the terminal width.
 // If the width can't be determined, it won't wrap the flags.
 func wrapFlags(f *pflag.FlagSet) {
