@@ -33,7 +33,7 @@ func (n *namespaceManager) RegisterNamespace(ns string) {
 	n.namespaces[ns] = struct{}{}
 }
 
-// UnregisterNamespace unregisters a namespace with the manager
+// UnregisterAllNamespaces unregisters a namespace with the manager
 func (n *namespaceManager) UnregisterAllNamespaces() {
 	n.namespaces = make(map[string]struct{})
 }
