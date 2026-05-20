@@ -667,7 +667,7 @@ func (m *Migrator) StoreChangesets(height int64, changes <-chan any) error {
 	return nil
 }
 
-// LoadChangesets loads changesets at a given height from the migration directory.
+// loadChangeset loads changesets at a given height from the migration directory.
 func (m *Migrator) loadChangeset(height int64, index int64) ([]byte, error) {
 	file, err := os.Open(formatChangesetFilename(m.dir, height, index))
 	if err != nil {
