@@ -141,6 +141,28 @@ func TestMAAExec_NilAndEmptyAddress(t *testing.T) {
 	if m2.Namespace != "" || m2.Action != "x" {
 		t.Fatalf("ns/action diverged: %q/%q", m2.Namespace, m2.Action)
 	}
+
+	// An explicit empty (non-nil) MAAAddress must round-trip as a present,
+	// zero-length slice -- NOT collapse to nil (WriteBytes encodes len 0, the
+	// MaxUint32 sentinel is reserved for nil).
+	mEmpty := MAAExec{MAAAddress: []byte{}, Namespace: "", Action: "x"}
+	btsEmpty, err := mEmpty.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary (empty): %v", err)
+	}
+	var m3 MAAExec
+	if err := m3.UnmarshalBinary(btsEmpty); err != nil {
+		t.Fatalf("UnmarshalBinary (empty): %v", err)
+	}
+	if m3.MAAAddress == nil {
+		t.Fatal("empty MAAAddress round-tripped to nil, want a non-nil zero-length slice")
+	}
+	if len(m3.MAAAddress) != 0 {
+		t.Fatalf("empty MAAAddress round-tripped to len %d, want 0", len(m3.MAAAddress))
+	}
+	if m3.Namespace != "" || m3.Action != "x" {
+		t.Fatalf("ns/action diverged (empty): %q/%q", m3.Namespace, m3.Action)
+	}
 }
 
 func TestMAAExec_RejectsBadVersion(t *testing.T) {

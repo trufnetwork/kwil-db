@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"strconv"
@@ -464,6 +465,9 @@ func (m MAAExec) MarshalBinary() ([]byte, error) {
 		return nil, err
 	}
 	numArgs := len(m.Arguments)
+	if numArgs > math.MaxUint16 {
+		return nil, fmt.Errorf("too many arguments to marshal: %d (max %d)", numArgs, math.MaxUint16)
+	}
 	if err := binary.Write(buf, SerializationByteOrder, uint16(numArgs)); err != nil {
 		return nil, err
 	}
