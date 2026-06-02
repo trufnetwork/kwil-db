@@ -51,6 +51,9 @@ const (
 	PayloadTypeCreateResolution    PayloadType = "create_resolution"
 	PayloadTypeApproveResolution   PayloadType = "approve_resolution"
 	PayloadTypeDeleteResolution    PayloadType = "delete_resolution"
+	// PayloadTypeMAAExec executes a single inner action as a Modular Agent
+	// Address (MAA). The mechanism is consensus-breaking; see MAAExec.
+	PayloadTypeMAAExec PayloadType = "maa_exec"
 )
 
 // payloadConcreteTypes associates a payload type with the concrete type of
@@ -69,6 +72,7 @@ var payloadConcreteTypes = map[PayloadType]Payload{
 	PayloadTypeValidatorVoteBodies: &ValidatorVoteBodies{},
 	PayloadTypeCreateResolution:    &CreateResolution{},
 	PayloadTypeApproveResolution:   &ApproveResolution{},
+	PayloadTypeMAAExec:             &MAAExec{},
 	// PayloadTypeDeleteResolution:    &DeleteResolution{},
 }
 
@@ -111,6 +115,7 @@ var payloadTypes = map[PayloadType]bool{
 	PayloadTypeCreateResolution:    true,
 	PayloadTypeApproveResolution:   true,
 	PayloadTypeDeleteResolution:    true,
+	PayloadTypeMAAExec:             true,
 }
 
 // Valid says if the payload type is known. This does not mean that the node
@@ -128,6 +133,7 @@ func (p PayloadType) Valid() bool {
 		PayloadTypeDeleteResolution,
 		PayloadTypeRawStatement,
 		PayloadTypeExecute,
+		PayloadTypeMAAExec,
 		// These should not come in user transactions, but they are not invalid
 		// payload types in general.
 		PayloadTypeValidatorVoteIDs,
@@ -397,6 +403,123 @@ func (a *ActionExecution) UnmarshalBinary(b []byte) error {
 
 	// ensure all args[i] have same length here or in caller?
 
+	return nil
+}
+
+// MAAExec is the payload that executes a single inner action as a Modular Agent
+// Address (MAA). The transaction is signed by the agent's component key
+// (restricted role) or the wallet owner (unrestricted role); the maaExecRoute
+// looks up the rule bound to MAAAddress, enforces the allow-list for the
+// signer's role, and re-enters the engine with @caller rewritten to MAAAddress.
+//
+// Unlike ActionExecution this carries exactly one call (no batching): the
+// allow-list decision and audit event are one-to-one with the transaction, and
+// the restricted role's authority is reasoned about per single action.
+//
+// This payload is consensus-breaking. It is recognized by every node carrying
+// this code, but is only meaningful where the maaExecRoute is registered;
+// network-wide activation is coordinated by the rollout (a height gate is the
+// chokepoint where activation is enforced).
+type MAAExec struct {
+	// MAAAddress is the 20-byte agent-wallet address whose identity (@caller)
+	// the inner action assumes. There is no inner signature; authority derives
+	// from the outer signer's role in the rule bound to this address.
+	MAAAddress []byte
+	// Namespace is the namespace of the inner action (e.g. "main").
+	Namespace string
+	// Action is the inner action name to execute as the MAA.
+	Action string
+	// Arguments are the inner action's arguments (a single call).
+	Arguments []*EncodedValue
+}
+
+var _ Payload = (*MAAExec)(nil)
+
+func (m MAAExec) Type() PayloadType {
+	return PayloadTypeMAAExec
+}
+
+const maaExecVersion = 0
+
+// MAAExec serialization (SerializationByteOrder = little endian throughout):
+//
+//   - uint16 version, presently 0 (maaExecVersion).
+//   - MAAAddress written with WriteBytes (a 4-byte length prefix + raw bytes).
+//   - Namespace written with WriteString.
+//   - Action written with WriteString.
+//   - uint16 number of arguments.
+//   - each EncodedValue serialized via its MarshalBinary, written with WriteBytes.
+func (m MAAExec) MarshalBinary() ([]byte, error) {
+	buf := &bytes.Buffer{}
+	if err := binary.Write(buf, SerializationByteOrder, uint16(maaExecVersion)); err != nil {
+		return nil, err
+	}
+	if err := WriteBytes(buf, m.MAAAddress); err != nil {
+		return nil, err
+	}
+	if err := WriteString(buf, m.Namespace); err != nil {
+		return nil, err
+	}
+	if err := WriteString(buf, m.Action); err != nil {
+		return nil, err
+	}
+	numArgs := len(m.Arguments)
+	if err := binary.Write(buf, SerializationByteOrder, uint16(numArgs)); err != nil {
+		return nil, err
+	}
+	for _, encVal := range m.Arguments {
+		encValBts, err := encVal.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		if err := WriteBytes(buf, encValBts); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func (m *MAAExec) UnmarshalBinary(b []byte) error {
+	rd := bytes.NewReader(b)
+	var version uint16
+	if err := binary.Read(rd, SerializationByteOrder, &version); err != nil {
+		return err
+	}
+	if version != maaExecVersion {
+		return fmt.Errorf("unsupported version %d", version)
+	}
+	maaAddress, err := ReadBytes(rd)
+	if err != nil {
+		return err
+	}
+	namespace, err := ReadString(rd)
+	if err != nil {
+		return err
+	}
+	action, err := ReadString(rd)
+	if err != nil {
+		return err
+	}
+	var numArgs uint16
+	if err := binary.Read(rd, SerializationByteOrder, &numArgs); err != nil {
+		return err
+	}
+	args := make([]*EncodedValue, numArgs)
+	for i := range args {
+		encValBts, err := ReadBytes(rd)
+		if err != nil {
+			return err
+		}
+		var ev EncodedValue
+		if err := ev.UnmarshalBinary(encValBts); err != nil {
+			return err
+		}
+		args[i] = &ev
+	}
+	m.MAAAddress = maaAddress
+	m.Namespace = namespace
+	m.Action = action
+	m.Arguments = args
 	return nil
 }
 
