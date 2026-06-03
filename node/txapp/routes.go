@@ -34,6 +34,7 @@ func init() {
 		RegisterRoute(types.PayloadTypeValidatorVoteBodies, NewRoute(&validatorVoteBodiesRoute{})),
 		RegisterRoute(types.PayloadTypeCreateResolution, NewRoute(&createResolutionRoute{})),
 		RegisterRoute(types.PayloadTypeApproveResolution, NewRoute(&approveResolutionRoute{})),
+		RegisterRoute(types.PayloadTypeMAAExec, NewRoute(&maaExecRoute{})),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("failed to register routes: %s", err))
