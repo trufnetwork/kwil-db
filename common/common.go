@@ -174,6 +174,18 @@ type TxContext struct {
 	Caller string
 	// Authenticator is the authenticator used to sign the transaction.
 	Authenticator string
+	// MAARestricted marks an execution that runs AS a Modular Agent Address
+	// (MAA) on behalf of the rule's RESTRICTED key (the agent). It is set
+	// exclusively by the maa_exec transaction route (node/txapp) when it
+	// rewrites Caller to the MAA address, and — because the engine threads
+	// TxContext by pointer through every nested action and precompile call —
+	// it is visible to token boundaries at ANY call depth, letting them
+	// reject operations that move the caller's funds out (e.g. erc20
+	// transfer/bridge). Kuneiform cannot assign system variables, so SQL code
+	// can never set or clear it; it is Go-only. Consensus-relevant: it
+	// changes execution outcomes, so its activation rides the maa_exec route
+	// rollout.
+	MAARestricted bool
 	// values is a map of values that can be set and retrieved by extensions.
 	values map[string]any
 }

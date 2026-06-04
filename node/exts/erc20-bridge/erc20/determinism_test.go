@@ -187,6 +187,21 @@ func TestMerkleTreeDeterminismWithShuffledRewards(t *testing.T) {
 		err = createEpoch(ctx, app, pending, instanceID)
 		require.NoError(t, err)
 
+		// Fund the network balance before issuing: issueReward debits
+		// reward_instances.balance, which has a CHECK(balance >= 0). 1e9 covers
+		// the test withdrawals (which sum to well under that).
+		fundBalance, err := erc20ValueFromBigInt(big.NewInt(1000000000))
+		require.NoError(t, err)
+		err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
+			{kwil_erc20_meta}UPDATE reward_instances
+			SET balance = $balance
+			WHERE id = $instance_id
+		`, map[string]any{
+			"instance_id": instanceID,
+			"balance":     fundBalance,
+		}, nil)
+		require.NoError(t, err)
+
 		// Shuffle withdrawal order randomly
 		shuffled := make([]withdrawal, len(testWithdrawals))
 		copy(shuffled, testWithdrawals)

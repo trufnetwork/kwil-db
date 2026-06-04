@@ -43,6 +43,16 @@ func newTestDB() (*pg.DB, error) {
 const defaultCaller = "owner"
 
 func setup(t *testing.T, tx sql.DB) *common.App {
+	// Each call builds a fresh interpreter, which fires the engine-ready hooks —
+	// including ordered-sync's, which guards against double-init with a
+	// process-global flag. Tests that call setup() more than once (subtests or
+	// loops, each on its own rolled-back tx) would otherwise trip "already
+	// initialized" on the second call, since the global outlives the tx. Reset
+	// the package globals here so every setup() starts from a clean slate,
+	// independent of how many times a single test calls it.
+	orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+
 	interp, err := interpreter.NewInterpreter(context.Background(), tx, &common.Service{}, nil, nil, nil)
 	require.NoError(t, err)
 
