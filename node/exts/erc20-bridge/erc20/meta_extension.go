@@ -835,6 +835,12 @@ func init() {
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.SYSTEM},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+							// SYSTEM blocks only a bare top-level call; wrapped in an
+							// action body this IS reachable, so gate restricted MAAs.
+							if err := maaRestrictedGuard(ctx, "issue"); err != nil {
+								return err
+							}
+
 							id := inputs[0].(*types.UUID)
 							user := inputs[1].(string)
 							amount := inputs[2].(*types.Decimal)
@@ -854,6 +860,12 @@ func init() {
 						// There is no security risk if somebody calls this directly
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+							// MAA token boundary: a restricted agent must never move
+							// the MAA's funds out, at any call depth.
+							if err := maaRestrictedGuard(ctx, "transfer"); err != nil {
+								return err
+							}
+
 							id := inputs[0].(*types.UUID)
 							to := inputs[1].(string)
 							amount := inputs[2].(*types.Decimal)
@@ -926,6 +938,13 @@ func init() {
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.SYSTEM},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+							// SYSTEM blocks only a bare top-level call; wrapped in an
+							// action body this IS reachable, and it debits an ARBITRARY
+							// user — gate restricted MAAs (plain lock stays available).
+							if err := maaRestrictedGuard(ctx, "lock_admin"); err != nil {
+								return err
+							}
+
 							id := inputs[0].(*types.UUID)
 							user := inputs[1].(string)
 							amount := inputs[2].(*types.Decimal)
@@ -1041,6 +1060,13 @@ func init() {
 						},
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
+							// MAA token boundary: bridge is the L1 off-ramp, and an
+							// omitted amount means the WHOLE caller balance — a
+							// restricted agent must never reach it, at any depth.
+							if err := maaRestrictedGuard(ctx, "bridge"); err != nil {
+								return err
+							}
+
 							id := inputs[0].(*types.UUID)
 							recipient := inputs[1].(string)
 							if recipient == "" {
@@ -1981,6 +2007,24 @@ func callDisable(ctx *common.EngineContext, app *common.App, id *types.UUID) err
 }
 
 // lockTokens locks tokens from a user's balance and gives them to the network.
+// maaRestrictedGuard rejects erc20 operations that are forbidden while the
+// execution runs AS a Modular Agent Address under its RESTRICTED key (the
+// agent), marked by TxContext.MAARestricted (set only by the maa_exec route
+// in node/txapp). This is the token-boundary half of the MAA safety promise:
+// the agent can operate the wallet — lock collateral, trade, receive unlocks —
+// but can never move funds out of it, at ANY call depth, no matter which
+// action wraps the call. Gated: transfer and bridge (they debit the caller,
+// i.e. the MAA, toward a parameter-controlled recipient / off to L1), plus
+// the privileged issue and lock_admin (no agent flow needs them). NOT gated:
+// lock (escrow into the network bucket — order placement needs it) and unlock
+// (the network crediting a user — matching, refunds and settlement need it).
+func maaRestrictedGuard(ctx *common.EngineContext, op string) error {
+	if ctx.TxContext != nil && ctx.TxContext.MAARestricted {
+		return fmt.Errorf("%s is not allowed under a restricted agent (MAA) execution: the restricted key cannot move funds out of the agent wallet", op)
+	}
+	return nil
+}
+
 func (e *extensionInfo) lockTokens(ctx context.Context, app *common.App, id *types.UUID, from string, amount *types.Decimal) error {
 	fromAddr, err := ethAddressFromHex(from)
 	if err != nil {

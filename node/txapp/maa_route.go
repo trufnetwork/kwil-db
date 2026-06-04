@@ -20,20 +20,25 @@ import (
 // rewritten to the MAA for the inner call.
 //
 // Security model ("operate the wallet within limits"):
-//   - The MAA must be a known, joined instance (created by maa_join, issue #1).
+//   - The MAA must be a known, joined instance (created by maa_join).
 //   - The OUTER signer must be the rule's restricted address (the agent) OR the
 //     instance's unrestricted address (the owner); otherwise the signer has no
 //     authority over this MAA. The signer is read WHILE @caller is still the
 //     signer's own identity, before any rewrite.
 //   - The inner (namespace, action) must be in the rule's allow-list. This holds
-//     for BOTH roles (plan lifecycle 4a: the unrestricted owner acts "as the MAA
-//     [for] any allow-listed action"). Raw value-moving primitives are never
-//     allow-listed, so neither role can move funds out via this route. The
-//     owner's withdraw-with-commission is a separate action (issue #4); the
-//     restricted role's hard no-exit guarantee at any depth is the token
-//     boundary (issue #3).
-//   - The inner call is TOP-LEVEL, so SYSTEM-only ops (mint/issue/lock_admin/
-//     unlock) stay blocked even though @caller is now the MAA.
+//     for BOTH roles: the unrestricted owner, too, acts as the MAA only through
+//     allow-listed actions. Raw value-moving primitives are never allow-listed,
+//     so neither role can move funds out via this route; the owner withdraws
+//     through a dedicated withdrawal action instead. The restricted role's hard
+//     no-exit guarantee at any depth is the erc20 token boundary (see below).
+//   - When the signer is the RESTRICTED key, the child context carries
+//     TxContext.MAARestricted, which the erc20 token boundary checks at ANY
+//     call depth to reject out-movement of the MAA's funds (transfer/bridge)
+//     and privileged token ops (issue/lock_admin). The allow-list alone
+//     cannot give that guarantee: it sees only the top-level action name.
+//     Nor can the top-level call: it blocks only a BARE SYSTEM target —
+//     a SYSTEM precompile wrapped inside an action body runs in a subscope
+//     and is not stopped by the SYSTEM gate.
 //
 // Gas/nonce are paid by the OUTER signer; the MAA never pays gas. The MAA's
 // identity is assumed only for the duration of the inner action.
@@ -56,10 +61,10 @@ func (d *maaExecRoute) Price(ctx context.Context, app *common.App, tx *types.Tra
 }
 
 func (d *maaExecRoute) PreTx(ctx *common.TxContext, svc *common.Service, tx *types.Transaction) (types.TxCode, error) {
-	// ACTIVATION CHOKEPOINT (issue #7): once fork-height infrastructure lands,
-	// reject MAAExec before its activation height here, mirroring the
-	// MigrationStatus guards in transferRoute.PreTx. Until then availability is
-	// "this binary is deployed", which the coordinated rollout (#7) flag-days.
+	// ACTIVATION CHOKEPOINT: once fork-height infrastructure lands, reject
+	// MAAExec before its activation height here, mirroring the
+	// MigrationStatus guards in transferRoute.PreTx. Until then availability
+	// is "this binary is deployed", which the coordinated rollout flag-days.
 
 	payload := &types.MAAExec{}
 	if err := payload.UnmarshalBinary(tx.Body.Payload); err != nil {
@@ -101,7 +106,7 @@ func (d *maaExecRoute) InTx(ctx *common.TxContext, app *common.App, tx *types.Tr
 	signer := ethcommon.HexToAddress(ctx.Caller).Bytes()
 
 	// 1) Resolve the MAA instance and its rule's restricted/unrestricted keys.
-	//    maa_get_instance JOINs the instance to its rule (issue #1 getter); a
+	//    maa_get_instance JOINs the instance to its rule (rule-store getter); a
 	//    missing row means this address was never joined -> not a known MAA.
 	var ruleID, restricted, unrestricted []byte
 	found := false
@@ -142,7 +147,7 @@ func (d *maaExecRoute) InTx(ctx *common.TxContext, app *common.App, tx *types.Tr
 		return types.CodeInvalidSender, "", fmt.Errorf(
 			"signer 0x%x is neither the restricted nor the unrestricted key of MAA 0x%x", signer, d.maaAddress)
 	}
-	_ = role // role is recorded/used by issues #3/#4; allow-list below applies to both.
+	// The role decides the no-exit flag set on the child context in step 4.
 
 	// 3) Enforce the allow-list (applies to both roles). The getter orders rows
 	//    deterministically; we only test membership, so there is no map iteration
@@ -170,10 +175,17 @@ func (d *maaExecRoute) InTx(ctx *common.TxContext, app *common.App, tx *types.Tr
 
 	// 4) Re-enter the engine AS the MAA. Clone the tx context and rewrite @caller
 	//    to the MAA's checksummed address (the same format a real signer's
-	//    identifier takes). This is a TOP-LEVEL call, so the SYSTEM gate stays
-	//    active and SYSTEM-only ops remain unreachable.
+	//    identifier takes). The call is top-level, which rejects a bare SYSTEM
+	//    target — but SYSTEM precompiles wrapped inside an action body run in
+	//    subscopes and ARE reachable, so the restricted role's hard no-exit
+	//    guarantee is the MAARestricted flag, enforced at the erc20 token
+	//    boundary at any call depth. The flag is set ONLY on the child
+	//    context: the getters above ran under the outer signer's unflagged
+	//    context, and the unrestricted owner's executions stay unflagged so
+	//    the owner's withdrawal flow keeps working.
 	childTx := *ctx
 	childTx.Caller = ethcommon.BytesToAddress(d.maaAddress).Hex()
+	childTx.MAARestricted = role == "restricted"
 	childEngineCtx := &common.EngineContext{TxContext: &childTx, OverrideAuthz: false}
 
 	var logs string

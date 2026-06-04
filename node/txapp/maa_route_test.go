@@ -50,11 +50,19 @@ type fakeMAAEngine struct {
 	innerNamespace string
 	innerAction    string
 	innerArgs      []any
+	// innerRestricted is TxContext.MAARestricted as seen by the inner action —
+	// the no-exit flag the erc20 token boundary enforces.
+	innerRestricted bool
+	// getterRestricted records whether ANY of the route's own getter lookups
+	// (maa_get_instance / maa_get_allowed_actions) ran with MAARestricted set.
+	// They must not: they run under the outer signer's unflagged context.
+	getterRestricted bool
 }
 
 func (f *fakeMAAEngine) Call(ctx *common.EngineContext, db sql.DB, namespace, action string, args []any, resultFn func(*common.Row) error) (*common.CallResult, error) {
 	switch action {
 	case "maa_get_instance":
+		f.getterRestricted = f.getterRestricted || ctx.TxContext.MAARestricted
 		if f.instanceKnown {
 			row := &common.Row{Values: []any{
 				hexAddr0x(maaAddr20),      // 0 maa_address
@@ -69,6 +77,7 @@ func (f *fakeMAAEngine) Call(ctx *common.EngineContext, db sql.DB, namespace, ac
 		}
 		return &common.CallResult{}, nil
 	case "maa_get_allowed_actions":
+		f.getterRestricted = f.getterRestricted || ctx.TxContext.MAARestricted
 		for _, a := range f.allow {
 			row := &common.Row{Values: []any{a[0], a[1], nil}}
 			if err := resultFn(row); err != nil {
@@ -83,6 +92,7 @@ func (f *fakeMAAEngine) Call(ctx *common.EngineContext, db sql.DB, namespace, ac
 		f.innerNamespace = namespace
 		f.innerAction = action
 		f.innerArgs = args
+		f.innerRestricted = ctx.TxContext.MAARestricted
 		return &common.CallResult{}, nil
 	}
 }
@@ -160,6 +170,12 @@ func TestMAAExecRoute_RestrictedRunsAllowlistedAction(t *testing.T) {
 	gotArg, ok := eng.innerArgs[0].(*string)
 	require.Truef(t, ok, "arg should decode to *string, got %T", eng.innerArgs[0])
 	assert.Equal(t, "0xabc", *gotArg)
+
+	// The restricted signer's inner execution must carry the no-exit flag the
+	// token boundary enforces — and ONLY the inner execution; the route's own
+	// getter lookups run under the outer signer's unflagged ctx.
+	assert.True(t, eng.innerRestricted, "inner ctx must carry MAARestricted for the restricted signer")
+	assert.False(t, eng.getterRestricted, "the route's getter lookups must run unflagged")
 }
 
 func TestMAAExecRoute_UnrestrictedOwnerAlsoLimitedToAllowlist(t *testing.T) {
@@ -170,6 +186,9 @@ func TestMAAExecRoute_UnrestrictedOwnerAlsoLimitedToAllowlist(t *testing.T) {
 	require.Equal(t, types.CodeOk, code)
 	require.True(t, eng.innerCalled)
 	assert.Equal(t, ethcommon.BytesToAddress(maaAddr20).Hex(), eng.innerCaller)
+	// The owner's execution must stay unflagged: the owner's withdrawal flow
+	// moves funds out and must not trip the token boundary.
+	assert.False(t, eng.innerRestricted, "the unrestricted owner's inner ctx must NOT carry MAARestricted")
 }
 
 func TestMAAExecRoute_DefaultsEmptyNamespaceToMain(t *testing.T) {

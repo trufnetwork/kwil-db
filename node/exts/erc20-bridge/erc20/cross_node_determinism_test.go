@@ -61,9 +61,15 @@ func TestCrossNodeMerkleConsistency(t *testing.T) {
 	var blockHash [32]byte
 	copy(blockHash[:], crypto.Keccak256([]byte("block-100")))
 
-	// Node 1: Process withdrawals in original order
+	// Node 1: Process withdrawals in original order.
+	// Each node runs in its own function literal so its deferred tx rollback
+	// fires at the END of the node's block, not at the end of the test. db1 and
+	// db2 point at the same physical database, so if node 1's tx stayed open
+	// (a function-scoped defer) its genesis DDL would hold catalog locks that
+	// deadlock node 2's genesis. Serializing the two txns keeps the "two nodes"
+	// intent while letting each release before the next begins.
 	var node1Root []byte
-	{
+	func() {
 		tx1, err := db1.BeginTx(ctx)
 		require.NoError(t, err)
 		defer tx1.Rollback(ctx)
@@ -127,11 +133,12 @@ func TestCrossNodeMerkleConsistency(t *testing.T) {
 		_, _, root, _, err := genMerkleTreeForEpoch(ctx, app1, epochID1, escrowAddr, blockHash)
 		require.NoError(t, err)
 		node1Root = root
-	}
+	}()
 
-	// Node 2: Process same withdrawals in REVERSE order
+	// Node 2: Process same withdrawals in REVERSE order (see node 1 on why this
+	// is a function literal — its tx must roll back before node 1's would).
 	var node2Root []byte
-	{
+	func() {
 		tx2, err := db2.BeginTx(ctx)
 		require.NoError(t, err)
 		defer tx2.Rollback(ctx)
@@ -196,7 +203,7 @@ func TestCrossNodeMerkleConsistency(t *testing.T) {
 		_, _, root, _, err := genMerkleTreeForEpoch(ctx, app2, epochID2, escrowAddr, blockHash)
 		require.NoError(t, err)
 		node2Root = root
-	}
+	}()
 
 	// CRITICAL VERIFICATION: Both nodes computed IDENTICAL Merkle root
 	require.Equal(t, node1Root, node2Root,
@@ -345,8 +352,12 @@ func TestRewardAggregationDeterminism(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			// Set initial balance for testing (1 billion tokens)
-			testBalance, err := erc20ValueFromBigInt(big.NewInt(1000000000))
+			// Set the network balance high enough to cover every case, including
+			// the near-uint256 "Large numbers" amounts (issueReward debits this
+			// balance, which has a CHECK(balance >= 0)). 1e30 > the largest sum.
+			bigBalance, ok := new(big.Int).SetString("1000000000000000000000000000000", 10)
+			require.True(t, ok)
+			testBalance, err := erc20ValueFromBigInt(bigBalance)
 			require.NoError(t, err)
 			err = app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 				{kwil_erc20_meta}UPDATE reward_instances
