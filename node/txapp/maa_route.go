@@ -28,9 +28,17 @@ import (
 //   - The inner (namespace, action) must be in the rule's allow-list. This holds
 //     for BOTH roles: the unrestricted owner, too, acts as the MAA only through
 //     allow-listed actions. Raw value-moving primitives are never allow-listed,
-//     so neither role can move funds out via this route; the owner withdraws
-//     through a dedicated withdrawal action instead. The restricted role's hard
-//     no-exit guarantee at any depth is the erc20 token boundary (see below).
+//     so neither role can move funds out via an allow-listed action; the
+//     restricted role's hard no-exit guarantee at any depth is the erc20 token
+//     boundary (see below).
+//   - EXCEPTION — the dedicated owner-exit (withdrawal) actions are role-gated
+//     INSTEAD of allow-list-gated: the UNRESTRICTED owner may always run them,
+//     whether or not a rule lists them (rules are immutable, so an
+//     allow-list-bound exit would permanently lock an owner out of their own
+//     funds the moment a rule forgot to include it — the owner's control of
+//     their funds must not depend on how well a rule was curated), and the
+//     RESTRICTED key may never run them, not even when a rule lists them
+//     (withdrawing is the owner's act).
 //   - When the signer is the RESTRICTED key, the child context carries
 //     TxContext.MAARestricted, which the erc20 token boundary checks at ANY
 //     call depth to reject out-movement of the MAA's funds (transfer/bridge)
@@ -149,28 +157,44 @@ func (d *maaExecRoute) InTx(ctx *common.TxContext, app *common.App, tx *types.Tr
 	}
 	// The role decides the no-exit flag set on the child context in step 4.
 
-	// 3) Enforce the allow-list (applies to both roles). The getter orders rows
-	//    deterministically; we only test membership, so there is no map iteration
-	//    or order dependence in the consensus path.
-	allowed := false
-	res, err = app.Engine.Call(makeEngineCtx(ctx), app.DB, engine.DefaultNamespace, "maa_get_allowed_actions",
-		[]any{ruleID}, func(r *common.Row) error {
-			ns, _ := r.Values[0].(string)
-			act, _ := r.Values[1].(string)
-			if ns == d.namespace && act == d.action {
-				allowed = true
-			}
-			return nil
-		})
-	if err != nil {
-		return codeForEngineError(err), "", err
-	}
-	if res.Error != nil {
-		return types.CodeUnknownError, "", res.Error
-	}
-	if !allowed {
-		return types.CodeInvalidSender, "", fmt.Errorf(
-			"action %s.%s is not in the allow-list for MAA 0x%x", d.namespace, d.action, d.maaAddress)
+	// 3) Gate the inner action. The dedicated owner-exit (withdrawal) actions are
+	//    role-gated INSTEAD of allow-list-gated; everything else must be in the
+	//    rule's allow-list, for both roles.
+	if d.isOwnerExitAction() {
+		// Rejecting the restricted key here is defense-in-depth — even reached
+		// through a wrapper action, its exit legs are stopped at the erc20 token
+		// boundary by MAARestricted — but failing fast, before re-entry, gives a
+		// clear error with zero side effects. The unrestricted owner proceeds to
+		// re-entry without an allow-list test: the owner can always exit.
+		if role == "restricted" {
+			return types.CodeInvalidSender, "", fmt.Errorf(
+				"action %s.%s withdraws the agent wallet's funds and is reserved for the unrestricted owner of MAA 0x%x",
+				d.namespace, d.action, d.maaAddress)
+		}
+	} else {
+		// Enforce the allow-list (applies to both roles). The getter orders rows
+		// deterministically; we only test membership, so there is no map iteration
+		// or order dependence in the consensus path.
+		allowed := false
+		res, err = app.Engine.Call(makeEngineCtx(ctx), app.DB, engine.DefaultNamespace, "maa_get_allowed_actions",
+			[]any{ruleID}, func(r *common.Row) error {
+				ns, _ := r.Values[0].(string)
+				act, _ := r.Values[1].(string)
+				if ns == d.namespace && act == d.action {
+					allowed = true
+				}
+				return nil
+			})
+		if err != nil {
+			return codeForEngineError(err), "", err
+		}
+		if res.Error != nil {
+			return types.CodeUnknownError, "", res.Error
+		}
+		if !allowed {
+			return types.CodeInvalidSender, "", fmt.Errorf(
+				"action %s.%s is not in the allow-list for MAA 0x%x", d.namespace, d.action, d.maaAddress)
+		}
 	}
 
 	// 4) Re-enter the engine AS the MAA. Clone the tx context and rewrite @caller
@@ -202,6 +226,23 @@ func (d *maaExecRoute) InTx(ctx *common.TxContext, app *common.App, tx *types.Tr
 		return types.CodeUnknownError, logs, res.Error
 	}
 	return 0, logs, nil
+}
+
+// isOwnerExitAction reports whether the requested inner action is one of the
+// dedicated owner-exit (withdrawal) actions in the engine's default namespace.
+// These move the agent wallet's funds out with the agreed commission and are
+// role-gated rather than allow-list-gated (see the type doc). The names are
+// normalized with the SAME strings.ToLower the engine applies when resolving a
+// Call, so any spelling that would execute a withdrawal action is classified as
+// one — an exact-case test here could be dodged by a case variant. The list
+// must stay in sync with the dedicated withdrawal actions the network's
+// migrations define.
+func (d *maaExecRoute) isOwnerExitAction() bool {
+	if strings.ToLower(d.namespace) != engine.DefaultNamespace {
+		return false
+	}
+	action := strings.ToLower(d.action)
+	return action == "maa_withdraw" || action == "maa_bridge_out"
 }
 
 // hexColumnToBytes reads a "0x"-prefixed hex string column from a getter row and

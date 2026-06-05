@@ -18,10 +18,12 @@ import (
 // These tests exercise the consensus-critical decisions of maaExecRoute in
 // isolation, against a fake engine: who may act as a MAA (role resolution by
 // RAW BYTES, since identifiers are checksummed but the rule store emits
-// lowercase hex), what they may run (allow-list), and that the inner call is
-// re-entered with @caller rewritten to the MAA. A real-engine end-to-end test
-// (create_rule -> join -> maa_exec an order-book action) belongs in the node
-// integration suite; here we pin the branch logic deterministically.
+// lowercase hex), what they may run (the allow-list, plus the role-gated
+// owner-exit actions that bypass it for the owner and reject the restricted
+// key), and that the inner call is re-entered with @caller rewritten to the
+// MAA. A real-engine end-to-end test (create_rule -> join -> maa_exec an
+// order-book action) belongs in the node integration suite; here we pin the
+// branch logic deterministically.
 
 var (
 	maaRestricted   = bytes.Repeat([]byte{0x11}, 20)
@@ -229,12 +231,112 @@ func TestMAAExecRoute_NonAllowlistedActionRejected(t *testing.T) {
 	assert.False(t, eng.innerCalled, "a non-allow-listed action must NOT run")
 }
 
+func TestMAAExecRoute_OwnerExitBypassesAllowlist(t *testing.T) {
+	// The dedicated owner-exit (withdrawal) actions are role-gated, not
+	// allow-list-gated: the unrestricted owner can always exit, even though no
+	// rule lists them (rules are immutable — an allow-list-bound exit would
+	// permanently lock an owner out of their own funds). Case variants and the
+	// empty namespace resolve to the same action in the engine, so they get the
+	// same treatment.
+	for _, tc := range []struct {
+		name, namespace, action string
+	}{
+		{"maa_withdraw", "main", "maa_withdraw"},
+		{"maa_bridge_out", "main", "maa_bridge_out"},
+		{"action case variant", "main", "MAA_WITHDRAW"},
+		{"empty namespace defaults to main", "", "maa_withdraw"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := newKnownEngine() // allow-list contains only ob_place_order
+			code, err := runMAAExec(t, eng, maaUnrestricted, tc.namespace, tc.action)
+			require.NoError(t, err)
+			require.Equal(t, types.CodeOk, code)
+			require.True(t, eng.innerCalled, "the owner's exit must run without being allow-listed")
+			assert.Equal(t, ethcommon.BytesToAddress(maaAddr20).Hex(), eng.innerCaller,
+				"the exit must run as the MAA so it debits the MAA's funds")
+			assert.False(t, eng.innerRestricted, "the owner's exit must run unflagged or its transfer legs would be blocked")
+			assert.False(t, eng.getterRestricted, "the route's getter lookups must run unflagged")
+		})
+	}
+}
+
+func TestMAAExecRoute_RestrictedCannotTriggerOwnerExit(t *testing.T) {
+	// Withdrawing is the owner's act: the restricted key must be rejected BEFORE
+	// re-entry — even when a rule (mistakenly) allow-lists the exit action, and
+	// regardless of name casing (the engine resolves namespace and action names
+	// case-insensitively, so a case variant would execute the same action). The
+	// allow-listed rows double as dodge detectors: if the role gate missed the
+	// spelling, the allow-list path would let the call through to re-entry.
+	for _, tc := range []struct {
+		name, namespace, action string
+		allow                   [][2]string
+	}{
+		{"not allow-listed", "main", "maa_withdraw", nil},
+		{"even when allow-listed", "main", "maa_withdraw", [][2]string{{"main", "maa_withdraw"}}},
+		{"bridge out", "main", "maa_bridge_out", nil},
+		{"action case variant", "main", "MAA_WITHDRAW", [][2]string{{"main", "MAA_WITHDRAW"}}},
+		{"namespace case variant", "MAIN", "maa_withdraw", [][2]string{{"MAIN", "maa_withdraw"}}},
+		{"empty namespace defaults to main", "", "maa_withdraw", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := newKnownEngine()
+			if tc.allow != nil {
+				eng.allow = append(eng.allow, tc.allow...)
+			}
+			code, err := runMAAExec(t, eng, maaRestricted, tc.namespace, tc.action)
+			require.Error(t, err)
+			require.ErrorContains(t, err, "reserved for the unrestricted owner",
+				"the rejection must come from the owner-exit role gate, not the allow-list")
+			assert.Equal(t, types.CodeInvalidSender, code)
+			assert.False(t, eng.innerCalled, "the restricted key's exit attempt must not reach re-entry")
+		})
+	}
+}
+
+func TestMAAExecRoute_OwnerExitGatingIsDefaultNamespaceOnly(t *testing.T) {
+	// An action that merely SHARES the withdrawal name in another namespace is a
+	// normal action: allow-list-gated for both roles, no owner bypass and no
+	// restricted-reject at the route (a real exit nested inside it would still be
+	// stopped at the erc20 token boundary for the restricted role).
+	eng := newKnownEngine()
+	code, err := runMAAExec(t, eng, maaUnrestricted, "other", "maa_withdraw")
+	require.Error(t, err, "outside the default namespace the owner gets no allow-list bypass")
+	assert.Equal(t, types.CodeInvalidSender, code)
+	assert.False(t, eng.innerCalled)
+
+	eng = newKnownEngine()
+	eng.allow = append(eng.allow, [2]string{"other", "maa_withdraw"})
+	code, err = runMAAExec(t, eng, maaRestricted, "other", "maa_withdraw")
+	require.NoError(t, err, "an allow-listed same-named action in another namespace follows the normal path")
+	require.Equal(t, types.CodeOk, code)
+	require.True(t, eng.innerCalled)
+	assert.True(t, eng.innerRestricted, "the restricted role's normal-path execution stays flagged for the boundary")
+}
+
 func TestMAAExecRoute_BadAddressLengthRejectedInPreTx(t *testing.T) {
 	// A payload whose maa_address is not 20 bytes must be rejected at decode time.
 	payloadBytes, err := (types.MAAExec{
 		MAAAddress: bytes.Repeat([]byte{0x33}, 19),
 		Namespace:  "main",
 		Action:     "ob_place_order",
+	}).MarshalBinary()
+	require.NoError(t, err)
+	tx := &types.Transaction{Body: &types.TransactionBody{Payload: payloadBytes}}
+	ctx := &common.TxContext{Ctx: context.Background(), Caller: ethcommon.BytesToAddress(maaRestricted).Hex()}
+
+	route := &maaExecRoute{}
+	code, err := route.PreTx(ctx, nil, tx)
+	require.Error(t, err)
+	assert.Equal(t, types.CodeEncodingError, code)
+}
+
+func TestMAAExecRoute_EmptyActionRejectedInPreTx(t *testing.T) {
+	// A payload with no inner action must be rejected at decode time, before any
+	// state lookups.
+	payloadBytes, err := (types.MAAExec{
+		MAAAddress: maaAddr20,
+		Namespace:  "main",
+		Action:     "",
 	}).MarshalBinary()
 	require.NoError(t, err)
 	tx := &types.Transaction{Body: &types.TransactionBody{Payload: payloadBytes}}
