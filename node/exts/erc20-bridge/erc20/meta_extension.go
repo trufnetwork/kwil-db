@@ -35,6 +35,7 @@ import (
 
 	"github.com/trufnetwork/kwil-db/common"
 	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
+	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/core/utils/order"
@@ -860,15 +861,22 @@ func init() {
 						// There is no security risk if somebody calls this directly
 						AccessModifiers: []precompiles.Modifier{precompiles.PUBLIC},
 						Handler: func(ctx *common.EngineContext, app *common.App, inputs []any, resultFn func([]any) error) error {
-							// MAA token boundary: a restricted agent must never move
-							// the MAA's funds out, at any call depth.
-							if err := maaRestrictedGuard(ctx, "transfer"); err != nil {
-								return err
-							}
-
 							id := inputs[0].(*types.UUID)
 							to := inputs[1].(string)
 							amount := inputs[2].(*types.Decimal)
+
+							// MAA token boundary: a restricted agent must never move
+							// the MAA's funds out, at any call depth — with ONE
+							// exception: the protocol write-fee, a transfer whose
+							// recipient is the block leader's sender address
+							// (@leader_sender in fee-charging actions). The leader is
+							// consensus-determined, never parameter-controlled, so the
+							// agent still cannot steer funds to an address it chooses.
+							if err := maaRestrictedGuard(ctx, "transfer"); err != nil {
+								if !maaIsLeaderFeeRecipient(ctx, to) {
+									return err
+								}
+							}
 
 							if amount.IsNegative() {
 								return fmt.Errorf("amount cannot be negative")
@@ -2018,11 +2026,53 @@ func callDisable(ctx *common.EngineContext, app *common.App, id *types.UUID) err
 // the privileged issue and lock_admin (no agent flow needs them). NOT gated:
 // lock (escrow into the network bucket — order placement needs it) and unlock
 // (the network crediting a user — matching, refunds and settlement need it).
+// The transfer call site carves out ONE exception via maaIsLeaderFeeRecipient:
+// the protocol write-fee to the block leader, so a restricted agent can run
+// fee-charging actions (stream creation / record inserts) on the wallet's
+// escrow.
 func maaRestrictedGuard(ctx *common.EngineContext, op string) error {
 	if ctx.TxContext != nil && ctx.TxContext.MAARestricted {
 		return fmt.Errorf("%s is not allowed under a restricted agent (MAA) execution: the restricted key cannot move funds out of the agent wallet", op)
 	}
 	return nil
+}
+
+// maaIsLeaderFeeRecipient reports whether `to` is the current block leader's
+// sender address — the recipient fee-charging actions resolve from
+// @leader_sender. It mirrors the engine's @leader_sender derivation for the
+// transaction's authenticator (node/engine/interpreter leaderCompactIDForAuth)
+// so the two agree byte for byte. Only the eth_personal_sign scheme yields an
+// address-shaped sender (Keccak(uncompressed pubkey)[12:]); under any other
+// authenticator @leader_sender can never be a valid transfer recipient, so
+// there is nothing to except. Every failure path returns false — the guard
+// stays closed.
+func maaIsLeaderFeeRecipient(ctx *common.EngineContext, to string) bool {
+	txc := ctx.TxContext
+	if txc == nil || txc.BlockContext == nil || txc.BlockContext.Proposer == nil {
+		return false
+	}
+	if !strings.EqualFold(txc.Authenticator, coreauth.EthPersonalSignAuth) {
+		return false
+	}
+	proposer := txc.BlockContext.Proposer
+	if proposer.Type() != kwilcrypto.KeyTypeSecp256k1 {
+		return false
+	}
+	pubKey, err := kwilcrypto.UnmarshalPublicKey(proposer.Bytes(), kwilcrypto.KeyTypeSecp256k1)
+	if err != nil {
+		return false
+	}
+	secpPub, ok := pubKey.(*kwilcrypto.Secp256k1PublicKey)
+	if !ok {
+		return false
+	}
+	toAddr, err := ethAddressFromHex(to)
+	if err != nil {
+		return false
+	}
+	// Raw-byte compare: engine identifiers may be EIP-55 checksummed while
+	// SQL emits lowercase hex — string comparison would be a consensus bug.
+	return bytes.Equal(toAddr.Bytes(), kwilcrypto.EthereumAddressFromPubKey(secpPub))
 }
 
 func (e *extensionInfo) lockTokens(ctx context.Context, app *common.App, id *types.UUID, from string, amount *types.Decimal) error {
