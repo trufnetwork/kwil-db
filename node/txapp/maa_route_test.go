@@ -129,10 +129,7 @@ func runMAAExec(t *testing.T, eng *fakeMAAEngine, signer []byte, namespace, acti
 	require.NoError(t, err)
 
 	tx := &types.Transaction{Body: &types.TransactionBody{Payload: payloadBytes}}
-	ctx := &common.TxContext{
-		Ctx:    context.Background(),
-		Caller: ethcommon.BytesToAddress(signer).Hex(), // checksummed, like a real signer
-	}
+	ctx := maaActivatedTxContext(signer)
 	app := &common.App{Engine: eng}
 
 	route := &maaExecRoute{}
@@ -141,6 +138,23 @@ func runMAAExec(t *testing.T, eng *fakeMAAEngine, signer []byte, namespace, acti
 	}
 	code, _, err := route.InTx(ctx, app, tx)
 	return code, err
+}
+
+// maaActivatedTxContext builds a TxContext whose network has MAAExec
+// activated (maa_activation_height = 1, at height 1), so route tests
+// exercise the post-activation behavior. signer is the raw 20-byte address
+// of the outer tx signer.
+func maaActivatedTxContext(signer []byte) *common.TxContext {
+	return &common.TxContext{
+		Ctx:    context.Background(),
+		Caller: ethcommon.BytesToAddress(signer).Hex(), // checksummed, like a real signer
+		BlockContext: &common.BlockContext{
+			Height: 1,
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{MAAActivationHeight: 1},
+			},
+		},
+	}
 }
 
 func newKnownEngine() *fakeMAAEngine {
@@ -322,7 +336,7 @@ func TestMAAExecRoute_BadAddressLengthRejectedInPreTx(t *testing.T) {
 	}).MarshalBinary()
 	require.NoError(t, err)
 	tx := &types.Transaction{Body: &types.TransactionBody{Payload: payloadBytes}}
-	ctx := &common.TxContext{Ctx: context.Background(), Caller: ethcommon.BytesToAddress(maaRestricted).Hex()}
+	ctx := maaActivatedTxContext(maaRestricted)
 
 	route := &maaExecRoute{}
 	code, err := route.PreTx(ctx, nil, tx)
@@ -340,10 +354,91 @@ func TestMAAExecRoute_EmptyActionRejectedInPreTx(t *testing.T) {
 	}).MarshalBinary()
 	require.NoError(t, err)
 	tx := &types.Transaction{Body: &types.TransactionBody{Payload: payloadBytes}}
-	ctx := &common.TxContext{Ctx: context.Background(), Caller: ethcommon.BytesToAddress(maaRestricted).Hex()}
+	ctx := maaActivatedTxContext(maaRestricted)
 
 	route := &maaExecRoute{}
 	code, err := route.PreTx(ctx, nil, tx)
 	require.Error(t, err)
 	assert.Equal(t, types.CodeEncodingError, code)
+}
+
+func TestMAAExecActivationGate(t *testing.T) {
+	gateCtx := func(activation, height int64) *common.TxContext {
+		return &common.TxContext{
+			Ctx: context.Background(),
+			BlockContext: &common.BlockContext{
+				Height: height,
+				ChainContext: &common.ChainContext{
+					NetworkParameters: &types.NetworkParameters{MAAActivationHeight: activation},
+				},
+			},
+		}
+	}
+
+	t.Run("fails closed without context", func(t *testing.T) {
+		for name, ctx := range map[string]*common.TxContext{
+			"nil ctx":           nil,
+			"nil block context": {Ctx: context.Background()},
+			"nil chain context": {Ctx: context.Background(), BlockContext: &common.BlockContext{}},
+			"nil params":        {Ctx: context.Background(), BlockContext: &common.BlockContext{ChainContext: &common.ChainContext{}}},
+		} {
+			code, err := maaExecActivationGate(ctx)
+			require.Error(t, err, name)
+			assert.Equal(t, types.CodeInvalidTxType, code, name)
+			assert.ErrorIs(t, err, types.ErrUnknownPayloadType, name)
+		}
+	})
+
+	t.Run("zero means never activated", func(t *testing.T) {
+		code, err := maaExecActivationGate(gateCtx(0, 1_000_000))
+		require.Error(t, err)
+		assert.Equal(t, types.CodeInvalidTxType, code)
+		assert.ErrorContains(t, err, "not activated")
+	})
+
+	t.Run("rejected below the activation height", func(t *testing.T) {
+		code, err := maaExecActivationGate(gateCtx(100, 99))
+		require.Error(t, err)
+		assert.Equal(t, types.CodeInvalidTxType, code)
+		assert.ErrorContains(t, err, "activates at height 100")
+	})
+
+	t.Run("active at and after the activation height", func(t *testing.T) {
+		for _, h := range []int64{100, 101, 1 << 40} {
+			code, err := maaExecActivationGate(gateCtx(100, h))
+			require.NoError(t, err)
+			assert.Equal(t, types.TxCode(0), code)
+		}
+	})
+}
+
+func TestMAAExecRoute_RejectedBeforeActivation(t *testing.T) {
+	// A well-formed MAAExec is rejected in PreTx when the network has not
+	// reached (or never scheduled) activation. The rejection wraps
+	// ErrUnknownPayloadType so it reads exactly like a pre-MAA binary's
+	// response to this payload type.
+	payloadBytes, err := (types.MAAExec{
+		MAAAddress: maaAddr20,
+		Namespace:  "main",
+		Action:     "ob_place_order",
+	}).MarshalBinary()
+	require.NoError(t, err)
+	tx := &types.Transaction{Body: &types.TransactionBody{Payload: payloadBytes}}
+
+	route := &maaExecRoute{}
+
+	// Not scheduled at all.
+	ctx := maaActivatedTxContext(maaRestricted)
+	ctx.BlockContext.ChainContext.NetworkParameters.MAAActivationHeight = 0
+	code, err := route.PreTx(ctx, nil, tx)
+	require.Error(t, err)
+	assert.Equal(t, types.CodeInvalidTxType, code)
+	assert.ErrorIs(t, err, types.ErrUnknownPayloadType)
+
+	// Scheduled, not yet reached.
+	ctx.BlockContext.ChainContext.NetworkParameters.MAAActivationHeight = ctx.BlockContext.Height + 10
+	code, err = route.PreTx(ctx, nil, tx)
+	require.Error(t, err)
+	assert.Equal(t, types.CodeInvalidTxType, code)
+	assert.ErrorIs(t, err, types.ErrUnknownPayloadType)
 }

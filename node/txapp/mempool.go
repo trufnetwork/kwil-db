@@ -91,6 +91,16 @@ func (m *mempool) applyTransaction(ctx *common.TxContext, tx *types.Transaction,
 		}
 	}
 
+	// MAAExec is height-gated by the maa_activation_height network
+	// parameter. Rejecting at admission keeps pre-activation transactions
+	// out of mempools and therefore out of blocks; the route's PreTx
+	// enforces the same rule at execution as defense in depth.
+	if tx.Body.PayloadType == types.PayloadTypeMAAExec {
+		if _, err := maaExecActivationGate(ctx); err != nil {
+			return err
+		}
+	}
+
 	// Migration proposals and its approvals are not allowed once the migration is approved
 	if tx.Body.PayloadType == types.PayloadTypeCreateResolution {
 		res := &types.CreateResolution{}
