@@ -803,6 +803,12 @@ func TestNetworkParametersHash(t *testing.T) {
 				np.MigrationStatus = "inactive"
 			},
 		},
+		{
+			name: "different maa activation height",
+			mutator: func(np *NetworkParameters) {
+				np.MAAActivationHeight = 500
+			},
+		},
 	}
 
 	baseHash := baseParams.Hash()
@@ -818,4 +824,55 @@ func TestNetworkParametersHash(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNetworkParametersZeroMAAActivationHeightIsInvisible(t *testing.T) {
+	// MAAActivationHeight was added after live networks genesised. While it
+	// is zero (MAAExec not activated), both the params hash — validated in
+	// every block header as NetworkParamsHash — and the JSON serialization —
+	// stored into kwild_chain.params every block, inside the hashed block
+	// transaction — MUST be byte-identical to what a binary WITHOUT the
+	// field produces, or deploying the new binary would itself fork the
+	// network. The goldens below were captured from the code base
+	// immediately before the field existed (commit 7d3dce4d), over the
+	// values TN mainnet actually runs.
+	pub, err := crypto.UnmarshalSecp256k1PublicKey([]byte{0x2, 0xe0, 0x9d, 0x79, 0x32, 0xde, 0xf1, 0x1d, 0x82, 0x72, 0xdd, 0x3b, 0x58, 0x9d, 0xf8, 0xb1, 0xcf, 0x7a, 0xff, 0xb0, 0x41, 0x50, 0x19, 0x4f, 0xc2, 0x28, 0xf8, 0x17, 0xae, 0xba, 0xb2, 0xc9, 0xda})
+	require.NoError(t, err)
+
+	np := &NetworkParameters{
+		Leader:           PublicKey{pub},
+		MaxBlockSize:     6291456,
+		JoinExpiry:       Duration(604800000000000), // 168h
+		DisabledGasCosts: true,
+		MaxVotesPerTx:    200,
+		MigrationStatus:  NoActiveMigration,
+	}
+
+	const preFieldHash = "72018aca345b2a1e6aed6469c70e077230e45065314c905025d2308194b94ea8"
+	const preFieldJSON = `{"leader":{"type":"secp256k1","key":"02e09d7932def11d8272dd3b589df8b1cf7affb04150194fc228f817aebab2c9da"},"max_block_size":6291456,"join_expiry":"168h0m0s","disabled_gas_costs":true,"max_votes_per_tx":200,"migration_status":"NoActiveMigration"}`
+
+	require.Equal(t, preFieldHash, np.Hash().String())
+	bts, err := np.MarshalBinary()
+	require.NoError(t, err)
+	require.Equal(t, preFieldJSON, string(bts))
+
+	// Setting the parameter is the consensus-visible activation event: both
+	// the header hash and the stored bytes change, on every upgraded node at
+	// the same block.
+	np.MAAActivationHeight = 1_000_000
+	require.NotEqual(t, preFieldHash, np.Hash().String())
+	btsActivated, err := np.MarshalBinary()
+	require.NoError(t, err)
+	require.Contains(t, string(btsActivated), `"maa_activation_height":1000000`)
+
+	// The activated form round-trips...
+	var back NetworkParameters
+	require.NoError(t, back.UnmarshalBinary(btsActivated))
+	require.True(t, np.Equals(&back))
+
+	// ...and bytes stored by a pre-field binary load with the parameter at
+	// zero: not activated.
+	var old NetworkParameters
+	require.NoError(t, old.UnmarshalBinary(bts))
+	require.EqualValues(t, 0, old.MAAActivationHeight)
 }

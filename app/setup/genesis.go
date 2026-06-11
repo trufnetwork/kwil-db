@@ -40,12 +40,13 @@ type genesisFlagConfig struct {
 }
 
 type networkParams struct {
-	withGas       bool
-	leader        string
-	dbOwner       string
-	maxBlockSize  int64
-	joinExpiry    time.Duration
-	maxVotesPerTx int64
+	withGas             bool
+	leader              string
+	dbOwner             string
+	maxBlockSize        int64
+	joinExpiry          time.Duration
+	maxVotesPerTx       int64
+	maaActivationHeight int64
 }
 
 func GenesisCmd() *cobra.Command {
@@ -142,6 +143,7 @@ func bindNetworkParamsFlags(cmd *cobra.Command, cfg *networkParams) {
 	cmd.Flags().Int64Var(&cfg.maxBlockSize, maxBlockSizeFlag, 0, "maximum block size")
 	cmd.Flags().DurationVar(&cfg.joinExpiry, joinExpiryFlag, 0, "Number of blocks before a join proposal expires")
 	cmd.Flags().Int64Var(&cfg.maxVotesPerTx, maxVotesPerTxFlag, 0, "Maximum votes per transaction")
+	cmd.Flags().Int64Var(&cfg.maaActivationHeight, maaActivationHeightFlag, 0, "Block height at which the maa_exec transaction route activates (0 = not activated)")
 }
 
 const (
@@ -154,6 +156,8 @@ const (
 	maxBlockSizeFlag  = "max-block-size"
 	joinExpiryFlag    = "join-expiry"
 	maxVotesPerTxFlag = "max-votes-per-tx"
+
+	maaActivationHeightFlag = "maa-activation-height"
 )
 
 // mergeGenesisFlags merges the genesis configuration flags with the given configuration.
@@ -303,6 +307,10 @@ func mergeNetworkParamFlags(conf *config.GenesisConfig, cmd *cobra.Command, flag
 
 	if cmd.Flags().Changed(maxVotesPerTxFlag) {
 		conf.MaxVotesPerTx = flagCfg.maxVotesPerTx
+	}
+
+	if cmd.Flags().Changed(maaActivationHeightFlag) {
+		conf.MAAActivationHeight = flagCfg.maaActivationHeight
 	}
 
 	return conf, nil

@@ -69,10 +69,16 @@ func (d *maaExecRoute) Price(ctx context.Context, app *common.App, tx *types.Tra
 }
 
 func (d *maaExecRoute) PreTx(ctx *common.TxContext, svc *common.Service, tx *types.Transaction) (types.TxCode, error) {
-	// ACTIVATION CHOKEPOINT: once fork-height infrastructure lands, reject
-	// MAAExec before its activation height here, mirroring the
-	// MigrationStatus guards in transferRoute.PreTx. Until then availability
-	// is "this binary is deployed", which the coordinated rollout flag-days.
+	// ACTIVATION CHOKEPOINT: MAAExec is height-gated by the
+	// maa_activation_height network parameter, mirroring the
+	// MigrationStatus guards in transferRoute.PreTx. The mempool applies
+	// the same gate at admission (applyTransaction), keeping pre-activation
+	// transactions out of blocks entirely; this execution-time check makes
+	// a block that nonetheless carries one fail deterministically on every
+	// upgraded node.
+	if code, err := maaExecActivationGate(ctx); err != nil {
+		return code, err
+	}
 
 	payload := &types.MAAExec{}
 	if err := payload.UnmarshalBinary(tx.Body.Payload); err != nil {
@@ -226,6 +232,29 @@ func (d *maaExecRoute) InTx(ctx *common.TxContext, app *common.App, tx *types.Tr
 		return types.CodeUnknownError, logs, res.Error
 	}
 	return 0, logs, nil
+}
+
+// maaExecActivationGate rejects MAAExec until the network's scheduled
+// activation height, read from the consensus-agreed maa_activation_height
+// network parameter. Zero means MAA was never activated on this network;
+// a missing context is treated the same way — the gate fails closed. The
+// wrapped ErrUnknownPayloadType makes the rejection read (and broadcast-map,
+// via BroadcastErrorToCode) like the route does not exist, which is exactly
+// what a pre-MAA binary reports for this payload type.
+func maaExecActivationGate(ctx *common.TxContext) (types.TxCode, error) {
+	if ctx == nil || ctx.BlockContext == nil || ctx.BlockContext.ChainContext == nil ||
+		ctx.BlockContext.ChainContext.NetworkParameters == nil {
+		return types.CodeInvalidTxType, fmt.Errorf("%w: maa_exec activation height unavailable", types.ErrUnknownPayloadType)
+	}
+	activation := ctx.BlockContext.ChainContext.NetworkParameters.MAAActivationHeight
+	if activation == 0 {
+		return types.CodeInvalidTxType, fmt.Errorf("%w: maa_exec is not activated on this network", types.ErrUnknownPayloadType)
+	}
+	if ctx.BlockContext.Height < activation {
+		return types.CodeInvalidTxType, fmt.Errorf("%w: maa_exec activates at height %d, current height %d",
+			types.ErrUnknownPayloadType, activation, ctx.BlockContext.Height)
+	}
+	return 0, nil
 }
 
 // isOwnerExitAction reports whether the requested inner action is one of the

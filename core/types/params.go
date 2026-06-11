@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/trufnetwork/kwil-db/core/crypto"
 )
@@ -114,6 +115,19 @@ type NetworkParameters struct {
 	// migration on nodes of the old network. The "param" tag is used since json
 	// is explicitly omitted via the "json:"-" tag.
 	MigrationStatus MigrationStatus `json:"-" param:"migration_status"`
+
+	// MAAActivationHeight is the block height at which the maa_exec
+	// transaction route (Modular Agent Addresses) becomes available. Zero
+	// means MAAExec is not activated on this network; transactions are
+	// rejected at mempool admission and at the route's PreTx. The zero
+	// value MUST stay invisible to consensus — omitted from the JSON
+	// serialization (stored into kwild_chain.params every block) and
+	// skipped in Hash (validated in every block header as
+	// NetworkParamsHash) — so a binary carrying this field stays
+	// byte-identical, block for block, to one that predates it until the
+	// network explicitly schedules activation via a param_updates
+	// resolution (or genesis, for new networks).
+	MAAActivationHeight int64 `json:"maa_activation_height,omitempty"`
 }
 
 // ParamUpdates is the mechanism by which changes to network parameters are
@@ -133,15 +147,16 @@ type ParamName = string
 
 // The ParamName values correspond to the fields of the NetworkParameters struct.
 var (
-	ParamNameLeader           ParamName
-	ParamNameMaxBlockSize     ParamName
-	ParamNameJoinExpiry       ParamName
-	ParamNameDisabledGasCosts ParamName
-	ParamNameMaxVotesPerTx    ParamName
-	ParamNameMigrationStatus  ParamName
+	ParamNameLeader              ParamName
+	ParamNameMaxBlockSize        ParamName
+	ParamNameJoinExpiry          ParamName
+	ParamNameDisabledGasCosts    ParamName
+	ParamNameMaxVotesPerTx       ParamName
+	ParamNameMigrationStatus     ParamName
+	ParamNameMAAActivationHeight ParamName
 )
 
-const numParams = 6
+const numParams = 7
 
 // setParamNames sets the ParamName constants based on the json tags of a struct
 // (intended for NetworkParameters, but any for unit testing). This looks crazy,
@@ -159,6 +174,9 @@ func setParamNames(np any) {
 		if fieldTag == "" {
 			panic(fmt.Sprintf("field %v lacks a json tag", field.Name))
 		}
+		// The param name is the json name only — options like ",omitempty"
+		// are not part of it.
+		fieldTag, _, _ = strings.Cut(fieldTag, ",")
 		if fieldTag == "-" {
 			fieldTag = field.Tag.Get("param")
 		}
@@ -175,6 +193,8 @@ func setParamNames(np any) {
 			ParamNameMaxVotesPerTx = fieldTag
 		case "MigrationStatus":
 			ParamNameMigrationStatus = fieldTag
+		case "MAAActivationHeight":
+			ParamNameMAAActivationHeight = fieldTag
 		default:
 			panic(fmt.Sprintf("unknown field %v", fieldName))
 		}
@@ -216,6 +236,8 @@ func MergeUpdates(np *NetworkParameters, updates ParamUpdates) (err error) {
 			np.MaxVotesPerTx = update.(int64)
 		case ParamNameMigrationStatus:
 			np.MigrationStatus = update.(MigrationStatus)
+		case ParamNameMAAActivationHeight:
+			np.MAAActivationHeight = update.(int64)
 		default:
 			return fmt.Errorf("unknown field %v", paramName)
 		}
@@ -339,7 +361,7 @@ func (pu ParamUpdates) MarshalBinary() ([]byte, error) {
 			} else {
 				return nil, fmt.Errorf("invalid type for %s", key)
 			}
-		case ParamNameMaxBlockSize, ParamNameMaxVotesPerTx:
+		case ParamNameMaxBlockSize, ParamNameMaxVotesPerTx, ParamNameMAAActivationHeight:
 			if val, ok := value.(int64); ok {
 				if err := binary.Write(buf, binary.LittleEndian, val); err != nil {
 					return nil, err
@@ -423,7 +445,7 @@ func (pu *ParamUpdates) UnmarshalBinary(data []byte) error {
 				return err
 			}
 			updates[paramName] = expiry
-		case ParamNameMaxBlockSize, ParamNameMaxVotesPerTx:
+		case ParamNameMaxBlockSize, ParamNameMaxVotesPerTx, ParamNameMAAActivationHeight:
 			var val int64
 			if err := binary.Read(buf, binary.LittleEndian, &val); err != nil {
 				return err
@@ -479,7 +501,7 @@ func (pu *ParamUpdates) UnmarshalJSON(b []byte) error {
 			pu0[pn] = pk
 
 		// the int64 params
-		case ParamNameMaxBlockSize, ParamNameJoinExpiry, ParamNameMaxVotesPerTx:
+		case ParamNameMaxBlockSize, ParamNameJoinExpiry, ParamNameMaxVotesPerTx, ParamNameMAAActivationHeight:
 			var i int64
 			if err := json.Unmarshal(v, &i); err != nil {
 				return err
@@ -512,12 +534,13 @@ func (pu *ParamUpdates) UnmarshalJSON(b []byte) error {
 func (np NetworkParameters) ToMap() map[ParamName]any {
 	// Create a map using ParamNames as keys.
 	return map[ParamName]any{
-		ParamNameLeader:           np.Leader,
-		ParamNameMaxBlockSize:     np.MaxBlockSize,
-		ParamNameJoinExpiry:       np.JoinExpiry,
-		ParamNameDisabledGasCosts: np.DisabledGasCosts,
-		ParamNameMaxVotesPerTx:    np.MaxVotesPerTx,
-		ParamNameMigrationStatus:  np.MigrationStatus,
+		ParamNameLeader:              np.Leader,
+		ParamNameMaxBlockSize:        np.MaxBlockSize,
+		ParamNameJoinExpiry:          np.JoinExpiry,
+		ParamNameDisabledGasCosts:    np.DisabledGasCosts,
+		ParamNameMaxVotesPerTx:       np.MaxVotesPerTx,
+		ParamNameMigrationStatus:     np.MigrationStatus,
+		ParamNameMAAActivationHeight: np.MAAActivationHeight,
 	}
 }
 
@@ -572,7 +595,8 @@ func (np *NetworkParameters) Equals(other *NetworkParameters) bool {
 		np.JoinExpiry == other.JoinExpiry &&
 		np.DisabledGasCosts == other.DisabledGasCosts &&
 		np.MaxVotesPerTx == other.MaxVotesPerTx &&
-		np.MigrationStatus == other.MigrationStatus
+		np.MigrationStatus == other.MigrationStatus &&
+		np.MAAActivationHeight == other.MAAActivationHeight
 }
 
 func (np *NetworkParameters) SanityChecks() error {
@@ -606,9 +630,11 @@ func (np NetworkParameters) String() string {
 	Join Expiry: %d
 	Disabled Gas Costs: %t
 	Max Votes Per Tx: %d
-	Migration Status: %s`,
+	Migration Status: %s
+	MAA Activation Height: %d`,
 		&np.Leader, np.MaxBlockSize, np.JoinExpiry,
-		np.DisabledGasCosts, np.MaxVotesPerTx, np.MigrationStatus)
+		np.DisabledGasCosts, np.MaxVotesPerTx, np.MigrationStatus,
+		np.MAAActivationHeight)
 }
 
 func (np *NetworkParameters) Hash() Hash {
@@ -623,6 +649,15 @@ func (np *NetworkParameters) Hash() Hash {
 	binary.Write(hasher, SerializationByteOrder, np.DisabledGasCosts)
 	binary.Write(hasher, SerializationByteOrder, np.MaxVotesPerTx)
 	hasher.Write([]byte(np.MigrationStatus))
+
+	// Parameters added after live networks genesised are hashed only when
+	// set, as tagged records: a zero value must produce the exact hash a
+	// binary that predates the parameter computes, or deploying the new
+	// binary would itself fork block-header validation (NetworkParamsHash).
+	if np.MAAActivationHeight != 0 {
+		hasher.Write([]byte(ParamNameMAAActivationHeight))
+		binary.Write(hasher, SerializationByteOrder, np.MAAActivationHeight)
+	}
 
 	return hasher.Sum(nil)
 }

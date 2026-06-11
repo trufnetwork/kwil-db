@@ -175,3 +175,49 @@ type mockRebroadcast struct{}
 func (m *mockRebroadcast) MarkRebroadcast(ctx context.Context, ids []*types.UUID) error {
 	return nil
 }
+
+func Test_MempoolMAAExecActivationGate(t *testing.T) {
+	privkey, pubkey, _ := crypto.GenerateSecp256k1Key(nil)
+	m := &mempool{
+		accounts:   make(map[string]*types.Account),
+		accountMgr: &mockAccount{},
+		log:        log.DiscardLogger,
+		nodeIdent:  auth.GetNodeSigner(privkey),
+	}
+
+	params := &types.NetworkParameters{
+		Leader:           types.PublicKey{PublicKey: pubkey},
+		DisabledGasCosts: true,
+	}
+	txCtx := &common.TxContext{
+		Ctx:    context.Background(),
+		Caller: "A",
+		BlockContext: &common.BlockContext{
+			Height:       5,
+			ChainContext: &common.ChainContext{NetworkParameters: params},
+		},
+	}
+	db := &mockDb{}
+	rebroadcast := &mockRebroadcast{}
+
+	maaTx := newTx(t, 1, "A")
+	maaTx.Body.PayloadType = types.PayloadTypeMAAExec
+
+	// Never activated: rejected at admission, reading like an unknown
+	// payload type — the same answer a pre-MAA binary gives.
+	err := m.applyTransaction(txCtx, maaTx, db, rebroadcast)
+	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrUnknownPayloadType)
+
+	// Scheduled but not reached: still rejected.
+	params.MAAActivationHeight = txCtx.BlockContext.Height + 1
+	err = m.applyTransaction(txCtx, maaTx, db, rebroadcast)
+	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrUnknownPayloadType)
+
+	// At the activation height: admitted, proceeding to ordinary nonce
+	// handling like any other transaction.
+	params.MAAActivationHeight = txCtx.BlockContext.Height
+	err = m.applyTransaction(txCtx, maaTx, db, rebroadcast)
+	require.NoError(t, err)
+}
