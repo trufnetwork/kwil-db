@@ -307,6 +307,27 @@ func (c *Client) ExecuteSQL(ctx context.Context, stmt string, params map[string]
 	return c.txClient.Broadcast(ctx, tx, syncBcastFlag(txOpts.SyncBcast))
 }
 
+// ExecutePayload signs and broadcasts an arbitrary transaction payload using the
+// client's signer, nonce, and fee estimation — the same construction path as
+// Execute and Transfer. It is the escape hatch for payload types the client has
+// no typed convenience method for, such as extension payloads like MAAExec.
+// Prefer the typed methods (Execute, Transfer, ExecuteSQL) for ordinary actions.
+func (c *Client) ExecutePayload(ctx context.Context, payload types.Payload, opts ...clientType.TxOpt) (types.Hash, error) {
+	txOpts := clientType.GetTxOpts(opts)
+	tx, err := c.newTx(ctx, payload, txOpts)
+	if err != nil {
+		return types.Hash{}, err
+	}
+
+	c.logger.Debug("execute payload",
+		"payload_type", payload.Type(),
+		"signature_type", tx.Signature.Type,
+		"signature", base64.StdEncoding.EncodeToString(tx.Signature.Data),
+		"fee", tx.Body.Fee.String(), "nonce", tx.Body.Nonce)
+
+	return c.txClient.Broadcast(ctx, tx, syncBcastFlag(txOpts.SyncBcast))
+}
+
 // Call calls an action. It returns the result records.
 func (c *Client) Call(ctx context.Context, namespace string, action string, inputs []any) (*types.CallResult, error) {
 	encoded, err := EncodeInputs(inputs)
