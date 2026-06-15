@@ -24,6 +24,7 @@ type stubRPC struct {
 	acctNonce int64
 	estFee    *big.Int
 	gotTx     *types.Transaction
+	gotSync   rpcclient.BroadcastWait
 }
 
 func (s *stubRPC) Health(ctx context.Context) (*types.Health, error) {
@@ -40,6 +41,7 @@ func (s *stubRPC) EstimateCost(ctx context.Context, tx *types.Transaction) (*big
 
 func (s *stubRPC) Broadcast(ctx context.Context, tx *types.Transaction, sync rpcclient.BroadcastWait) (types.Hash, error) {
 	s.gotTx = tx
+	s.gotSync = sync
 	return types.Hash{0x01}, nil
 }
 
@@ -86,4 +88,12 @@ func TestClient_ExecutePayload(t *testing.T) {
 	require.Equal(t, payload.Namespace, got.Namespace)
 	require.Equal(t, payload.Action, got.Action)
 	require.Equal(t, payload.MAAAddress, got.MAAAddress)
+
+	// Options thread through to the broadcast wait mode: default is accept-on-broadcast,
+	// and WithSyncBroadcast(true) waits for commit.
+	require.Equal(t, rpcclient.BroadcastWaitAccept, stub.gotSync, "no opts → accept on broadcast")
+
+	_, err = c.ExecutePayload(ctx, payload, clientType.WithSyncBroadcast(true))
+	require.NoError(t, err)
+	require.Equal(t, rpcclient.BroadcastWaitCommit, stub.gotSync, "WithSyncBroadcast(true) → wait for commit")
 }
