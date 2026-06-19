@@ -263,12 +263,13 @@ func (l *listenerInfo) listen(ctx context.Context, service *common.Service, even
 		}
 
 		indiv := &individualListener{
-			chain:            l.chain,
-			syncConf:         syncConf,
-			chainConf:        chainConf,
-			client:           ethClient,
-			orderedSyncTopic: l.uniqueName,
-			getLogsFunc:      l.getLogs,
+			chain:               l.chain,
+			syncConf:            syncConf,
+			chainConf:           chainConf,
+			client:              ethClient,
+			orderedSyncTopic:    l.uniqueName,
+			getLogsFunc:         l.getLogs,
+			blockSyncChunkDelay: defaultBlockSyncChunkDelay,
 		}
 
 		// Run the listener - this blocks until an error occurs or context is cancelled
