@@ -185,7 +185,13 @@ type individualListener struct {
 	orderedSyncTopic string
 	// getLogsFunc gets logs for a given range of blocks.
 	getLogsFunc GetBlockLogsFunc
+	// blockSyncChunkDelay is the pause between successful chunk requests during catch-up,
+	// a naive guard against RPC rate limits. Defaults to defaultBlockSyncChunkDelay.
+	blockSyncChunkDelay time.Duration
 }
+
+// defaultBlockSyncChunkDelay is the pause between successful catch-up chunk requests.
+const defaultBlockSyncChunkDelay = 500 * time.Millisecond
 
 // GetBlockLogsFunc is a function that provides an ethereum client and a range of blocks and returns the logs for that range.
 type GetBlockLogsFunc func(ctx context.Context, client *ethclient.Client, startBlock, endBlock uint64, logger log.Logger) ([]*EthLog, error)
@@ -214,28 +220,11 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 	lastConfirmedBlock := currentBlock - i.chain.RequiredConfirmations
 	logger.Infof(fmt.Sprintf("catching up from block %d to block %d", startBlock, lastConfirmedBlock))
 
-	// we will now sync all logs from the starting height to the current height,
-	// in chunks of config.BlockSyncChunkSize
-	for {
-		if startBlock >= lastConfirmedBlock {
-			break
-		}
-
-		toBlock := min(startBlock+i.chainConf.BlockSyncChunkSize, lastConfirmedBlock)
-
-		err = i.processEvents(ctx, startBlock, toBlock, eventstore, logger)
-		if err != nil {
-			// NOTE: this will cause the listener stops.
-			return fmt.Errorf("sync up blocks failed, %w", err)
-		}
-
-		startBlock = toBlock
-
-		// naive way to avoid reaching the RPC ratelimit, as most of them calculate limit(computing) by per second.
-		// depends on network and RPC service, this loop might easily reach provided RPC ratelimit
-		// for example, at the time of write, Arbitrum has 314m blocks, whereas Ethereum has 22m blocks.
-		time.Sleep(time.Millisecond * 500)
+	// sync all logs from the starting height to the last confirmed height in chunks.
+	if err := i.syncBlockChunks(ctx, eventstore, startBlock, lastConfirmedBlock, logger); err != nil {
+		return err
 	}
+	startBlock = lastConfirmedBlock
 
 	logger.Info(fmt.Sprintf("synced up to block %d", lastConfirmedBlock))
 
@@ -265,6 +254,45 @@ func (i *individualListener) listen(ctx context.Context, eventstore listeners.Ev
 	}
 
 	return nil
+}
+
+// syncBlockChunks processes events from startBlock up to lastConfirmedBlock in chunks of
+// BlockSyncChunkSize. When a request fails it halves the chunk size and retries the same
+// range, rather than stalling forever on the same oversized request. This recovers from RPC
+// providers that cap eth_getLogs by block range or result count (e.g. "exceed maximum block
+// range", "Request contains invalid block params") without operator intervention. The retry is
+// bounded: once the chunk size reaches one block and still fails, the error is real and is
+// returned (so a genuine outage surfaces and the listener's normal recovery/backoff kicks in).
+func (i *individualListener) syncBlockChunks(ctx context.Context, eventStore listeners.EventStore, startBlock, lastConfirmedBlock int64, logger log.Logger) error {
+	chunkSize := i.chainConf.BlockSyncChunkSize
+	for {
+		if startBlock >= lastConfirmedBlock {
+			return nil
+		}
+
+		toBlock := min(startBlock+chunkSize, lastConfirmedBlock)
+
+		err := i.processEvents(ctx, startBlock, toBlock, eventStore, logger)
+		if err != nil {
+			if chunkSize > 1 {
+				chunkSize /= 2
+				logger.Warn("block sync chunk failed; halving chunk size and retrying",
+					"chain", i.chain.Name, "from", startBlock, "to", toBlock,
+					"new_chunk_size", chunkSize, "err", err)
+				continue
+			}
+			// NOTE: even a single-block request failed, so this is a real error (not a
+			// provider range limit). This will cause the listener to stop and recover.
+			return fmt.Errorf("sync up blocks failed, %w", err)
+		}
+
+		startBlock = toBlock
+
+		// naive way to avoid reaching the RPC ratelimit, as most of them calculate limit(computing) by per second.
+		// depends on network and RPC service, this loop might easily reach provided RPC ratelimit
+		// for example, at the time of write, Arbitrum has 314m blocks, whereas Ethereum has 22m blocks.
+		time.Sleep(i.blockSyncChunkDelay)
+	}
 }
 
 func (i *individualListener) processEvents(ctx context.Context, from, to int64, eventStore listeners.EventStore, logger log.Logger) error {
