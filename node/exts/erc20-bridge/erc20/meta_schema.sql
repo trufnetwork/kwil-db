@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS balances (
     CONSTRAINT balance_must_be_positive CHECK (balance >= 0)
 );
 
+-- index for ordered top-holder lookups: WHERE reward_id = $id [AND balance >= $min]
+-- ORDER BY balance {ASC|DESC} LIMIT $n. Without it, ordering a token's balances is a
+-- sequential scan + top-N sort. A btree on (reward_id, balance) is scanned forward for
+-- ASC and backward for DESC, and also serves the balance-threshold range.
+CREATE INDEX IF NOT EXISTS idx_balances_reward_balance ON balances(reward_id, balance);
+
 -- epochs holds the epoch information.
 -- An epoch is a group of rewards that are issued in a given time/block range.
 -- Epochs have 3 states:
