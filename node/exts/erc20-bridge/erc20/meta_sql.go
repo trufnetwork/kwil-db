@@ -788,7 +788,10 @@ func getVersion(ctx context.Context, app *common.App) (version int64, notYetSet 
 	return version, false, nil
 }
 
-var currentVersion = int64(2)
+// currentVersion is the meta-schema version. Bumping it makes OnStart re-run the
+// idempotent createSchema on existing nodes to pick up additive schema changes.
+// v3: add idx_balances_reward_balance for ordered top-holder lookups.
+var currentVersion = int64(3)
 
 // setVersionToCurrent sets the version of the meta extension to currentVersion.
 func setVersionToCurrent(ctx context.Context, app *common.App) error {

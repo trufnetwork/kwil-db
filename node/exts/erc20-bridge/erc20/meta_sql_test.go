@@ -722,3 +722,38 @@ func TestGetWalletEpochs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, epochsReturned, 0, "should return no epochs when all are claimed")
 }
+
+// TestBalancesRewardBalanceIndex verifies the ordered top-holder index exists on
+// kwil_erc20_meta.balances after the schema is created, so that
+// "WHERE reward_id = $id [AND balance >= $min] ORDER BY balance {ASC|DESC} LIMIT $n"
+// is served by an index instead of a sequential scan + top-N sort (trufscan #185).
+func TestBalancesRewardBalanceIndex(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	require.NoError(t, err)
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) // always rollback
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	setup(t, tx) // runs genesis createSchema at currentVersion
+
+	// pg_indexes is a standard Postgres catalog view; read it via the raw pg path.
+	res, err := tx.Execute(ctx, `SELECT indexdef FROM pg_indexes
+		WHERE schemaname = 'kwil_erc20_meta'
+		  AND tablename = 'balances'
+		  AND indexname = 'idx_balances_reward_balance'`)
+	require.NoError(t, err)
+	require.Len(t, res.Rows, 1, "idx_balances_reward_balance must exist on kwil_erc20_meta.balances")
+
+	indexdef, ok := res.Rows[0][0].(string)
+	require.True(t, ok, "indexdef should be text")
+	require.Contains(t, indexdef, "reward_id", "index should lead with reward_id")
+	require.Contains(t, indexdef, "balance", "index should include balance")
+}
