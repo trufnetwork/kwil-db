@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
+	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 	"github.com/trufnetwork/kwil-db/core/rpc/json/function"
@@ -77,7 +79,16 @@ func (Service) VerifySignature(_ context.Context, req *function.VerifySignatureR
 		Type: req.Signature.SignatureType,
 	}
 
-	err := authExt.VerifySignature(req.Sender, req.Msg, &convSignature)
+	// function.verify_sig is an RPC helper used by KGW during login/session
+	// creation, not a consensus path with a current block. Use this node's
+	// wall clock so expired bearer credentials cannot stay valid just because
+	// block production is lagging; never take time from the request.
+	verifyCtx := authExt.VerifyContext{
+		BlockContext: &common.BlockContext{
+			Timestamp: time.Now().UTC().Unix(),
+		},
+	}
+	err := authExt.VerifySignatureWithContext(verifyCtx, req.Sender, req.Msg, &convSignature)
 	if err != nil {
 		return &function.VerifySignatureResponse{
 			Valid:  false,

@@ -217,6 +217,9 @@ func (e *executionContext) queryWithSelectPrivilegeChecks(sql string, fn func(*r
 }
 
 func (e *executionContext) queryInternal(sql string, fn func(*row) error, checkReferencedSelects bool) error {
+	done := observeSQL(e, sql)
+	defer done()
+
 	if e.queryActive {
 		// Instead of erroring, execute as nested query with savepoint
 		return e.nestedQuery(sql, fn)

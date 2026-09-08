@@ -180,17 +180,24 @@ func (d *baseRoute) Execute(ctx *common.TxContext, router *TxApp, db sql.DB, tx 
 		Validators: router.Validators,
 	}
 
+	payloadStartedAt := time.Now()
 	code, log, err := d.InTx(ctx, app, tx)
+	payloadExecutionDuration := time.Since(payloadStartedAt)
+	response := func(code types.TxCode, log string, err error) *TxResponse {
+		res := txRes(spend, code, log, err)
+		res.PayloadExecutionDuration = payloadExecutionDuration
+		return res
+	}
 	if err != nil {
-		return txRes(spend, code, log, err)
+		return response(code, log, err)
 	}
 
 	err = tx2.Commit(ctx.Ctx)
 	if err != nil {
-		return txRes(spend, types.CodeUnknownError, log, err)
+		return response(types.CodeUnknownError, log, err)
 	}
 
-	return txRes(spend, types.CodeOk, log, nil)
+	return response(types.CodeOk, log, nil)
 }
 
 // ========================== route implementations ==========================

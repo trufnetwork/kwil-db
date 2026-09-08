@@ -151,6 +151,9 @@ type TxContext struct {
 	Caller string
 	// Authenticator is the authenticator used to sign the transaction.
 	Authenticator string
+	// EngineTrace collects exclusive-time Engine.Call stages for this transaction.
+	// Nil disables tracing.
+	EngineTrace *EngineTrace
 	// values is a map of values that can be set and retrieved by extensions.
 	values map[string]any
 }

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 )
@@ -27,6 +28,20 @@ var (
 
 // registeredAuthenticators is the Authenticator registry used by kwild.
 var registeredAuthenticators = make(map[string]auth.Authenticator)
+
+// VerifyContext carries deterministic request context for authenticators that
+// need it. Authenticators that do not implement ContextAuthenticator continue
+// to use the legacy Verify method.
+type VerifyContext struct {
+	BlockContext *common.BlockContext
+	Namespace    string
+	Action       string
+}
+
+// ContextAuthenticator is an optional extension to auth.Authenticator.
+type ContextAuthenticator interface {
+	VerifyWithContext(ctx VerifyContext, compactID, msg, signature []byte) error
+}
 
 // ModOperation is the type used to enumerate authenticator modifications.
 type ModOperation int8
@@ -120,11 +135,38 @@ func GetAuthenticatorKeyType(authType string) (crypto.KeyType, error) {
 	return authn.KeyType(), nil
 }
 
+// RequiresContext reports whether the authenticator has context-dependent
+// verification that must be rechecked at block execution time.
+func RequiresContext(authType string) (bool, error) {
+	authn, err := GetAuthenticator(authType)
+	if err != nil {
+		return false, err
+	}
+
+	_, ok := authn.(ContextAuthenticator)
+	return ok, nil
+}
+
 // VerifySignature verifies a message's signature.
 func VerifySignature(sender, msg []byte, sig *auth.Signature) error {
 	authn, err := GetAuthenticator(sig.Type)
 	if err != nil {
 		return err
+	}
+
+	return authn.Verify(sender, msg, sig.Data)
+}
+
+// VerifySignatureWithContext verifies a message's signature with optional
+// request context for authenticators that need deterministic block data.
+func VerifySignatureWithContext(ctx VerifyContext, sender, msg []byte, sig *auth.Signature) error {
+	authn, err := GetAuthenticator(sig.Type)
+	if err != nil {
+		return err
+	}
+
+	if ctxAuthn, ok := authn.(ContextAuthenticator); ok {
+		return ctxAuthn.VerifyWithContext(ctx, sender, msg, sig.Data)
 	}
 
 	return authn.Verify(sender, msg, sig.Data)

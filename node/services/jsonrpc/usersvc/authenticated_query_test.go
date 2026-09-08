@@ -13,6 +13,7 @@ import (
 	jsonrpc "github.com/trufnetwork/kwil-db/core/rpc/json"
 	userjson "github.com/trufnetwork/kwil-db/core/rpc/json/user"
 	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
 )
 
 func TestAuthenticatedQueryNilRequest(t *testing.T) {
@@ -57,8 +58,6 @@ func TestAuthenticatedQueryOpenModeSmokeUnsignedRequest(t *testing.T) {
 	_, rpcErr := svc.AuthenticatedQuery(context.Background(), req)
 
 	require.NotNil(t, rpcErr)
-	require.NotEqual(t, jsonrpc.ErrorAuthenticatedQueryRequiresPrivateRPC, rpcErr.Code,
-		"open RPC must not reject authenticated_query before authentication")
 	require.Equal(t, jsonrpc.ErrorCallChallengeNotFound, rpcErr.Code)
 	require.Contains(t, rpcErr.Message, "signed call message with challenge required")
 }
@@ -92,7 +91,7 @@ func TestAuthenticateOpenModeOptionalForCalls(t *testing.T) {
 		privateMode: false,
 	}
 
-	rpcErr := svc.authenticate(nil, nil, nil, "", "")
+	rpcErr := svc.authenticate(nil, nil, nil, "", "", authExt.VerifyContext{})
 
 	require.Nil(t, rpcErr)
 }
@@ -118,7 +117,7 @@ func TestAuthenticateRequiredAcceptsSignedChallenge(t *testing.T) {
 		},
 	}
 
-	rpcErr := svc.authenticateRequired(req.SignatureData, req.Challenge, req.Sender, req.AuthType, sigText)
+	rpcErr := svc.authenticateRequired(req.SignatureData, req.Challenge, req.Sender, req.AuthType, sigText, authExt.VerifyContext{})
 
 	require.Nil(t, rpcErr)
 	require.Empty(t, svc.challenges, "verified challenges are single-use")

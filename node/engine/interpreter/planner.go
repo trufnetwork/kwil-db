@@ -480,8 +480,12 @@ func (i *interpreterPlanner) VisitActionStmtCall(p0 *parse.ActionStmtCall) any {
 			vals[j] = val
 		}
 
+		nsName := p0.Call.Namespace
+		if nsName == "" {
+			nsName = exec.scope.namespace
+		}
 		iter := 0
-		err = funcDef.Func(exec, vals, func(row *row) error {
+		err = observeExecutable(exec, nsName, funcDef, vals, func(row *row) error {
 			// if there are receivers and this returns more than 1 Value, we should return an error.
 			if iter > 0 && len(receivers) > 0 {
 				return fmt.Errorf(`%w: expected function or action "%s" to return a single record, but it returned a record set`, engine.ErrReturnShape, funcDef.Name)
@@ -655,7 +659,11 @@ func (i *interpreterPlanner) VisitLoopTermExpression(p0 *parse.LoopTermExpressio
 				vals[j] = val
 			}
 
-			err = funcDef.Func(exec, vals, func(row *row) error {
+			nsName := functionCall.Namespace
+			if nsName == "" {
+				nsName = exec.scope.namespace
+			}
+			err = observeExecutable(exec, nsName, funcDef, vals, func(row *row) error {
 				rec, err := row.record()
 				if err != nil {
 					return err
@@ -967,9 +975,13 @@ func (i *interpreterPlanner) VisitExpressionFunctionCall(p0 *parse.ExpressionFun
 			vals[j] = val
 		}
 
+		nsName := p0.Namespace
+		if nsName == "" {
+			nsName = exec.scope.namespace
+		}
 		var val Value
 		iters := 0
-		err = execute.Func(exec, vals, func(received *row) error {
+		err = observeExecutable(exec, nsName, execute, vals, func(received *row) error {
 			iters++
 			if len(received.Values) != 1 {
 				return fmt.Errorf(`%w: expected function or action "%s" to return 1 Value, but it returned %d`, engine.ErrReturnShape, p0.Name, len(received.Values))
