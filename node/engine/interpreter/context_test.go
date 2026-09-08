@@ -12,6 +12,7 @@ import (
 	coreauth "github.com/trufnetwork/kwil-db/core/crypto/auth"
 	extauth "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/engine/planner/logical"
 )
 
 const fixedTs = 1640995200
@@ -200,6 +201,35 @@ func TestContextualVars_InvalidTxCtx(t *testing.T) {
 		_, err := exec.getVariable(v)
 		require.ErrorIs(t, err, engine.ErrInvalidTxCtx, v)
 	}
+}
+
+func TestReferencedPhysicalTableNamespacesIncludesSubqueries(t *testing.T) {
+	physicalScan := func(namespace string) *logical.Scan {
+		return &logical.Scan{
+			Source: &logical.TableScanSource{
+				Namespace: namespace,
+				TableName: "table",
+				Type:      logical.TableSourcePhysical,
+			},
+		}
+	}
+
+	nested := &logical.Subplan{Plan: physicalScan("private")}
+	plan := &logical.AnalyzedPlan{
+		Plan: &logical.Project{
+			Expressions: []logical.Expression{
+				&logical.SubqueryExpr{
+					Query: &logical.Subquery{Plan: nested},
+				},
+			},
+			Child: physicalScan("main"),
+		},
+		CTEs: []*logical.Subplan{
+			{Plan: physicalScan("cte_namespace")},
+		},
+	}
+
+	require.Equal(t, []string{"cte_namespace", "main", "private"}, referencedPhysicalTableNamespaces(plan))
 }
 
 // 5) Non-concrete proposer type: wrapped secp256k1 with EthPersonalSignAuth

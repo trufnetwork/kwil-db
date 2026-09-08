@@ -3,6 +3,7 @@ package interpreter
 import (
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/decred/dcrd/container/lru"
@@ -109,6 +110,10 @@ func (e *executionContext) subscope(namespace string) *executionContext {
 // checkPrivilege checks that the current user has a privilege,
 // and returns an error if they do not.
 func (e *executionContext) checkPrivilege(priv privilege) error {
+	return e.checkPrivilegeOnNamespace(priv, e.scope.namespace)
+}
+
+func (e *executionContext) checkPrivilegeOnNamespace(priv privilege, namespace string) error {
 	if e.engineCtx.OverrideAuthz {
 		return nil
 	}
@@ -117,8 +122,8 @@ func (e *executionContext) checkPrivilege(priv privilege) error {
 		return nil
 	}
 
-	if !e.interpreter.accessController.HasPrivilege(e.engineCtx.TxContext.Caller, &e.scope.namespace, priv) {
-		return fmt.Errorf(`%w %s on namespace "%s"`, engine.ErrDoesNotHavePrivilege, priv, e.scope.namespace)
+	if !e.interpreter.accessController.HasPrivilege(e.engineCtx.TxContext.Caller, &namespace, priv) {
+		return fmt.Errorf(`%w %s on namespace "%s"`, engine.ErrDoesNotHavePrivilege, priv, namespace)
 	}
 
 	return nil
@@ -204,6 +209,14 @@ func (e *executionContext) getVariableType(name string) (*types.DataType, error)
 // It will parse the SQL, create a logical plan, and execute the query.
 // Now supports nested queries using PostgreSQL savepoints and row buffering.
 func (e *executionContext) query(sql string, fn func(*row) error) error {
+	return e.queryInternal(sql, fn, false)
+}
+
+func (e *executionContext) queryWithSelectPrivilegeChecks(sql string, fn func(*row) error) error {
+	return e.queryInternal(sql, fn, true)
+}
+
+func (e *executionContext) queryInternal(sql string, fn func(*row) error, checkReferencedSelects bool) error {
 	done := observeSQL(e, sql)
 	defer done()
 
@@ -222,6 +235,11 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	generatedSQL, analyzed, args, err := e.prepareQuery(sql)
 	if err != nil {
 		return err
+	}
+	if checkReferencedSelects {
+		if err := e.checkReferencedSelectPrivileges(analyzed); err != nil {
+			return err
+		}
 	}
 
 	// get the scan values as well:
@@ -293,6 +311,50 @@ func (e *executionContext) query(sql string, fn func(*row) error) error {
 	}
 
 	return nil
+}
+
+func (e *executionContext) checkReferencedSelectPrivileges(plan *logical.AnalyzedPlan) error {
+	for _, namespace := range referencedPhysicalTableNamespaces(plan) {
+		if err := e.checkPrivilegeOnNamespace(_SELECT_PRIVILEGE, namespace); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func referencedPhysicalTableNamespaces(plan *logical.AnalyzedPlan) []string {
+	namespaces := make(map[string]struct{})
+
+	collect := func(node logical.Traversable) {
+		logical.Traverse(node, func(node logical.Traversable) bool {
+			scan, ok := node.(*logical.Scan)
+			if !ok {
+				return true
+			}
+
+			table, ok := scan.Source.(*logical.TableScanSource)
+			if ok && table.Type == logical.TableSourcePhysical {
+				namespaces[table.Namespace] = struct{}{}
+			}
+
+			return true
+		})
+	}
+
+	for _, cte := range plan.CTEs {
+		collect(cte)
+	}
+
+	collect(plan.Plan)
+
+	res := make([]string, 0, len(namespaces))
+	for namespace := range namespaces {
+		res = append(res, namespace)
+	}
+	sort.Strings(res)
+
+	return res
 }
 
 // nestedQuery executes a query while another query is active, using PostgreSQL savepoints.

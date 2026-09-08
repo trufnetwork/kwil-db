@@ -1613,6 +1613,10 @@ func (i *interpreterPlanner) VisitSQLStatement(p0 *parse.SQLStatement) any {
 			return fmt.Errorf("%w: SQL statement mutates state, but the execution context is read-only: %s", engine.ErrCannotMutateState, raw)
 		}
 
+		if privilege == _SELECT_PRIVILEGE {
+			return exec.queryWithSelectPrivilegeChecks(raw, fn)
+		}
+
 		return exec.query(raw, fn)
 	})
 }
