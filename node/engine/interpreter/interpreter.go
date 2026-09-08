@@ -35,23 +35,35 @@ type ThreadSafeInterpreter struct {
 }
 
 // lock locks the interpreter with either a read or write lock, depending on the access mode of the database.
-func (t *ThreadSafeInterpreter) lock(db sql.DB) (unlock func(), err error) {
+func (t *ThreadSafeInterpreter) lock(ctx *common.EngineContext, db sql.DB) (unlock func(), err error) {
 	am, ok := db.(sql.AccessModer)
 	if !ok {
 		return nil, fmt.Errorf("database does not implement AccessModer")
 	}
+	mode := am.AccessMode()
 
-	if am.AccessMode() == sql.ReadOnly {
+	traceDone := func() {}
+	if ctx != nil && ctx.TxContext != nil && ctx.TxContext.EngineTrace != nil {
+		name := "interpreter_write_lock_wait"
+		if mode == sql.ReadOnly {
+			name = "interpreter_read_lock_wait"
+		}
+		traceDone = ctx.TxContext.EngineTrace.Start(common.EngineTraceKindRuntime, "", name, "")
+	}
+
+	if mode == sql.ReadOnly {
 		t.mu.RLock()
+		traceDone()
 		return t.mu.RUnlock, nil
 	}
 
 	t.mu.Lock()
+	traceDone()
 	return t.mu.Unlock, nil
 }
 
 func (t *ThreadSafeInterpreter) Call(ctx *common.EngineContext, db sql.DB, namespace string, action string, args []any, resultFn func(*common.Row) error) (*common.CallResult, error) {
-	unlock, err := t.lock(db)
+	unlock, err := t.lock(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +77,7 @@ func (t *ThreadSafeInterpreter) CallWithoutEngineCtx(ctx context.Context, db sql
 }
 
 func (t *ThreadSafeInterpreter) Execute(ctx *common.EngineContext, db sql.DB, statement string, params map[string]any, fn func(*common.Row) error) error {
-	unlock, err := t.lock(db)
+	unlock, err := t.lock(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -716,7 +728,7 @@ func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, 
 		}
 	}
 
-	err = exec.Func(execCtx, argVals, func(row *row) error {
+	err = observeExecutable(execCtx, namespace, exec, argVals, func(row *row) error {
 		return resultFn(rowToCommonRow(row))
 	})
 

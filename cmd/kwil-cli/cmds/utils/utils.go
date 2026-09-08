@@ -22,6 +22,7 @@ func NewCmdUtils() *cobra.Command {
 		kgwAuthnCmd(),
 		testCmd(),
 		generateKeyCmd(),
+		blockMixCmd(),
 	)
 
 	return cmd

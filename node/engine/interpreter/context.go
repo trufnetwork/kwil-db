@@ -204,6 +204,9 @@ func (e *executionContext) getVariableType(name string) (*types.DataType, error)
 // It will parse the SQL, create a logical plan, and execute the query.
 // Now supports nested queries using PostgreSQL savepoints and row buffering.
 func (e *executionContext) query(sql string, fn func(*row) error) error {
+	done := observeSQL(e, sql)
+	defer done()
+
 	if e.queryActive {
 		// Instead of erroring, execute as nested query with savepoint
 		return e.nestedQuery(sql, fn)

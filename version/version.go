@@ -15,7 +15,7 @@ import (
 //   - 0.6.0+release
 //   - 0.6.1
 //   - 0.6.2-alpha0+go1.21.nocgo
-const kwilVersion = "0.10.2" // remove "-pre" for the tagged commit
+const kwilVersion = "0.10.3" // remove "-pre" for the tagged commit
 
 // KwildVersion may be set at compile time by:
 //

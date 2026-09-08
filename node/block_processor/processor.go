@@ -255,6 +255,13 @@ func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types
 	bp.log.Debug("Check transaction", "Recheck", recheck, "Hash", txHash, "Sender", log.LazyHex(tx.Sender),
 		"PayloadType", tx.Body.PayloadType, "Nonce", tx.Body.Nonce, "TxFee", tx.Body.Fee)
 
+	blockCtx := &common.BlockContext{
+		ChainContext: bp.chainCtx,
+		Height:       height + 1,
+		Timestamp:    blockTime.Unix() + 1, // eh, one second later... ?
+		Proposer:     bp.chainCtx.NetworkParameters.Leader,
+	}
+
 	if !recheck {
 		// Verify the correct chain ID is set, if it is set.
 		if protected := tx.Body.ChainID != ""; protected && tx.Body.ChainID != bp.genesisParams.ChainID {
@@ -262,7 +269,7 @@ func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types
 		}
 
 		// Ensure that the transaction is valid in terms of the signature and the payload type
-		if err := verifyTransaction(tx); err != nil {
+		if err := verifyTransactionWithContext(authExt.VerifyContext{BlockContext: blockCtx}, tx); err != nil {
 			bp.log.Debug("Failed to verify the transaction", "err", err)
 			return fmt.Errorf("failed to verify the transaction: %w", err)
 		}
@@ -274,13 +281,8 @@ func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types
 	}
 
 	return bp.txapp.ApplyMempool(&common.TxContext{
-		Ctx: ctx,
-		BlockContext: &common.BlockContext{
-			ChainContext: bp.chainCtx,
-			Height:       height + 1,
-			Timestamp:    blockTime.Unix() + 1, // eh, one second later... ?
-			Proposer:     bp.chainCtx.NetworkParameters.Leader,
-		},
+		Ctx:           ctx,
+		BlockContext:  blockCtx,
 		TxID:          hex.EncodeToString(txHash[:]),
 		Signer:        tx.Sender,
 		Caller:        ident,
@@ -411,8 +413,19 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	txResults := make([]ktypes.TxResult, len(req.Block.Txns))
 
 	txHashes := bp.initBlockExecutionStatus(req.Block)
+	executionProfile := newBlockExecutionProfile()
 
 	for i, tx := range req.Block.Txns {
+		requiresContext, err := authExt.RequiresContext(tx.Signature.Type)
+		if err != nil {
+			return nil, fmt.Errorf("failed to inspect block tx authenticator: %w", err)
+		}
+		if requiresContext {
+			if err := verifyTransactionWithContext(authExt.VerifyContext{BlockContext: blockCtx}, tx); err != nil {
+				return nil, fmt.Errorf("failed to verify block tx: %w", err)
+			}
+		}
+
 		identifier, err := authExt.GetIdentifier(tx.Signature.Type, tx.Sender)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get identifier for the block tx: %w", err)
@@ -427,18 +440,28 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 			Authenticator: tx.Signature.Type,
 			Caller:        identifier,
 			BlockContext:  blockCtx,
+			EngineTrace:   common.NewEngineTrace(),
 		}
 
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err() // notify the caller about the context cancellation or deadline exceeded error
 		default:
+			txStartedAt := time.Now()
 			res := bp.txapp.Execute(txCtx, bp.consensusTx, tx)
 			txResult := ktypes.TxResult{
 				Code: uint32(res.ResponseCode),
 				Gas:  res.Spend,
 				Log:  res.Log,
 			}
+			executionProfile.record(
+				tx,
+				txHash,
+				txResult.Code,
+				time.Since(txStartedAt),
+				res.PayloadExecutionDuration,
+				txCtx.EngineTrace.Stages(),
+			)
 
 			// bookkeeping for the block execution status
 			bp.updateBlockExecutionStatus(txHash)
@@ -475,6 +498,23 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 				bp.events.UpdateStats(numEvents)
 			}
 		}
+	}
+	if !syncing && executionProfile.shouldLog() {
+		bp.log.Info(
+			"slow block transaction profile",
+			"height", req.Height,
+			"blockID", req.BlockID,
+			"leader", isLeader,
+			"transactions", len(req.Block.Txns),
+			"txExecMs", executionProfile.total.Milliseconds(),
+			"slowTxs", len(executionProfile.slowTxs),
+		)
+		bp.log.Debug(
+			"slow block transaction profile detail",
+			"height", req.Height,
+			"actions", executionProfile.actionProfiles(),
+			"slowTxs", executionProfile.slowTransactions(),
+		)
 	}
 
 	// record the end time of the block execution

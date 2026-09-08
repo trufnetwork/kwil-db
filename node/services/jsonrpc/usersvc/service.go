@@ -228,15 +228,13 @@ func NewService(db DB, engine EngineReader, chainClient BlockchainTransactor,
 
 	// Start the expiry goroutine, unsupervised for now since services don't
 	// "start" or "stop", but their lifetime is roughly that of the process.
-	if cfg.privateMode {
-		go func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
-				svc.expireChallenges()
-			}
-		}()
-	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			svc.expireChallenges()
+		}
+	}()
 
 	return svc
 }
@@ -626,9 +624,11 @@ func (svc *Service) Query(ctx context.Context, req *userjson.QueryRequest) (*use
 }
 
 func (svc *Service) AuthenticatedQuery(ctx context.Context, req *userjson.AuthenticatedQueryRequest) (*userjson.QueryResponse, *jsonrpc.Error) {
-	if !svc.privateMode {
-		return nil, jsonrpc.NewError(jsonrpc.ErrorAuthenticatedQueryRequiresPrivateRPC,
-			"user.authenticated_query is only available when RPC private mode is enabled", nil)
+	if req == nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "missing authenticated query request", nil)
+	}
+	if req.Body == nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "missing authenticated query body", nil)
 	}
 
 	ctxExec, cancel := context.WithTimeout(ctx, svc.readTxTimeout)
@@ -639,7 +639,21 @@ func (svc *Service) AuthenticatedQuery(ctx context.Context, req *userjson.Authen
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "failed to create signature text: "+err.Error(), nil)
 	}
 
-	if jsonRPCErr := svc.authenticate(req.SignatureData, req.Challenge, req.Sender, req.AuthType, sigText); jsonRPCErr != nil {
+	if len(req.SignatureData) == 0 || len(req.Sender) == 0 {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorCallChallengeNotFound, "signed call message with challenge required", nil)
+	}
+	if len(req.Challenge) != 32 {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidCallChallenge, "incorrect challenge data length", nil)
+	}
+
+	txCtx, jsonRPCErr := svc.txCtx(ctxExec, req.Sender, req.AuthType)
+	if jsonRPCErr != nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to create tx context: "+jsonRPCErr.Error(), nil)
+	}
+
+	if jsonRPCErr := svc.authenticateRequired(req.SignatureData, req.Challenge, req.Sender, req.AuthType, sigText, authExt.VerifyContext{
+		BlockContext: txCtx.BlockContext,
+	}); jsonRPCErr != nil {
 		return nil, jsonRPCErr
 	}
 
@@ -650,11 +664,6 @@ func (svc *Service) AuthenticatedQuery(ctx context.Context, req *userjson.Authen
 		if err != nil {
 			return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "failed to decode parameter: "+err.Error(), nil)
 		}
-	}
-
-	txCtx, jsonRPCErr := svc.txCtx(ctxExec, req.Sender, req.AuthType)
-	if jsonRPCErr != nil {
-		return nil, jsonrpc.NewError(jsonrpc.ErrorInternal, "failed to create tx context: "+jsonRPCErr.Error(), nil)
 	}
 
 	readTx := svc.db.BeginDelayedReadTx()
@@ -792,8 +801,20 @@ func (svc *Service) Call(ctx context.Context, req *userjson.CallRequest) (*userj
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "failed to convert action call: "+err.Error(), nil)
 	}
 
+	ctxExec, cancel := context.WithTimeout(ctx, svc.readTxTimeout)
+	defer cancel()
+
+	txContext, jsonRPCErr := svc.txCtx(ctxExec, msg.Sender, msg.AuthType)
+	if jsonRPCErr != nil {
+		return nil, jsonRPCErr
+	}
+
 	if jsonRPCErr := svc.authenticate(msg.SignatureData, msg.Body.Challenge, msg.Sender, msg.AuthType, types.CallSigText(body.Namespace, body.Action,
-		msg.Body.Payload, msg.Body.Challenge)); jsonRPCErr != nil {
+		msg.Body.Payload, msg.Body.Challenge), authExt.VerifyContext{
+		BlockContext: txContext.BlockContext,
+		Namespace:    body.Namespace,
+		Action:       body.Action,
+	}); jsonRPCErr != nil {
 		return nil, jsonRPCErr
 	}
 
@@ -804,14 +825,6 @@ func (svc *Service) Call(ctx context.Context, req *userjson.CallRequest) (*userj
 			return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "failed to decode argument: "+err.Error(), nil)
 		}
 		args[i] = argVal
-	}
-
-	ctxExec, cancel := context.WithTimeout(ctx, svc.readTxTimeout)
-	defer cancel()
-
-	txContext, jsonRPCErr := svc.txCtx(ctxExec, msg.Sender, msg.AuthType)
-	if jsonRPCErr != nil {
-		return nil, jsonRPCErr
 	}
 
 	// we use a basic read tx since we are subscribing to notices,
@@ -925,13 +938,19 @@ func (svc *Service) txCtx(ctx context.Context, sender []byte, authtype string) (
 	}, nil
 }
 
-// authenticate enforces authentication for the given context and message
-// if private mode is enabled. It returns an error if authentication fails.
-func (svc *Service) authenticate(signature, challenge, sender []byte, authtype, sigTxt string) *jsonrpc.Error {
+// authenticate enforces authentication for the given context and message if
+// private mode is enabled. It returns an error if authentication fails.
+func (svc *Service) authenticate(signature, challenge, sender []byte, authtype, sigTxt string, verifyCtx authExt.VerifyContext) *jsonrpc.Error {
 	if !svc.privateMode {
 		return nil
 	}
 
+	return svc.authenticateRequired(signature, challenge, sender, authtype, sigTxt, verifyCtx)
+}
+
+// authenticateRequired enforces authentication for RPCs that require a signed
+// challenge regardless of the service mode.
+func (svc *Service) authenticateRequired(signature, challenge, sender []byte, authtype, sigTxt string, verifyCtx authExt.VerifyContext) *jsonrpc.Error {
 	// Authenticate by validating the challenge was server-issued, and verify
 	// the signature on the serialized call message that include the challenge.
 
@@ -946,7 +965,7 @@ func (svc *Service) authenticate(signature, challenge, sender []byte, authtype, 
 	if err := svc.verifyCallChallenge([32]byte(challenge)); err != nil {
 		return err
 	}
-	err := authExt.VerifySignature(sender, []byte(sigTxt), &auth.Signature{
+	err := authExt.VerifySignatureWithContext(verifyCtx, sender, []byte(sigTxt), &auth.Signature{
 		Data: signature,
 		Type: authtype,
 	})

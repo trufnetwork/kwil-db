@@ -2,11 +2,9 @@ package validation
 
 // max name lengths
 const (
-	// MAX_IDENT_NAME_LENGTH is 40 (not PostgreSQL's 63) to leave headroom for
-	// prefixes/suffixes when identifiers are concatenated (e.g. namespace/table/index),
-	// for extensions and tooling that add long suffixes, and as a safety margin for
-	// future changes. Do not increase without accounting for those constraints.
-	MAX_IDENT_NAME_LENGTH = 40
+	// MAX_IDENT_NAME_LENGTH allows referencing PostgreSQL-generated identifiers
+	// (e.g. foreign-key constraint names) in Kwil SQL such as DROP INDEX.
+	MAX_IDENT_NAME_LENGTH = 55
 )
 
 // table restrictions

@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/config"
@@ -482,6 +483,10 @@ type TxResponse struct {
 
 	// Spend is the amount of tokens spent by the transaction
 	Spend int64
+
+	// PayloadExecutionDuration is time spent in the route-specific InTx phase.
+	// For execute transactions, this is the action engine call.
+	PayloadExecutionDuration time.Duration
 
 	// Log is a formatted log message from the DB that is associated with the transaction
 	Log string

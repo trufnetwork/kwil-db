@@ -57,9 +57,8 @@ const (
 	ErrorMismatchCallAuthType  ErrorCode = -1005
 	ErrorTooFastChallengeReqs  ErrorCode = -1006
 	ErrorNoQueryWithPrivateRPC ErrorCode = -1007
-	// ErrorAuthenticatedQueryRequiresPrivateRPC is returned when user.authenticated_query
-	// is called while RPC private mode is disabled. In open RPC mode that method
-	// would not verify signatures, so it is rejected entirely.
+	// ErrorAuthenticatedQueryRequiresPrivateRPC is returned by nodes that reject
+	// user.authenticated_query while RPC private mode is disabled.
 	ErrorAuthenticatedQueryRequiresPrivateRPC ErrorCode = -1008
 )
 
