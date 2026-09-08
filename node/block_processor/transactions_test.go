@@ -124,6 +124,9 @@ func TestPrepareMempoolTxns(t *testing.T) {
 	tOtherSenderA.Sender = edPubKey([]byte(`otherguy`))
 	// tOtherSenderAb := marshalTx(t, tOtherSenderA)
 
+	tADup := cloneTx(tA)
+	tADup.Body.Description = "dup"
+
 	// Same nonce tx, different body (diff bytes)
 	tOtherSenderAbDup := cloneTx(tOtherSenderA)
 	tOtherSenderAbDup.Body.Description = "dup" // not "t"
@@ -181,6 +184,18 @@ func TestPrepareMempoolTxns(t *testing.T) {
 			"nil body dropped before nonce sort",
 			[]*types.Transaction{tB, nilBodyTx, tA},
 			[]*types.Transaction{tA, tB},
+			false,
+		},
+		{
+			"dup nonce after invalid fee dropped",
+			[]*types.Transaction{tA, negativeFeeTx, tADup},
+			[]*types.Transaction{tA},
+			false,
+		},
+		{
+			"dup nonce with other sender in between",
+			[]*types.Transaction{tA, tOtherSenderA, tADup, tB},
+			[]*types.Transaction{tA, tOtherSenderA, tB},
 			false,
 		},
 		{
