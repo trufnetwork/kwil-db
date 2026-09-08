@@ -150,6 +150,9 @@ func TestPrepareMempoolTxns(t *testing.T) {
 	nilFeeTx := cloneTx(tA)
 	nilFeeTx.Body.Fee = nil
 
+	nilBodyTx := cloneTx(tA)
+	nilBodyTx.Body = nil
+
 	tests := []struct {
 		name string
 		txs  []*types.Transaction
@@ -172,6 +175,12 @@ func TestPrepareMempoolTxns(t *testing.T) {
 			"nil fee dropped",
 			[]*types.Transaction{nilFeeTx, tA},
 			[]*types.Transaction{tA},
+			false,
+		},
+		{
+			"nil body dropped before nonce sort",
+			[]*types.Transaction{tB, nilBodyTx, tA},
+			[]*types.Transaction{tA, tB},
 			false,
 		},
 		{

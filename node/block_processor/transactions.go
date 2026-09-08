@@ -74,6 +74,12 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 	var i int
 
 	for is, tx := range txs {
+		if tx.Transaction == nil || tx.Transaction.Body == nil {
+			invalidTxs = append(invalidTxs, tx.Transaction)
+			bp.log.Warn("Dropping tx with nil body while preparing the block", "tx", tx)
+			continue
+		}
+
 		rawTx := tx.Bytes()
 		okTxns = append(okTxns, &indexedTxn{i, tx.Transaction, len(rawTx), tx.Hash(), is})
 		i++
