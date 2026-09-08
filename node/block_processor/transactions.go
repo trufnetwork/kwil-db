@@ -97,6 +97,12 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 
 	// Enforce nonce ordering and remove transactions from the unfunded accounts
 	for _, tx := range okTxns {
+		if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
+			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)
+			bp.log.Warn("Dropping tx with invalid fee while preparing the block", "tx", tx)
+			continue
+		}
+
 		if i > 0 && tx.Body.Nonce == nonces[i-1] && bytes.Equal(tx.Sender, okTxns[i-1].Sender) {
 			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)
 			bp.log.Warn("Transaction has a duplicate nonce", "tx", tx)

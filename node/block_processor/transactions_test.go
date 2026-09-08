@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -143,6 +144,12 @@ func TestPrepareMempoolTxns(t *testing.T) {
 	zeroFeeTx := cloneTx(tA)
 	zeroFeeTx.Body.Fee = &big.Int{}
 
+	negativeFeeTx := cloneTx(tA)
+	negativeFeeTx.Body.Fee = big.NewInt(-100)
+
+	nilFeeTx := cloneTx(tA)
+	nilFeeTx.Body.Fee = nil
+
 	tests := []struct {
 		name string
 		txs  []*types.Transaction
@@ -153,6 +160,18 @@ func TestPrepareMempoolTxns(t *testing.T) {
 			"empty",
 			[]*types.Transaction{},
 			[]*types.Transaction{},
+			false,
+		},
+		{
+			"negative fee dropped",
+			[]*types.Transaction{negativeFeeTx, tA},
+			[]*types.Transaction{tA},
+			false,
+		},
+		{
+			"nil fee dropped",
+			[]*types.Transaction{nilFeeTx, tA},
+			[]*types.Transaction{tA},
 			false,
 		},
 		{
@@ -866,4 +885,39 @@ func (v *mockValidatorStore) ValidatorUpdates() map[string]*types.Validator {
 
 func (v *mockValidatorStore) LoadValidatorSet(ctx context.Context, db sql.Executor) error {
 	return nil
+}
+
+func TestCheckTx_RejectsNegativeAndNilFee(t *testing.T) {
+	chainCtx := &common.ChainContext{
+		ChainID: "test",
+		NetworkParameters: &types.NetworkParameters{
+			DisabledGasCosts: true,
+		},
+	}
+	_, signer := genNodeKeyAndSigner(t)
+	bp := &BlockProcessor{
+		db:       &mockDB{},
+		log:      log.DiscardLogger,
+		signer:   signer,
+		chainCtx: chainCtx,
+		txapp:    &mockTxApp{},
+	}
+
+	tx := &types.Transaction{
+		Body: &types.TransactionBody{
+			Fee: big.NewInt(-10),
+		},
+	}
+	ntx := nodetypes.NewTx(tx)
+	ctx := context.Background()
+
+	err := bp.checkTx(ctx, &mockTx{}, ntx, 0, time.Now(), false)
+	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
+
+	tx.Body.Fee = nil
+	ntx = nodetypes.NewTx(tx)
+	err = bp.checkTx(ctx, &mockTx{}, ntx, 0, time.Now(), false)
+	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
 }

@@ -158,6 +158,10 @@ func (m *mempool) applyTransaction(ctx *common.TxContext, tx *types.Transaction,
 		return err
 	}
 
+	if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
+		return fmt.Errorf("%w: fee cannot be negative or nil", types.ErrInvalidAmount)
+	}
+
 	m.acctsMtx.Lock()
 	defer m.acctsMtx.Unlock()
 
