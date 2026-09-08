@@ -182,6 +182,13 @@ func Test_MempoolNegativeFee(t *testing.T) {
 	tx.Body.Fee = nil
 	err = m.applyTransaction(txCtx, tx, db, rebroadcast)
 	require.ErrorIs(t, err, types.ErrInvalidAmount)
+
+	// Nil body must also be rejected before any Body access
+	tx.Body = nil
+	err = m.applyTransaction(txCtx, tx, db, rebroadcast)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
+	assert.Equal(t, big.NewInt(100), m.accounts[string(id)].Balance)
+	assert.EqualValues(t, 0, m.accounts[string(id)].Nonce)
 }
 
 func newTx(_ *testing.T, nonce uint64, sender string) *types.Transaction {
