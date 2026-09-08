@@ -866,16 +866,29 @@ func Test_SelectPrivilegeChecksReferencedNamespaces(t *testing.T) {
 		`REVOKE SELECT ON main FROM default;`,
 	}, true)
 
-	var values [][]any
-	err = interp.Execute(newEngineCtx("default"), tx, `{info}SELECT * FROM main.users;`, nil, func(row *common.Row) error {
-		values = append(values, row.Values)
-		return nil
-	})
-	require.ErrorIs(t, err, engine.ErrDoesNotHavePrivilege)
-	require.Contains(t, err.Error(), `SELECT on namespace "main"`)
-	require.Empty(t, values)
+	deniedQueries := map[string]string{
+		"direct relation":   `{info}SELECT * FROM main.users;`,
+		"join":              `{info}SELECT t.name FROM tables AS t JOIN main.users AS u ON t.name = u.name;`,
+		"relation subquery": `{info}SELECT * FROM (SELECT name FROM main.users) AS u;`,
+		"scalar subquery":   `{info}SELECT (SELECT name FROM main.users LIMIT 1) AS leaked;`,
+		"exists subquery":   `{info}SELECT EXISTS(SELECT 1 FROM main.users);`,
+		"in subquery":       `{info}SELECT name FROM tables WHERE name IN (SELECT name FROM main.users);`,
+		"cte":               `{info}WITH u AS (SELECT name FROM main.users) SELECT * FROM u;`,
+	}
+	for name, query := range deniedQueries {
+		t.Run(name, func(t *testing.T) {
+			var values [][]any
+			queryErr := interp.Execute(newEngineCtx("default"), tx, query, nil, func(row *common.Row) error {
+				values = append(values, row.Values)
+				return nil
+			})
+			require.ErrorIs(t, queryErr, engine.ErrDoesNotHavePrivilege)
+			require.Contains(t, queryErr.Error(), `SELECT on namespace "main"`)
+			require.Empty(t, values)
+		})
+	}
 
-	values = nil
+	var values [][]any
 	err = interp.Execute(newEngineCtx("default"), tx, `{info}SELECT name FROM tables WHERE namespace = 'main' AND name = 'users';`, nil, func(row *common.Row) error {
 		values = append(values, row.Values)
 		return nil

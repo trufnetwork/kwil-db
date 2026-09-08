@@ -311,12 +311,7 @@ func (e *executionContext) queryInternal(sql string, fn func(*row) error, checkR
 }
 
 func (e *executionContext) checkReferencedSelectPrivileges(plan *logical.AnalyzedPlan) error {
-	namespaces, err := referencedPhysicalTableNamespaces(plan)
-	if err != nil {
-		return err
-	}
-
-	for _, namespace := range namespaces {
+	for _, namespace := range referencedPhysicalTableNamespaces(plan) {
 		if err := e.checkPrivilegeOnNamespace(_SELECT_PRIVILEGE, namespace); err != nil {
 			return err
 		}
@@ -325,32 +320,30 @@ func (e *executionContext) checkReferencedSelectPrivileges(plan *logical.Analyze
 	return nil
 }
 
-func referencedPhysicalTableNamespaces(plan *logical.AnalyzedPlan) ([]string, error) {
+func referencedPhysicalTableNamespaces(plan *logical.AnalyzedPlan) []string {
 	namespaces := make(map[string]struct{})
 
-	collect := func(node logical.LogicalNode) error {
-		_, err := logical.Rewrite(node, &logical.RewriteConfig{
-			ScanSourceCallback: func(source logical.ScanSource) (logical.ScanSource, bool, error) {
-				table, ok := source.(*logical.TableScanSource)
-				if ok && table.Type == logical.TableSourcePhysical {
-					namespaces[table.Namespace] = struct{}{}
-				}
+	collect := func(node logical.Traversable) {
+		logical.Traverse(node, func(node logical.Traversable) bool {
+			scan, ok := node.(*logical.Scan)
+			if !ok {
+				return true
+			}
 
-				return source, true, nil
-			},
+			table, ok := scan.Source.(*logical.TableScanSource)
+			if ok && table.Type == logical.TableSourcePhysical {
+				namespaces[table.Namespace] = struct{}{}
+			}
+
+			return true
 		})
-		return err
 	}
 
 	for _, cte := range plan.CTEs {
-		if err := collect(cte); err != nil {
-			return nil, err
-		}
+		collect(cte)
 	}
 
-	if err := collect(plan.Plan); err != nil {
-		return nil, err
-	}
+	collect(plan.Plan)
 
 	res := make([]string, 0, len(namespaces))
 	for namespace := range namespaces {
@@ -358,7 +351,7 @@ func referencedPhysicalTableNamespaces(plan *logical.AnalyzedPlan) ([]string, er
 	}
 	sort.Strings(res)
 
-	return res, nil
+	return res
 }
 
 // nestedQuery executes a query while another query is active, using PostgreSQL savepoints.
