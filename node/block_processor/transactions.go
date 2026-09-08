@@ -439,12 +439,6 @@ func (bp *BlockProcessor) PrepareValidatorVoteIDTx(ctx context.Context, db sql.D
 	return tx, ids, nil
 }
 
-// verifyTransaction verifies a transaction's signature using the Authenticator
-// registry in this package.
-func verifyTransaction(tx *types.Transaction) error {
-	return verifyTransactionWithContext(authExt.VerifyContext{}, tx)
-}
-
 func verifyTransactionWithContext(verifyCtx authExt.VerifyContext, tx *types.Transaction) error {
 	msg, err := tx.SerializeMsg()
 	if err != nil {
