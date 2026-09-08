@@ -507,6 +507,11 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 			"leader", isLeader,
 			"transactions", len(req.Block.Txns),
 			"txExecMs", executionProfile.total.Milliseconds(),
+			"slowTxs", len(executionProfile.slowTxs),
+		)
+		bp.log.Debug(
+			"slow block transaction profile detail",
+			"height", req.Height,
 			"actions", executionProfile.actionProfiles(),
 			"slowTxs", executionProfile.slowTransactions(),
 		)

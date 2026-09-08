@@ -11,8 +11,11 @@ import (
 
 const (
 	// ponytail: fixed thresholds keep profiling zero-config; make them configurable only if production volume requires it.
-	slowBlockTransactionExecutionThreshold = time.Second
+	slowBlockTransactionExecutionThreshold = 2 * time.Second
 	slowTransactionExecutionThreshold      = time.Second
+	// a badly degraded block can have every transaction cross the slow
+	// threshold, so cap what reaches the log to the worst offenders.
+	maxSlowTransactionsLogged = 10
 )
 
 type executionProfileKey struct {
@@ -277,6 +280,9 @@ func (p *blockExecutionProfile) slowTransactions() []slowTransactionExecution {
 	sort.Slice(slowTxs, func(i, j int) bool {
 		return slowTxs[i].DurationMs > slowTxs[j].DurationMs
 	})
+	if len(slowTxs) > maxSlowTransactionsLogged {
+		slowTxs = slowTxs[:maxSlowTransactionsLogged]
+	}
 	return slowTxs
 }
 

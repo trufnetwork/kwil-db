@@ -146,7 +146,9 @@ func TestBlockExecutionProfileLogsCumulativeSlowBlock(t *testing.T) {
 
 	tx := executionProfileTestActionTx(t, "idos", "create_preliminary_credential", 1)
 	profile := newBlockExecutionProfile()
-	for i := range 2 {
+	// no single transaction crosses the per-tx threshold, so only the
+	// cumulative block total can trigger the log.
+	for i := range 4 {
 		profile.record(
 			tx,
 			ktypes.HashBytes([]byte{byte(i)}),
@@ -155,16 +157,16 @@ func TestBlockExecutionProfileLogsCumulativeSlowBlock(t *testing.T) {
 			400*time.Millisecond,
 			nil,
 		)
-		if i == 0 {
+		if i < 3 {
 			require.False(t, profile.shouldLog())
 		}
 	}
 
 	require.True(t, profile.shouldLog())
 	require.Empty(t, profile.slowTransactions())
-	require.Equal(t, int64(1_000), profile.actionProfiles()[0].TotalMs)
-	require.Equal(t, int64(800), profile.actionProfiles()[0].PayloadMs)
-	require.Equal(t, int64(200), profile.actionProfiles()[0].OverheadMs)
+	require.Equal(t, int64(2_000), profile.actionProfiles()[0].TotalMs)
+	require.Equal(t, int64(1_600), profile.actionProfiles()[0].PayloadMs)
+	require.Equal(t, int64(400), profile.actionProfiles()[0].OverheadMs)
 }
 
 func TestBlockExecutionProfileOmitsEmptyStages(t *testing.T) {
@@ -223,6 +225,29 @@ func TestBlockExecutionProfileReportsTracedAndUntracedPayloadTime(t *testing.T) 
 	require.Len(t, slowTxs, 1)
 	require.Equal(t, int64(950), slowTxs[0].TracedMs)
 	require.Equal(t, int64(50), slowTxs[0].UntracedMs)
+}
+
+func TestBlockExecutionProfileCapsLoggedSlowTransactions(t *testing.T) {
+	t.Parallel()
+
+	tx := executionProfileTestActionTx(t, "idos", "create_preliminary_credential", 1)
+	profile := newBlockExecutionProfile()
+	for i := range maxSlowTransactionsLogged + 5 {
+		profile.record(
+			tx,
+			ktypes.HashBytes([]byte{byte(i)}),
+			uint32(ktypes.CodeOk),
+			time.Duration(1_000+i)*time.Millisecond,
+			time.Second,
+			nil,
+		)
+	}
+
+	slowTxs := profile.slowTransactions()
+	require.Len(t, slowTxs, maxSlowTransactionsLogged)
+	// the cap keeps the worst offenders, not the first ones recorded.
+	require.Equal(t, int64(1_014), slowTxs[0].DurationMs)
+	require.Equal(t, int64(1_005), slowTxs[maxSlowTransactionsLogged-1].DurationMs)
 }
 
 func executionProfileTestActionTx(

@@ -42,7 +42,13 @@ func observeExecutable(exec *executionContext, namespace string, def *executable
 	return def.Func(exec, args, fn)
 }
 
+// observeSQL must check for a tracer before naming the stage: sqlVerbTable
+// tokenizes the whole statement, and untraced callers (read-only RPC and
+// authenticated queries) run this on every statement they execute.
 func observeSQL(exec *executionContext, sql string) func() {
+	if engineTrace(exec) == nil {
+		return func() {}
+	}
 	return startEngineTrace(exec, common.EngineTraceKindSQL, "", sqlVerbTable(sql))
 }
 

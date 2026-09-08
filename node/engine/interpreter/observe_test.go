@@ -53,6 +53,20 @@ func TestObserveExecutableSkipsBuiltinsAndNilTrace(t *testing.T) {
 	require.True(t, called)
 }
 
+// no t.Parallel: AllocsPerRun pins GOMAXPROCS and must not race other tests.
+func TestObserveSQLSkipsNameBuildingWithoutTrace(t *testing.T) {
+	exec := &executionContext{
+		engineCtx: &common.EngineContext{},
+		scope:     newScope("main"),
+	}
+	stmt := "INSERT INTO preliminary_credentials (id, user_id) VALUES ($request_id, $caller_user_id)"
+
+	allocs := testing.AllocsPerRun(100, func() {
+		observeSQL(exec, stmt)()
+	})
+	require.Zero(t, allocs)
+}
+
 func TestObserveExecutableRecordsErrorPath(t *testing.T) {
 	t.Parallel()
 
