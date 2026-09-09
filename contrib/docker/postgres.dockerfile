@@ -1,4 +1,4 @@
-FROM postgres:16.8
+FROM postgres:16.15
 
 # Install pg_repack so tn_vacuum can create the extension inside the server.
 RUN apt-get update \

@@ -6,6 +6,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -655,6 +656,21 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	stopMonitoring := utils.MonitorRestoreProgress(ctx, estimatedMinutes, s.log)
 	defer stopMonitoring()
 
+	// Validate all provider-supplied bytes before passing any of them to psql.
+	validationStreamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
+	validationReader, err := gzip.NewReader(validationStreamer)
+	if err != nil {
+		validationStreamer.Close()
+		return err
+	}
+	if err := decompressAndValidateSnapshotHash(io.Discard, validationReader, snapshot.Hash); err != nil {
+		validationReader.Close()
+		validationStreamer.Close()
+		return err
+	}
+	validationReader.Close()
+	validationStreamer.Close()
+
 	streamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
 	defer streamer.Close()
 
@@ -662,20 +678,29 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	if err != nil {
 		return err
 	}
+	defer reader.Close()
 
-	return RestoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.log)
+	return restoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.cfg.PsqlPath, true, s.log)
 }
 
+// RestoreDB restores a genesis or migration dump, which is trusted and already
+// carries its own \restrict pair when produced by pg_dump 16.15+. Adding a
+// second restriction would nest the keys and fail the import, so only the
+// state-sync path above, whose bytes come from a remote provider, restricts.
 func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
+	return restoreDB(ctx, reader, db, snapshotHash, "psql", false, logger)
+}
 
-	// unzip and stream the sql dump to psql
+func restoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, psqlPath string, restrictInput bool, logger log.Logger) error {
 	cmd := exec.CommandContext(ctx,
-		"psql",
+		psqlPath,
 		"--username", db.User,
 		"--host", db.Host,
 		"--port", db.Port,
 		"--dbname", db.DBName,
 		"--no-password",
+		"--no-psqlrc",
+		"--set", "ON_ERROR_STOP=1",
 	)
 	if db.Pass != "" {
 		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
@@ -694,11 +719,32 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 		return err
 	}
 
-	// decompress the chunk streams and stream the sql dump to psql stdinPipe
+	if restrictInput {
+		restrictKey := make([]byte, 32)
+		if _, err := rand.Read(restrictKey); err != nil {
+			stdinPipe.Close()
+			_ = cmd.Wait()
+			return fmt.Errorf("failed to generate psql restriction key: %w", err)
+		}
+
+		// Restricted mode preserves COPY terminators while blocking every psql
+		// meta-command, including shell escapes and file includes.
+		if _, err := fmt.Fprintf(stdinPipe, "\\restrict %x\n", restrictKey); err != nil {
+			stdinPipe.Close()
+			_ = cmd.Wait()
+			return fmt.Errorf("failed to restrict psql input: %w", err)
+		}
+	}
+
 	if err := decompressAndValidateSnapshotHash(stdinPipe, reader, snapshotHash); err != nil {
+		stdinPipe.Close()
+		_ = cmd.Wait()
 		return err
 	}
-	stdinPipe.Close() // signifies the end of the input stream to the psql command
+	if err := stdinPipe.Close(); err != nil {
+		_ = cmd.Wait()
+		return err
+	}
 
 	if err := cmd.Wait(); err != nil {
 		return err

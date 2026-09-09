@@ -1,9 +1,12 @@
 package node
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_getPGVersion(t *testing.T) {
@@ -55,6 +58,32 @@ func Test_getPGVersion(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.expectedMajor, major)
 				assert.Equal(t, tt.expectedMinor, minor)
+			}
+		})
+	}
+}
+
+func TestCheckVersionAtLeast(t *testing.T) {
+	tests := []struct {
+		version string
+		wantErr bool
+	}{
+		{version: "16.14", wantErr: true},
+		{version: "16.15"},
+		{version: "16.16"},
+		{version: "17.0", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.version, func(t *testing.T) {
+			command := filepath.Join(t.TempDir(), "psql")
+			require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\necho 'psql (PostgreSQL) "+test.version+"'\n"), 0o755))
+
+			err := checkVersionAtLeast(command, 16, 15)
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
