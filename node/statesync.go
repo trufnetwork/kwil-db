@@ -72,6 +72,7 @@ type StateSyncService struct {
 	// statesync operation specific fields
 	snapshotPool    *snapshotPool     // resets with every discovery
 	currentSnapshot *snapshotMetadata // track current snapshot to avoid unnecessary cleanup
+	retryBackoff    time.Duration     // wait before re-entering discovery after a network-class failure
 
 	// Logger
 	log log.Logger
@@ -102,6 +103,7 @@ func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncS
 		snapshotStore: cfg.SnapshotStore,
 		log:           cfg.Logger,
 		blockStore:    cfg.BlockStore,
+		retryBackoff:  snapshotRetryBackoff,
 		snapshotPool: &snapshotPool{
 			snapshots: make(map[snapshotKey]*snapshotMetadata),
 			providers: make(map[snapshotKey][]peer.AddrInfo),
@@ -133,15 +135,27 @@ func (s *StateSyncService) Bootstrap(ctx context.Context) error {
 		return err
 	}
 
+	connected := 0
 	for _, provider := range providers {
 		// connect to the provider
 		i, err := connectPeer(ctx, provider, s.host)
 		if err != nil {
 			s.log.Warn("failed to connect to trusted provider", "provider", provider, "error", err)
+		} else {
+			connected++
 		}
 
+		if i == nil { // unparseable address, nothing to verify snapshots against
+			continue
+		}
 		s.trustedProviders = append(s.trustedProviders, i)
 	}
+
+	if s.cfg.Enable && len(providers) > 0 && connected == 0 {
+		s.log.Warn("Could not reach any trusted provider at startup, snapshot verification will fail until one becomes reachable and statesync will fall back to block sync",
+			"trusted_providers", len(providers), "max_retries", s.cfg.MaxRetries)
+	}
+
 	return nil
 }
 
@@ -234,6 +248,14 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 	networkErrorCount := 0
 	sentinelCount := 0 // providers responded with noData sentinel (snapshot absent)
 	totalProviders := len(ss.trustedProviders)
+
+	if totalProviders == 0 {
+		// Nothing to verify against. Report a verification failure rather than
+		// falling through to the sentinelCount == totalProviders check below,
+		// which would blacklist every snapshot on a 0 == 0 comparison.
+		ss.log.Warn("No usable trusted providers to verify the snapshot against", "snapshot_height", snap.Height)
+		return VerificationFailed, nil
+	}
 
 	// verify the snapshot
 	for _, provider := range ss.trustedProviders {
