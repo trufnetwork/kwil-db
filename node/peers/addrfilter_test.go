@@ -94,19 +94,10 @@ func requireSameAddrs(t *testing.T, got []multiaddr.Multiaddr, want []string) {
 		t.Fatalf("got %d addresses %v, want %d %v", len(gotStrs), gotStrs, len(want), want)
 	}
 	for _, w := range want {
-		if !contains(gotStrs, w) {
+		if !slices.Contains(gotStrs, w) {
 			t.Errorf("missing expected address %v in %v", w, gotStrs)
 		}
 	}
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // The five classes of "via" (the connection we learned the addresses over).
@@ -272,13 +263,13 @@ func TestPersistAddrs(t *testing.T) {
 		requireSameAddrs(t, got, append(append([]string{}, node1Routable...), node1Ephemeral...))
 	})
 
-	// Fail open: a peer persisted with no addresses loses its whitelist and
-	// blacklist flags on the next load, so we write the unfiltered set.
-	t.Run("never persists an empty set", func(t *testing.T) {
+	// An all-private peer reached over a public connection persists as an empty
+	// set rather than writing its junk back. The entry stays, so its flags do
+	// too; see TestSavePeersPrunesAllPrivatePeer.
+	t.Run("public via drops an all-private set", func(t *testing.T) {
 		privateOnly := mustAddrs(t, node1Private[:3])
-		got := persistAddrs(privateOnly, mustAddr(t, viaPublic))
-		if len(got) != 3 {
-			t.Fatalf("got %d addresses, want the unfiltered 3", len(got))
+		if got := persistAddrs(privateOnly, mustAddr(t, viaPublic)); len(got) != 0 {
+			t.Fatalf("got %v, want none persisted", addrStrings(got))
 		}
 	})
 
@@ -484,8 +475,7 @@ func TestSavePeersPrunesAddrBook(t *testing.T) {
 	pm.ps.AddAddrs(remote.ID(), mustAddrs(t,
 		[]string{"/ip4/3.134.167.133/tcp/6600"}, node1Loopback, node1Private), time.Hour)
 
-	// Flags that must survive the round trip; a peer written with no addresses
-	// would lose them.
+	// Flags that must survive the round trip.
 	pm.wlMtx.Lock()
 	pm.persistentWhitelist[remote.ID()] = true
 	pm.wlMtx.Unlock()
@@ -535,4 +525,74 @@ func TestSavePeersPrunesAddrBook(t *testing.T) {
 		defer pm2.wlMtx.RUnlock()
 		require.True(t, pm2.persistentWhitelist[remote.ID()])
 	})
+}
+
+// TestSavePeersPrunesAllPrivatePeer covers the case where the filter empties a
+// peer's address set completely: an inbound peer reached over a public
+// connection whose every stored address is junk inherited before the upgrade.
+// The entry is written with no addresses rather than having its junk restored,
+// and loadAddrBook still restores its flags, which is why writing an empty set
+// is safe.
+func TestSavePeersPrunesAllPrivatePeer(t *testing.T) {
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	local := newTestHostAt(t, mn, "/ip4/3.17.146.5/tcp/6600")
+	remote := newTestHostAt(t, mn, "/ip4/3.134.167.133/tcp/6600")
+
+	addrBook := filepath.Join(t.TempDir(), "addrbook.json")
+	pm := newTestPeerMan(t, local, func(cfg *Config) {
+		cfg.AddrBook = addrBook
+		cfg.ConnGater = NewWhitelistGater(nil)
+	})
+	linkPeers(t, mn, local.ID(), remote.ID())
+
+	conns := local.Network().ConnsToPeer(remote.ID())
+	require.Len(t, conns, 1)
+	pm.rememberConnAddr(remote.ID(), conns[0].RemoteMultiaddr())
+
+	// An inbound peer: libp2p does not add the remote of an inbound connection
+	// to the peerstore, since its source port is ephemeral. So the only stored
+	// addresses are the ones gossiped in, and none of them is dialable here.
+	pm.ps.ClearAddrs(remote.ID())
+	pm.ps.AddAddrs(remote.ID(), mustAddrs(t, node1Loopback, node1Private), time.Hour)
+	requireSameAddrs(t, pm.ps.Addrs(remote.ID()), append(append([]string{}, node1Loopback...), node1Private...))
+
+	pm.wlMtx.Lock()
+	pm.persistentWhitelist[remote.ID()] = true
+	pm.wlMtx.Unlock()
+	pm.blacklistMtx.Lock()
+	pm.blacklistedPeers[remote.ID()] = BlacklistEntry{
+		PeerID:    remote.ID(),
+		Reason:    "test",
+		Timestamp: time.Now(),
+		Permanent: true,
+	}
+	pm.blacklistMtx.Unlock()
+
+	require.NoError(t, pm.savePeers())
+	saved, err := loadPeers(addrBook)
+	require.NoError(t, err)
+	require.Len(t, saved, 1, "the entry itself must survive")
+	require.Empty(t, saved[0].Addrs, "unroutable addresses were written back")
+	require.True(t, saved[0].Whitelisted)
+	require.NotNil(t, saved[0].Blacklisted)
+
+	// The flags still load, which is what makes an empty address set safe.
+	fresh := newTestHostAt(t, mn, "/ip4/3.17.146.7/tcp/6600")
+	pm2 := newTestPeerMan(t, fresh, func(cfg *Config) {
+		cfg.AddrBook = addrBook
+		cfg.ConnGater = NewWhitelistGater(nil)
+	})
+	require.Empty(t, pm2.ps.Addrs(remote.ID()))
+
+	pm2.wlMtx.RLock()
+	whitelisted := pm2.persistentWhitelist[remote.ID()]
+	pm2.wlMtx.RUnlock()
+	require.True(t, whitelisted, "whitelist flag lost for a zero-address entry")
+
+	pm2.blacklistMtx.RLock()
+	_, blacklisted := pm2.blacklistedPeers[remote.ID()]
+	pm2.blacklistMtx.RUnlock()
+	require.True(t, blacklisted, "blacklist flag lost for a zero-address entry")
 }

@@ -55,17 +55,15 @@ func routablePeers(peers []PeerInfo, via multiaddr.Multiaddr) ([]PeerInfo, int) 
 }
 
 // persistAddrs returns the addresses to write to the address book for a peer
-// reached over via. Unlike routablePeers it never returns an empty set: a peer
-// persisted with no addresses loses its whitelist and blacklist flags on the
-// next load, so we keep the unfiltered set rather than drop the entry.
+// reached over via. A nil via means we have no evidence of where we reached the
+// peer, so nothing is filtered. Otherwise the filtered set is written even when
+// it is empty: the entry itself survives, and loadAddrBook restores a peer's
+// whitelist and blacklist flags before it looks at the addresses at all.
 func persistAddrs(addrs []multiaddr.Multiaddr, via multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	if via == nil || len(addrs) == 0 {
 		return addrs
 	}
-	if filtered := usableAddrs(addrs, via); len(filtered) > 0 {
-		return filtered
-	}
-	return addrs
+	return usableAddrs(addrs, via)
 }
 
 // rememberConnAddr records the remote address of a connection to peerID.
