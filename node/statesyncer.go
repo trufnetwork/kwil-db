@@ -36,17 +36,19 @@ var (
 	ErrNoSnapshotsDiscovered = errors.New("no snapshots discovered")
 )
 
-// verificationBackoff is the time to wait before retrying the same snapshot
-// after a VerificationFailed result (all trusted providers unreachable). This
-// prevents a tight retry loop that can spam logs and consume CPU when the
-// provider is temporarily offline.
-const verificationBackoff = 5 * time.Second
+// snapshotRetryBackoff is the time to wait before returning to the discovery
+// phase after a snapshot attempt fails for network reasons: all trusted
+// providers unreachable, or chunks that could not be fetched. This prevents a
+// tight retry loop that can spam logs and consume CPU when the providers are
+// temporarily offline.
+const snapshotRetryBackoff = 5 * time.Second
 
 // DiscoverSnapshots discovers snapshot providers and their catalogs. It waits for responsesp
 // from snapshot catalog providers for the duration of the discoveryTimeout. If the timeout is reached,
 // the best snapshot is selected and snapshot chunks are requested. If no snapshots are discovered,
-// it reenters the discovery phase after a delay, retrying up to maxRetries times. If discovery fails
-// after maxRetries, the node will switch to block sync.
+// or the best snapshot cannot be verified because the trusted providers are unreachable, or its
+// chunks cannot be fetched, it reenters the discovery phase after a delay, retrying up to maxRetries
+// times. If discovery fails after maxRetries, the node will switch to block sync.
 // If snapshots and their chunks are successfully fetched, the DB is restored from the snapshot and the
 // application state is verified.
 func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error) {
@@ -56,7 +58,10 @@ func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error)
 	retry := uint64(0)
 	for {
 		if retry > s.cfg.MaxRetries {
-			s.log.Warn("Failed to discover snapshots", "retries", retry)
+			s.log.Warn("Statesync exhausted its retries, falling back to block sync",
+				"retries", retry, "max_retries", s.cfg.MaxRetries,
+				"snapshots_discovered", len(s.snapshotPool.listSnapshots()),
+				"trusted_providers", len(s.trustedProviders))
 			return -1, nil
 		}
 
@@ -110,6 +115,9 @@ func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error)
 // downloadSnapshot selects the best snapshot and verifies the snapshot contents with the trusted providers.
 // If the snapshot is valid, it fetches the snapshot chunks from the providers.
 // If a snapshot is deemed invalid by any of the trusted providers, it is blacklisted and the next best snapshot is selected.
+// If the snapshot cannot be verified because the trusted providers are unreachable, or its chunks cannot be
+// fetched, it returns (false, nil, nil) after a backoff so that the caller re-enters the discovery phase and
+// counts the attempt against MaxRetries. The snapshot is not blacklisted in that case.
 func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, snap *snapshotMetadata, err error) {
 	for {
 		// select the best snapshot and request chunks
@@ -152,15 +160,17 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 			s.cleanupInvalidSnapshot(bestSnapshot)
 			continue
 		case VerificationFailed:
-			// Verification failed due to network issues - don't blacklist yet, but back off
-			s.log.Warn("Failed to verify snapshot due to network issues, backing off before retry",
-				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash), "backoff", verificationBackoff)
+			// Verification failed due to network issues - do NOT blacklist the
+			// snapshot, back off and return to the discovery phase so the attempt
+			// is counted against MaxRetries and the node can fall back to block sync.
+			s.log.Warn("Failed to verify snapshot due to network issues, returning to discovery",
+				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash), "backoff", s.retryBackoff)
 			select {
-			case <-time.After(verificationBackoff):
+			case <-time.After(s.retryBackoff):
 			case <-ctx.Done():
 				return false, nil, ctx.Err()
 			}
-			continue
+			return false, nil, nil // reenter discovery phase
 		case VerificationValid:
 			// Snapshot is valid, proceed with download
 			s.log.Info("Snapshot verified successfully",
@@ -170,11 +180,16 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 
 		// fetch snapshot chunks
 		if err := s.chunkFetcher(ctx, bestSnapshot); err != nil {
-			s.log.Warn("Chunk fetcher failed for snapshot", "height", bestSnapshot.Height,
-				"error", err, "will_retry_same_snapshot", true)
-			// Don't remove chunks directory - preserve any completed chunks and temp files
-			// The next iteration will resume from where we left off
-			continue
+			s.log.Warn("Chunk fetcher failed for snapshot, returning to discovery", "height", bestSnapshot.Height,
+				"error", err, "backoff", s.retryBackoff)
+			// Don't remove chunks directory - preserve any completed chunks and temp
+			// files so the next attempt resumes from where we left off.
+			select {
+			case <-time.After(s.retryBackoff):
+			case <-ctx.Done():
+				return false, nil, ctx.Err()
+			}
+			return false, nil, nil // reenter discovery phase
 		}
 
 		// retrieved all chunks successfully
@@ -589,6 +604,12 @@ func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer pee
 	defer s.snapshotPool.mtx.Unlock()
 	for _, snap := range snapshots {
 		key := snap.Key()
+		if _, blacklisted := s.snapshotPool.blacklist[key]; blacklisted {
+			// A blacklisted snapshot re-entering the pool would let the download
+			// loop re-select it, so keep the pool strictly shrinking once the
+			// trusted providers have rejected an entry.
+			continue
+		}
 		s.snapshotPool.snapshots[key] = snap
 		s.snapshotPool.providers[key] = append(s.snapshotPool.providers[key], peer)
 		s.log.Info("Discovered snapshot", "height", snap.Height, "snapshotHash", snap.Hash, "provider", peer.ID)
