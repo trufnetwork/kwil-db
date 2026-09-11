@@ -824,20 +824,7 @@ func newHost(cfg *hostConfig) (host.Host, error) {
 	sec, secID := sec.NewScopedNoiseTransport(cfg.chainID, cfg.logger.New("SEC")) // noise.New plus chain ID check in handshake
 
 	opts := []libp2p.Option{
-		libp2p.AddrsFactory(func(m []multiaddr.Multiaddr) []multiaddr.Multiaddr {
-			if externalMultiAddr != nil {
-				// Perhaps we should return *only* the external address if it is set?
-				// This could break peers on a local network...
-				// return []multiaddr.Multiaddr{externalMultiAddr}
-
-				// For now, just add the specified address to the list of
-				// advertised addresses, and peers will eventually get to it.
-				m = append(m, externalMultiAddr)
-			}
-			return m
-			// If we add a "disallow private addresses" setting then we
-			// return multiaddr.FilterAddrs(m, manet.IsPublicAddr)
-		}),
+		libp2p.AddrsFactory(peers.AddrsFactory(sourceMultiAddr, externalMultiAddr, cfg.logger)),
 		libp2p.Transport(tcp.NewTCPTransport),
 		libp2p.Security(noise.ID, noise.New), // modified TLS based on node-ID
 		libp2p.Security(secID, sec),

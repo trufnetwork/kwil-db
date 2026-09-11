@@ -120,7 +120,7 @@ func makePeerAddrInfo(addr string) (*peer.AddrInfo, error) {
 	return peer.AddrInfoFromP2pAddr(maddr)
 }
 
-func newHost(ip string, port uint64, _ string, privKey crypto.PrivateKey, _ log.Logger) (host.Host, error) {
+func newHost(ip string, port uint64, _ string, privKey crypto.PrivateKey, logger log.Logger) (host.Host, error) {
 	// convert to the libp2p crypto key type
 	var privKeyP2P p2pcrypto.PrivKey
 	var err error
@@ -151,6 +151,11 @@ func newHost(ip string, port uint64, _ string, privKey crypto.PrivateKey, _ log.
 		// libp2p.Security(secID, sec),
 		libp2p.ListenAddrs(sourceMultiAddr),
 		libp2p.Identity(privKeyP2P),
+		// Nothing dials the seed host back, so an address a peer observed it at
+		// would only ever become junk in that peer's address book. Unlike a
+		// node, it has no reachability to lose, so it advertises nothing but
+		// what it listens on.
+		libp2p.AddrsFactory(peers.ListenAddrsFactory(sourceMultiAddr, logger)),
 		// libp2p.ConnectionManager(cm),
 	)
 	if err != nil {
