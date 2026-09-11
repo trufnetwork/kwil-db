@@ -157,7 +157,9 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 			s.snapshotPool.blacklistSnapshot(bestSnapshot)
 			// Clean up any temp files for this blacklisted snapshot and remove final files
 			// since this snapshot is fundamentally invalid
-			s.cleanupInvalidSnapshot(bestSnapshot)
+			if err := s.cleanupInvalidSnapshot(ctx, bestSnapshot); err != nil {
+				return false, nil, err
+			}
 			continue
 		case VerificationFailed:
 			// Verification failed due to network issues - do NOT blacklist the
@@ -572,6 +574,57 @@ func (s *StateSyncService) downloadChunkResumable(ctx context.Context, snap *sna
 	return nil
 }
 
+// maxSnapshotChunks bounds the chunk count a peer may claim for a snapshot.
+// The snapshotter writes ~16MB chunks (chunkSize in node/snapshotter/snapshotter.go),
+// so this admits a snapshot of roughly 1.6TB, against real snapshots of a few
+// dozen chunks. The ceiling is not what makes a malformed entry harmless — the
+// one-hash-per-chunk rule below does that — but it keeps the work derived from
+// the count, notably cleanupInvalidSnapshot's two os.Stat calls per chunk, to a
+// size a node can absorb.
+const maxSnapshotChunks = 100_000
+
+// maxCatalogBytes and maxCatalogEntries bound a catalog response. Without them
+// the per-entry limits above are worth little: nothing caps how many entries a
+// peer sends, so the work derived from them stays unbounded no matter how tight
+// each entry is. An honest catalog holds at most Snapshots.MaxSnapshots entries,
+// three by default, and a few dozen chunk hashes each. Every entry that survives
+// validation costs a round trip to the trusted providers before it can be
+// blacklisted, in a loop MaxRetries does not bound, which is what the entry
+// count has to be kept away from.
+const (
+	maxCatalogBytes   = 16 << 20 // comfortably above any catalog a real node emits
+	maxCatalogEntries = 1000
+)
+
+// validateCatalogEntry reports why a snapshot catalog entry cannot be admitted
+// to the snapshot pool. A catalog is unauthenticated peer input: any peer that
+// answers ProtocolIDSnapshotCatalog chooses every field of every entry, and the
+// consumers all assume an invariant that nothing on the wire enforces. The
+// honest serving side always sizes ChunkHashes at exactly the chunk count
+// (snapshotCatalogRequestHandler and snapshotMetadataRequestHandler both
+// allocate make([][32]byte, snap.ChunkCount)), but the receiving side indexes
+// one slice while ranging over another: VerifySnapshot ranges the entry's
+// ChunkHashes and indexes the trusted provider's, and the chunk download
+// indexes ChunkHashes by chunk index. An entry carrying more or fewer chunk
+// hashes than it claims chunks therefore panics a bootstrapping node at one of
+// those sites, and a nil entry faults on Key() before any of them. Rejecting
+// the entry here keeps the invariant true for every consumer downstream.
+func validateCatalogEntry(snap *snapshotMetadata) error {
+	if snap == nil {
+		return errors.New("nil entry")
+	}
+	if snap.Chunks == 0 {
+		return errors.New("no chunks")
+	}
+	if snap.Chunks > maxSnapshotChunks {
+		return fmt.Errorf("chunk count %d exceeds the %d maximum", snap.Chunks, maxSnapshotChunks)
+	}
+	if uint64(snap.Chunks) != uint64(len(snap.ChunkHashes)) {
+		return fmt.Errorf("chunk count %d does not match %d chunk hashes", snap.Chunks, len(snap.ChunkHashes))
+	}
+	return nil
+}
+
 // requestSnapshotCatalogs requests the available snapshots from a peer.
 func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer peer.AddrInfo) error {
 	// request snapshot catalogs from the discovered peer
@@ -592,10 +645,33 @@ func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer pee
 		return fmt.Errorf("failed to send discover snapshot catalog request: %w", err)
 	}
 
-	// read catalogs from the stream
-	snapshots := make([]*snapshotMetadata, 0)
+	// Read the catalog one entry at a time. Decoding the array whole would let a
+	// peer materialise maxCatalogBytes of entries before the count is checked,
+	// and DiscoverSnapshots runs one of these per discovered peer at a time, so
+	// the cost would multiply by however many peers answered.
 	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.CatalogTimeout)))
-	if err := json.NewDecoder(stream).Decode(&snapshots); err != nil {
+	dec := json.NewDecoder(io.LimitReader(stream, maxCatalogBytes))
+
+	opening, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("failed to read snapshot catalogs: %w", err)
+	}
+	if delim, ok := opening.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("failed to read snapshot catalogs: expected an array, got %v", opening)
+	}
+
+	snapshots := make([]*snapshotMetadata, 0)
+	for dec.More() {
+		if len(snapshots) == maxCatalogEntries {
+			return fmt.Errorf("peer offered more snapshots than the %d maximum", maxCatalogEntries)
+		}
+		var snap *snapshotMetadata
+		if err := dec.Decode(&snap); err != nil {
+			return fmt.Errorf("failed to read snapshot catalogs: %w", err)
+		}
+		snapshots = append(snapshots, snap)
+	}
+	if _, err := dec.Token(); err != nil { // the closing bracket
 		return fmt.Errorf("failed to read snapshot catalogs: %w", err)
 	}
 
@@ -603,6 +679,10 @@ func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer pee
 	s.snapshotPool.mtx.Lock()
 	defer s.snapshotPool.mtx.Unlock()
 	for _, snap := range snapshots {
+		if err := validateCatalogEntry(snap); err != nil {
+			s.log.Warn("Discarding malformed snapshot catalog entry", "provider", peer.ID, "error", err)
+			continue
+		}
 		key := snap.Key()
 		if _, blacklisted := s.snapshotPool.blacklist[key]; blacklisted {
 			// A blacklisted snapshot re-entering the pool would let the download
@@ -1010,7 +1090,7 @@ func (s *StateSyncService) performStartupCleanup() {
 }
 
 // cleanupInvalidSnapshot removes all files (temp and final) for an invalid snapshot
-func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) error {
+func (s *StateSyncService) cleanupInvalidSnapshot(ctx context.Context, snapshot *snapshotMetadata) error {
 	if snapshot == nil {
 		return nil
 	}
@@ -1020,6 +1100,17 @@ func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) er
 
 	// Clean both temp files and final files for all chunks of this invalid snapshot
 	for i := range snapshot.Chunks {
+		// The chunk count comes from a peer's catalog. validateCatalogEntry caps
+		// it, but this loop still runs once per claimed chunk with two os.Stat
+		// calls each, and it is reached from the branch of downloadSnapshot that
+		// loops without counting against MaxRetries. Honour cancellation so a
+		// shutdown does not wait for it.
+		if err := ctx.Err(); err != nil {
+			s.log.Warn("Invalid snapshot cleanup interrupted", "snapshot_height", snapshot.Height,
+				"chunks_visited", i, "files_cleaned", cleanedCount)
+			return err
+		}
+
 		// Clean temp file
 		tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", i)
 		tempFilePath := filepath.Join(s.snapshotDir, tempFileName)

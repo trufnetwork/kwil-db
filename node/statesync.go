@@ -330,6 +330,17 @@ func (ss *StateSyncService) VerifySnapshot(ctx context.Context, snap *snapshotMe
 			return VerificationInvalid, nil
 		}
 
+		// The loop below ranges the entry's chunk hashes and indexes the
+		// provider's, so a provider that answered with fewer hashes than the
+		// entry claims would panic here. The catalog ingest guard cannot cover
+		// this: meta arrives on the metadata stream, which never passes through
+		// it. A short entry is rejected here too, since it would otherwise
+		// verify vacuously and then run off the end during chunk download.
+		if len(snap.ChunkHashes) != len(meta.ChunkHashes) {
+			ss.log.Warnf("snapshot metadata mismatch: expected %d chunk hashes, got %d", len(snap.ChunkHashes), len(meta.ChunkHashes))
+			return VerificationInvalid, nil
+		}
+
 		// chunk hashes should match
 		for i, chunkHash := range snap.ChunkHashes {
 			if !bytes.Equal(chunkHash[:], meta.ChunkHashes[i][:]) {
