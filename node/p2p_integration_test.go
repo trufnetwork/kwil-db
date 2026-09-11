@@ -3,10 +3,14 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"net"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto"
@@ -295,4 +299,58 @@ func TestP2PServiceWithMockHost(t *testing.T) {
 
 	// Note: Testing with a real libp2p host would require more complex setup
 	// This test validates that the nil host path (default) works correctly
+}
+
+// TestNewHostAdvertisesDeclaredAddresses is a construction check, not coverage
+// of the filter. A lone host has no peer observations, so its advertised set is
+// the same before and after this change; what the factory withholds is proven
+// by TestAddrsFactory in node/peers. This asserts only that newHost still builds
+// a host that advertises its listen address, and its declared address when it
+// has one.
+func TestNewHostAdvertisesDeclaredAddresses(t *testing.T) {
+	privKey, _, err := crypto.GenerateSecp256k1Key(rand.Reader)
+	require.NoError(t, err)
+
+	newTestHost := func(t *testing.T, externalAddress string) (host.Host, string) {
+		t.Helper()
+		// Not 6600: other tests in this package bind it for real.
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := l.Addr().(*net.TCPAddr).Port
+		require.NoError(t, l.Close())
+
+		h, err := newHost(&hostConfig{
+			ip:              "127.0.0.1",
+			port:            uint64(port),
+			privKey:         privKey,
+			chainID:         "advertise-test",
+			logger:          log.DiscardLogger,
+			externalAddress: externalAddress,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { h.Close() })
+		return h, strconv.Itoa(port)
+	}
+
+	t.Run("declared address is advertised and nothing else can be", func(t *testing.T) {
+		h, port := newTestHost(t, "203.0.113.7:26656")
+		addrs := addrStrings(h.Addrs())
+		require.Contains(t, addrs, "/ip4/203.0.113.7/tcp/26656")
+		require.Contains(t, addrs, "/ip4/127.0.0.1/tcp/"+port)
+	})
+
+	t.Run("no declared address", func(t *testing.T) {
+		h, port := newTestHost(t, "")
+		addrs := addrStrings(h.Addrs())
+		require.Contains(t, addrs, "/ip4/127.0.0.1/tcp/"+port)
+		require.NotContains(t, addrs, "/ip4/203.0.113.7/tcp/26656")
+	})
+}
+
+func addrStrings(addrs []multiaddr.Multiaddr) []string {
+	strs := make([]string, len(addrs))
+	for i, a := range addrs {
+		strs[i] = a.String()
+	}
+	return strs
 }
