@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -317,4 +318,57 @@ func TestVerifySnapshotChunkHashLengthMismatch(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestCleanupInvalidSnapshotHonoursCancellation covers the fourth shape a
+// malformed catalog entry can take. It does not crash the node, it stalls it:
+// the cleanup runs once per claimed chunk with two os.Stat calls each, and it is
+// reached from the branch of downloadSnapshot that loops without counting
+// against MaxRetries.
+func TestCleanupInvalidSnapshotHonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mn := mock.New()
+
+	_, _, _, ss, _, err := newTestStatesyncer(ctx, t, mn, t.TempDir(), testSSConfig(false, nil))
+	require.NoError(t, err)
+
+	hash := sha256.Sum256([]byte("cleanup"))
+	snap := &snapshotMetadata{Height: 1, Format: 1, Chunks: 4, Hash: hash[:], Size: 100,
+		ChunkHashes: make([][32]byte, 4)}
+
+	seed := func(t *testing.T) []string {
+		t.Helper()
+		var paths []string
+		for i := range snap.Chunks {
+			for _, name := range []string{
+				fmt.Sprintf("chunk-%d.sql.gz", i),
+				fmt.Sprintf("chunk-%d.sql.gz.tmp", i),
+			} {
+				path := filepath.Join(ss.snapshotDir, name)
+				require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
+				paths = append(paths, path)
+			}
+		}
+		return paths
+	}
+
+	t.Run("cancelled before the first chunk", func(t *testing.T) {
+		paths := seed(t)
+		cancelled, stop := context.WithCancel(ctx)
+		stop()
+
+		require.ErrorIs(t, ss.cleanupInvalidSnapshot(cancelled, snap), context.Canceled)
+		for _, path := range paths {
+			require.FileExists(t, path, "cleanup kept working after its context was cancelled")
+		}
+	})
+
+	t.Run("runs to completion otherwise", func(t *testing.T) {
+		paths := seed(t)
+		require.NoError(t, ss.cleanupInvalidSnapshot(ctx, snap))
+		for _, path := range paths {
+			require.NoFileExists(t, path)
+		}
+	})
 }

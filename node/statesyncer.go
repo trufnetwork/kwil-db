@@ -157,7 +157,9 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 			s.snapshotPool.blacklistSnapshot(bestSnapshot)
 			// Clean up any temp files for this blacklisted snapshot and remove final files
 			// since this snapshot is fundamentally invalid
-			s.cleanupInvalidSnapshot(bestSnapshot)
+			if err := s.cleanupInvalidSnapshot(ctx, bestSnapshot); err != nil {
+				return false, nil, err
+			}
 			continue
 		case VerificationFailed:
 			// Verification failed due to network issues - do NOT blacklist the
@@ -1068,7 +1070,7 @@ func (s *StateSyncService) performStartupCleanup() {
 }
 
 // cleanupInvalidSnapshot removes all files (temp and final) for an invalid snapshot
-func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) error {
+func (s *StateSyncService) cleanupInvalidSnapshot(ctx context.Context, snapshot *snapshotMetadata) error {
 	if snapshot == nil {
 		return nil
 	}
@@ -1078,6 +1080,17 @@ func (s *StateSyncService) cleanupInvalidSnapshot(snapshot *snapshotMetadata) er
 
 	// Clean both temp files and final files for all chunks of this invalid snapshot
 	for i := range snapshot.Chunks {
+		// The chunk count comes from a peer's catalog. validateCatalogEntry caps
+		// it, but this loop still runs once per claimed chunk with two os.Stat
+		// calls each, and it is reached from the branch of downloadSnapshot that
+		// loops without counting against MaxRetries. Honour cancellation so a
+		// shutdown does not wait for it.
+		if err := ctx.Err(); err != nil {
+			s.log.Warn("Invalid snapshot cleanup interrupted", "snapshot_height", snapshot.Height,
+				"chunks_visited", i, "files_cleaned", cleanedCount)
+			return err
+		}
+
 		// Clean temp file
 		tempFileName := fmt.Sprintf("chunk-%d.sql.gz.tmp", i)
 		tempFilePath := filepath.Join(s.snapshotDir, tempFileName)
