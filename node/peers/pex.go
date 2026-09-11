@@ -37,6 +37,14 @@ func (pm *PeerMan) DiscoveryStreamHandler(s network.Stream) {
 	// 	return p.ID == pid
 	// })
 
+	// Only tell the requester about addresses they could plausibly dial from
+	// where they are, so this node does not relay e.g. another operator's
+	// docker bridge addresses out to the public network.
+	peers, dropped := routablePeers(peers, s.Conn().RemoteMultiaddr())
+	if dropped > 0 {
+		pm.log.Debugf("Withheld %d unroutable addresses from peer list for %v", dropped, peerIDStringer(pid))
+	}
+
 	s.SetWriteDeadline(time.Now().Add(4 * time.Second))
 	if err := writePeers(s, pm.chainID, peers); err != nil {
 		pm.log.Warn("failed to send peer list to peer", "error", err)
@@ -104,6 +112,15 @@ func (pm *PeerMan) RequestPeers(ctx context.Context, peerID peer.ID) ([]PeerInfo
 		} else {
 			okPeers = append(okPeers, peer)
 		}
+	}
+
+	// Discard addresses we could not route to from the vantage point of the
+	// connection we learned them over. Peer exchange is the one path that
+	// bypasses identify's equivalent filter, so without this a peer launders
+	// private addresses learned over a private link out to the whole network.
+	okPeers, dropped := routablePeers(okPeers, stream.Conn().RemoteMultiaddr())
+	if dropped > 0 {
+		pm.log.Debugf("Discarded %d unroutable addresses received from %v", dropped, peerIDStringer(peerID))
 	}
 
 	return okPeers, nil

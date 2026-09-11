@@ -118,6 +118,15 @@ type PeerMan struct {
 	lastAttempt map[peer.ID]time.Time
 	disconnects map[peer.ID]time.Time // Track disconnection timestamps
 	noReconnect map[peer.ID]bool
+
+	// connAddrs records the remote address of the most recent connection to a
+	// peer so that the address book prune still knows where we reached that
+	// peer from once the connection is gone. Its own mutex, never held while
+	// taking another, since savePeers reads it under wlMtx and blacklistMtx.
+	connAddrsMtx sync.Mutex
+	connAddrs    map[peer.ID]multiaddr.Multiaddr
+
+	prunedOnce sync.Once // log the first address-book prune only
 }
 
 // In seed mode:
@@ -182,6 +191,7 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 		lastAttempt:       make(map[peer.ID]time.Time),
 		disconnects:       make(map[peer.ID]time.Time),
 		noReconnect:       make(map[peer.ID]bool),
+		connAddrs:         make(map[peer.ID]multiaddr.Multiaddr),
 	}
 
 	numPeers, err := pm.loadAddrBook()
@@ -772,6 +782,7 @@ func (pm *PeerMan) savePeers() error {
 	pm.wlMtx.RLock()
 	pm.blacklistMtx.RLock()
 	persistentPeerList := make([]PersistentPeerInfo, len(peerList))
+	var pruned int
 	for i, peerInfo := range peerList {
 		pk, _ := pubKeyFromPeerID(peerInfo.ID)
 		if pk == nil {
@@ -780,6 +791,14 @@ func (pm *PeerMan) savePeers() error {
 			continue
 		}
 		nodeID := NodeIDFromPubKey(pk)
+
+		// Persist only addresses that are routable from this node's vantage
+		// point. Without this, unroutable addresses received before this node
+		// was upgraded, or from a peer that has not been, ratchet forward
+		// across restarts: loadAddrBook re-injects the whole file at a ~48h
+		// TTL, which outlives the 2 minute TTL they were stored with.
+		addrs := persistAddrs(peerInfo.Addrs, pm.connAddr(peerInfo.ID))
+		pruned += len(peerInfo.Addrs) - len(addrs)
 
 		// Get blacklist entry if it exists (and is not expired)
 		var blacklistEntry *BlacklistEntry
@@ -798,7 +817,7 @@ func (pm *PeerMan) savePeers() error {
 
 		persistentPeerList[i] = PersistentPeerInfo{
 			NodeID:      nodeID,
-			Addrs:       peerInfo.Addrs,
+			Addrs:       addrs,
 			Protos:      peerInfo.Protos,
 			Whitelisted: pm.persistentWhitelist[peerInfo.ID],
 			Blacklisted: blacklistEntry,
@@ -806,6 +825,12 @@ func (pm *PeerMan) savePeers() error {
 	}
 	pm.blacklistMtx.RUnlock()
 	pm.wlMtx.RUnlock()
+
+	if pruned > 0 {
+		pm.prunedOnce.Do(func() {
+			pm.log.Infof("Address book: omitting %d unroutable peer addresses", pruned)
+		})
+	}
 
 	return persistPeers(persistentPeerList, pm.addrBook)
 }
@@ -822,6 +847,7 @@ func (pm *PeerMan) removePeer(pid peer.ID) {
 	pm.mtx.Lock()
 	pm.noReconnect[pid] = true
 	pm.mtx.Unlock()
+	pm.forgetConnAddr(pid)
 }
 
 // persistPeers saves known peers to a JSON file
@@ -1046,6 +1072,10 @@ func (pm *PeerMan) Connected(net network.Network, conn network.Conn) {
 	delete(pm.disconnects, peerID)
 	pm.mtx.Unlock()
 
+	// Remember where we reached this peer, so savePeers can still tell which of
+	// its addresses are routable for us after it disconnects.
+	pm.rememberConnAddr(peerID, addr)
+
 	pm.wg.Add(1)
 	go func() {
 		defer pm.wg.Done()
@@ -1135,6 +1165,7 @@ func (pm *PeerMan) Disconnected(net network.Network, conn network.Conn) {
 			pm.log.Infof("Disconnected from crawler %v", peerIDStringer(peerID))
 			pm.ps.ClearAddrs(peerID)
 			pm.ps.RemovePeer(peerID) // forget peer ID, and also remove metadata and keys
+			pm.forgetConnAddr(peerID)
 			return
 		}
 	}
@@ -1142,6 +1173,7 @@ func (pm *PeerMan) Disconnected(net network.Network, conn network.Conn) {
 	if len(pm.ps.Addrs(peerID)) == 0 { // we explicitly removed it
 		pm.log.Warnf("Disconnected from peer %v with no addresses.", peerIDStringer(peerID))
 		pm.ps.RemovePeer(peerID) // forget peer ID, and also remove metadata and keys
+		pm.forgetConnAddr(peerID)
 		return
 	}
 
@@ -1276,6 +1308,7 @@ func (pm *PeerMan) removeOldPeers() {
 
 					pm.ps.RemovePeer(peerID)
 					delete(pm.disconnects, peerID) // Remove from tracking map
+					pm.forgetConnAddr(peerID)
 					pm.log.Infof("Removed peer %s last connected %v ago", peerIDStringer(peerID), time.Since(disconnectTime))
 				}
 			}
