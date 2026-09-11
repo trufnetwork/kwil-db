@@ -645,14 +645,34 @@ func (s *StateSyncService) requestSnapshotCatalogs(ctx context.Context, peer pee
 		return fmt.Errorf("failed to send discover snapshot catalog request: %w", err)
 	}
 
-	// read catalogs from the stream
-	snapshots := make([]*snapshotMetadata, 0)
+	// Read the catalog one entry at a time. Decoding the array whole would let a
+	// peer materialise maxCatalogBytes of entries before the count is checked,
+	// and DiscoverSnapshots runs one of these per discovered peer at a time, so
+	// the cost would multiply by however many peers answered.
 	stream.SetReadDeadline(time.Now().Add(time.Duration(s.cfg.CatalogTimeout)))
-	if err := json.NewDecoder(io.LimitReader(stream, maxCatalogBytes)).Decode(&snapshots); err != nil {
+	dec := json.NewDecoder(io.LimitReader(stream, maxCatalogBytes))
+
+	opening, err := dec.Token()
+	if err != nil {
 		return fmt.Errorf("failed to read snapshot catalogs: %w", err)
 	}
-	if len(snapshots) > maxCatalogEntries {
-		return fmt.Errorf("peer offered %d snapshots, more than the %d maximum", len(snapshots), maxCatalogEntries)
+	if delim, ok := opening.(json.Delim); !ok || delim != '[' {
+		return fmt.Errorf("failed to read snapshot catalogs: expected an array, got %v", opening)
+	}
+
+	snapshots := make([]*snapshotMetadata, 0)
+	for dec.More() {
+		if len(snapshots) == maxCatalogEntries {
+			return fmt.Errorf("peer offered more snapshots than the %d maximum", maxCatalogEntries)
+		}
+		var snap *snapshotMetadata
+		if err := dec.Decode(&snap); err != nil {
+			return fmt.Errorf("failed to read snapshot catalogs: %w", err)
+		}
+		snapshots = append(snapshots, snap)
+	}
+	if _, err := dec.Token(); err != nil { // the closing bracket
+		return fmt.Errorf("failed to read snapshot catalogs: %w", err)
 	}
 
 	// add the snapshots to the pool

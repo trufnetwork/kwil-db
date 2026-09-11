@@ -217,6 +217,29 @@ func TestRequestSnapshotCatalogsRejectsOversizedCatalogs(t *testing.T) {
 		require.Empty(t, ssMe.snapshotPool.listSnapshots())
 	})
 
+	// Proof that the count is enforced while streaming rather than after the
+	// whole array is in memory: the malformed tail is never reached, so the
+	// error names the entry count instead of a JSON syntax fault.
+	t.Run("stops before decoding the rest", func(t *testing.T) {
+		parts := make([]string, 0, maxCatalogEntries+1)
+		for i := range maxCatalogEntries + 1 {
+			parts = append(parts, entry(uint64(i+1)))
+		}
+		served = "[" + strings.Join(parts, ",") + ",{{{not json"
+
+		err := ssMe.requestSnapshotCatalogs(ctx, peer.AddrInfo{ID: hU.ID()})
+		require.ErrorContains(t, err, "more snapshots than")
+		require.Empty(t, ssMe.snapshotPool.listSnapshots())
+	})
+
+	// The honest handler writes a single zero byte when it holds no snapshots,
+	// so a non-array response has to fail cleanly rather than panic.
+	t.Run("not an array", func(t *testing.T) {
+		served = "\x00"
+		require.Error(t, ssMe.requestSnapshotCatalogs(ctx, peer.AddrInfo{ID: hU.ID()}))
+		require.Empty(t, ssMe.snapshotPool.listSnapshots())
+	})
+
 	t.Run("an honest catalog still lands", func(t *testing.T) {
 		served = "[" + entry(42) + "]"
 		require.NoError(t, ssMe.requestSnapshotCatalogs(ctx, peer.AddrInfo{ID: hU.ID()}))
