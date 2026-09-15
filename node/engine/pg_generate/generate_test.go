@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
 )
@@ -507,6 +508,64 @@ func Test_OrderBySafeInsertion(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
 			require.Equal(t, []string(nil), params)
+		})
+	}
+}
+
+func Test_OrderByFallbackInsertion(t *testing.T) {
+	const (
+		unmatchedParenFn = "test_order_by_unmatched_paren"
+		noClosingParenFn = "test_order_by_no_closing_paren"
+	)
+
+	engine.Functions[unmatchedParenFn] = &engine.AggregateFunctionDefinition{
+		ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+			return types.TextType, nil
+		},
+		PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
+			return "test_aggregate)", nil
+		},
+	}
+	engine.Functions[noClosingParenFn] = &engine.AggregateFunctionDefinition{
+		ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
+			return types.TextType, nil
+		},
+		PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
+			return "test_aggregate", nil
+		},
+	}
+	defer delete(engine.Functions, unmatchedParenFn)
+	defer delete(engine.Functions, noClosingParenFn)
+
+	tests := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "unmatched closing parenthesis",
+			sql:  "SELECT " + unmatchedParenFn + "(name ORDER BY id) FROM users;",
+			want: "\nSELECT test_aggregate ORDER BY id)\nFROM users\n;",
+		},
+		{
+			name: "no closing parenthesis",
+			sql:  "SELECT " + noClosingParenFn + "(name ORDER BY id) FROM users;",
+			want: "\nSELECT test_aggregate ORDER BY id\nFROM users\n;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmts, err := parse.Parse(tt.sql)
+			require.NoError(t, err)
+			require.Len(t, stmts, 1)
+
+			got, params, err := pggenerate.GenerateSQL(stmts[0], "kwil", func(varName string) (*types.DataType, error) {
+				return types.TextType, nil
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+			require.Empty(t, params)
 		})
 	}
 }

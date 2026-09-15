@@ -157,16 +157,16 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 					pgFmt = pgFmt[:openIdx+1] + inner + pgFmt[closeIdx:]
 				} else {
 					// Fallback: append ORDER BY at the end
-					if strings.HasSuffix(pgFmt, ")") {
-						pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
+					if prefix, ok := strings.CutSuffix(pgFmt, ")"); ok {
+						pgFmt = prefix + " ORDER BY " + strings.Join(ob, ", ") + ")"
 					} else {
 						pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
 					}
 				}
 			} else {
 				// Fallback: append ORDER BY at the end
-				if strings.HasSuffix(pgFmt, ")") {
-					pgFmt = strings.TrimSuffix(pgFmt, ")") + " ORDER BY " + strings.Join(ob, ", ") + ")"
+				if prefix, ok := strings.CutSuffix(pgFmt, ")"); ok {
+					pgFmt = prefix + " ORDER BY " + strings.Join(ob, ", ") + ")"
 				} else {
 					pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
 				}
