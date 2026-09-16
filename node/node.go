@@ -525,12 +525,19 @@ func multiAddrToHostPort(addr multiaddr.Multiaddr) string {
 	return net.JoinHostPort(host, port)
 }
 
+// Peers reports one entry per peer holding a live connection. The length matters
+// as much as the contents: user.health publishes it as the node's peer count, so
+// a peer holding two connections stays one entry. It reads the host's
+// connections rather than the peer manager's view of them because the peer
+// manager drops a peer it holds no dialable address for, and a peer behind NAT
+// is exactly that: connected and serving, but nobody can dial it back. Every
+// field below comes from the connection, so an address the peer manager lacks
+// costs the operator nothing here.
 func (n *Node) Peers(context.Context) ([]*adminTypes.PeerInfo, error) {
-	peers := n.pm.ConnectedPeers()
 	peersInfo := []*adminTypes.PeerInfo{}
-	for _, peer := range peers {
-		conns := n.host.Network().ConnsToPeer(peer.ID)
-		if len(conns) == 0 { // should be at least one
+	for _, peerID := range n.host.Network().Peers() {
+		conns := n.host.Network().ConnsToPeer(peerID)
+		if len(conns) == 0 { // disconnected while we were listing
 			continue
 		}
 		conn := conns[0]
