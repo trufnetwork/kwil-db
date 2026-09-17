@@ -426,22 +426,37 @@ func requestBlockHeight(ctx context.Context, host host.Host, peer peer.ID,
 // readAll reads from a stream until EOF or:
 // - the stream is closed
 // - the deadline is reached
-// - the stream is idle (no chunk read) for idleTimeout
+// - the stream goes idle for idleTimeout between two chunks
 // - the total bytes read exceed the limit
+//
+// idleTimeout starts applying at the second read. Before the first byte there
+// is no transfer to be idle: that wait covers the request's flight to the peer,
+// the peer's own block lookup and encode, and the first byte's flight back. On
+// a distant peer a whole round trip is routinely longer than the gap between
+// two chunks of a block already on the wire, so holding the first read to
+// idleTimeout abandons peers that were about to answer. The first read is
+// bounded by deadline instead, which the caller derives from the block sync
+// response timeout.
 func readAll(s network.Stream, limit int64, deadline time.Time, idleTimeout time.Duration) ([]byte, error) {
 	r := io.LimitReader(s, limit)
 
 	const readChunk = 512 // like io.ReadAll
 	b := make([]byte, 0, readChunk)
 
-	for {
+	for first := true; ; first = false {
 		// Check absolute deadline for the entire resource.
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("timeout")
 		}
 
-		// Set read deadline for this chunk.
-		s.SetReadDeadline(time.Now().Add(idleTimeout))
+		// Set read deadline for this chunk. The first read waits out the round
+		// trip; every later one only allows for a gap in a transfer already
+		// under way.
+		chunkDeadline := deadline
+		if !first {
+			chunkDeadline = time.Now().Add(idleTimeout)
+		}
+		s.SetReadDeadline(chunkDeadline)
 
 		// The following is verbatim from io.ReadAll.
 		n, err := r.Read(b[len(b):cap(b)])
