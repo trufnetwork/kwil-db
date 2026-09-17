@@ -123,7 +123,7 @@ func (n *Node) advertiseToPeer(ctx context.Context, peerID peer.ID, proto protoc
 
 	annWriteTimeout := defaultAnnWriteTimeout
 	if n.blockSyncCfg != nil {
-		annWriteTimeout = time.Duration(n.blockSyncCfg.AnnounceWriteTimeout)
+		annWriteTimeout = blockSyncTimeout(n.blockSyncCfg.AnnounceWriteTimeout, defaultAnnWriteTimeout)
 	}
 	s.SetWriteDeadline(time.Now().Add(annWriteTimeout))
 
@@ -141,7 +141,7 @@ func (n *Node) advertiseToPeer(ctx context.Context, peerID peer.ID, proto protoc
 
 		annRespTimeout := defaultAnnRespTimeout
 		if n.blockSyncCfg != nil {
-			annRespTimeout = time.Duration(n.blockSyncCfg.AnnounceRespTimeout)
+			annRespTimeout = blockSyncTimeout(n.blockSyncCfg.AnnounceRespTimeout, defaultAnnRespTimeout)
 		}
 		s.SetReadDeadline(time.Now().Add(annRespTimeout))
 

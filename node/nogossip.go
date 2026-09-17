@@ -24,7 +24,7 @@ func (n *Node) txAnnStreamHandler(s network.Stream) {
 
 	txGetTimeout := defaultTxGetTimeout
 	if n.blockSyncCfg != nil {
-		txGetTimeout = time.Duration(n.blockSyncCfg.TxGetTimeout)
+		txGetTimeout = blockSyncTimeout(n.blockSyncCfg.TxGetTimeout, defaultTxGetTimeout)
 	}
 	s.SetDeadline(time.Now().Add(txGetTimeout))
 
@@ -247,7 +247,7 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 
 		txAnnTimeout := defaultTxAnnTimeout
 		if n.blockSyncCfg != nil {
-			txAnnTimeout = time.Duration(n.blockSyncCfg.TxAnnTimeout)
+			txAnnTimeout = blockSyncTimeout(n.blockSyncCfg.TxAnnTimeout, defaultTxAnnTimeout)
 		}
 		roundTripDeadline := time.Now().Add(txAnnTimeout)
 		s.SetWriteDeadline(roundTripDeadline)
@@ -265,7 +265,7 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 
 		txAnnRespTimeout := defaultTxAnnRespTimeout
 		if n.blockSyncCfg != nil {
-			txAnnRespTimeout = time.Duration(n.blockSyncCfg.TxAnnTimeout) // Use same timeout as announcement
+			txAnnRespTimeout = blockSyncTimeout(n.blockSyncCfg.TxAnnTimeout, defaultTxAnnRespTimeout) // Use same timeout as announcement
 		}
 		s.SetReadDeadline(time.Now().Add(txAnnRespTimeout))
 
@@ -289,7 +289,7 @@ func (n *Node) advertiseTxToPeer(ctx context.Context, peerID peer.ID, txHash typ
 
 		txGetTimeout := defaultTxGetTimeout
 		if n.blockSyncCfg != nil {
-			txGetTimeout = time.Duration(n.blockSyncCfg.TxGetTimeout)
+			txGetTimeout = blockSyncTimeout(n.blockSyncCfg.TxGetTimeout, defaultTxGetTimeout)
 		}
 		s.SetWriteDeadline(time.Now().Add(txGetTimeout))
 		s.Write(rawTx)

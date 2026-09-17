@@ -600,6 +600,8 @@ func nodeConfig(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
 	}
 }
 
+// buildNode constructs the [node.Node] from its already-built subsystems,
+// failing the build if it cannot be created.
 func buildNode(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
 	ce *consensus.ConsensusEngine, ss *snapshotter.SnapshotStore, db *pg.DB,
 	bp *blockprocessor.BlockProcessor, p2p *node.P2PService) *node.Node {

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/trufnetwork/kwil-db/config"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
 )
 
 // TestDefaultBlockSyncMatchesFallbacks pins the equivalence that makes reading
@@ -39,4 +40,44 @@ func TestDefaultBlockSyncMatchesFallbacks(t *testing.T) {
 			"block_sync.%s default (%s) differs from the fallback the node uses without it (%s)",
 			tc.key, tc.shipped, tc.fallback)
 	}
+}
+
+// TestBlockSyncTimeoutRejectsZero covers what wiring the config newly exposes:
+// a value an operator actually wrote. Zero reads as "no limit" in plenty of
+// software, and here it would mean every deadline is already in the past, so
+// the node abandons each peer before it can answer.
+func TestBlockSyncTimeoutRejectsZero(t *testing.T) {
+	const fallback = 7 * time.Second
+
+	for _, tc := range []struct {
+		name       string
+		configured time.Duration
+		want       time.Duration
+	}{
+		{"a configured value is used", 250 * time.Millisecond, 250 * time.Millisecond},
+		{"an unset value falls back", 0, fallback},
+		{"a negative value falls back", -time.Second, fallback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := blockSyncTimeout(ktypes.Duration(tc.configured), fallback)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestZeroBlockSyncConfigUsesFallbacks is the whole-struct version: a
+// BlockSyncConfig that was never populated must leave the node behaving as if
+// no config had been supplied at all, not as if every timeout were zero.
+func TestZeroBlockSyncConfigUsesFallbacks(t *testing.T) {
+	var zero config.BlockSyncConfig
+
+	require.Equal(t, defaultBlkGetTimeout, blockSyncTimeout(zero.BlockGetTimeout, defaultBlkGetTimeout))
+	require.Equal(t, defaultBlkSendTimeout, blockSyncTimeout(zero.BlockSendTimeout, defaultBlkSendTimeout))
+	require.Equal(t, defaultBlkReqTimeout, blockSyncTimeout(zero.RequestTimeout, defaultBlkReqTimeout))
+	require.Equal(t, defaultBlkRespTimeout, blockSyncTimeout(zero.ResponseTimeout, defaultBlkRespTimeout))
+	require.Equal(t, defaultBlkIdleTimeout, blockSyncTimeout(zero.IdleTimeout, defaultBlkIdleTimeout))
+	require.Equal(t, defaultAnnWriteTimeout, blockSyncTimeout(zero.AnnounceWriteTimeout, defaultAnnWriteTimeout))
+	require.Equal(t, defaultAnnRespTimeout, blockSyncTimeout(zero.AnnounceRespTimeout, defaultAnnRespTimeout))
+	require.Equal(t, defaultTxGetTimeout, blockSyncTimeout(zero.TxGetTimeout, defaultTxGetTimeout))
+	require.Equal(t, defaultTxAnnTimeout, blockSyncTimeout(zero.TxAnnTimeout, defaultTxAnnTimeout))
 }

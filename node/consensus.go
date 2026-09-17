@@ -12,7 +12,6 @@ import (
 	"io"
 	"slices"
 	"sync"
-	"time"
 
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/peers"
@@ -209,7 +208,7 @@ func (n *Node) announceBlkProp(ctx context.Context, blk *ktypes.Block, senderPub
 		propID, _ := prop.MarshalBinary()
 		blkSendTimeout := defaultBlkSendTimeout
 		if n.blockSyncCfg != nil {
-			blkSendTimeout = time.Duration(n.blockSyncCfg.BlockSendTimeout)
+			blkSendTimeout = blockSyncTimeout(n.blockSyncCfg.BlockSendTimeout, defaultBlkSendTimeout)
 		}
 		err := n.advertiseToPeer(ctx, peerID, ProtocolIDBlockPropose, contentAnn{prop.String(), propID, rawBlk},
 			blkSendTimeout)

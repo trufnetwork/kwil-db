@@ -45,6 +45,22 @@ const (
 	maxEntries            = 5_000
 )
 
+// blockSyncTimeout returns the duration an operator configured, or fallback if
+// they left it at zero.
+//
+// A zero deadline is never what anyone means by it. time.Now().Add(0) is
+// already in the past, so the very first read or write expires and the peer is
+// abandoned before it has been given a chance. Config sections are checked in
+// Validate methods that `kwild start` never reaches — which is how
+// concurrent_chunk_fetchers = 0 gets as far as starting no fetchers at all — so
+// the guard belongs here, where the value is used.
+func blockSyncTimeout(configured ktypes.Duration, fallback time.Duration) time.Duration {
+	if d := time.Duration(configured); d > 0 {
+		return d
+	}
+	return fallback
+}
+
 type peerInfo struct {
 	height int64
 	seenAt time.Time
@@ -135,9 +151,9 @@ func (n *Node) blkAnnStreamHandler(s network.Stream) {
 	annRespTimeout := defaultAnnRespTimeout
 	annWriteTimeout := defaultAnnWriteTimeout
 	if n.blockSyncCfg != nil {
-		blkGetTimeout = time.Duration(n.blockSyncCfg.BlockGetTimeout)
-		annRespTimeout = time.Duration(n.blockSyncCfg.AnnounceRespTimeout)
-		annWriteTimeout = time.Duration(n.blockSyncCfg.AnnounceWriteTimeout)
+		blkGetTimeout = blockSyncTimeout(n.blockSyncCfg.BlockGetTimeout, defaultBlkGetTimeout)
+		annRespTimeout = blockSyncTimeout(n.blockSyncCfg.AnnounceRespTimeout, defaultAnnRespTimeout)
+		annWriteTimeout = blockSyncTimeout(n.blockSyncCfg.AnnounceWriteTimeout, defaultAnnWriteTimeout)
 	}
 	s.SetDeadline(time.Now().Add(blkGetTimeout + annRespTimeout + annWriteTimeout)) // combined
 	ctx, cancel := context.WithTimeout(context.Background(), blkGetTimeout)
@@ -288,7 +304,7 @@ func (n *Node) announceRawBlk(ctx context.Context, blkHash types.Hash, height in
 		ann := contentAnn{cType: "block announce", ann: resID, content: rawBlk}
 		blkSendTimeout := defaultBlkSendTimeout
 		if n.blockSyncCfg != nil {
-			blkSendTimeout = time.Duration(n.blockSyncCfg.BlockSendTimeout)
+			blkSendTimeout = blockSyncTimeout(n.blockSyncCfg.BlockSendTimeout, defaultBlkSendTimeout)
 		}
 		err = n.advertiseToPeer(ctx, peerID, ProtocolIDBlkAnn, ann, blkSendTimeout)
 		if err != nil {
@@ -466,6 +482,11 @@ func (n *Node) getBlkHeight(ctx context.Context, height int64) (types.Hash, []by
 	return getBlkHeight(ctx, height, n.host, n.log, n.blockSyncCfg)
 }
 
+// getBlkHeight fetches the block at height from a sample of peers, trying them
+// in turn until one serves it. It returns the block hash, the encoded block,
+// its commit info, and the best height reported by any peer that did not have
+// it. blockSyncCfg may be nil, in which case the package defaults apply. See
+// the peer-sampling notes above for how the sample is chosen.
 func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Logger, blockSyncCfg *config.BlockSyncConfig) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
 	allPeers := peerHosts(host)
 	if len(allPeers) == 0 {
@@ -527,9 +548,9 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		recvTimeout := defaultBlkRespTimeout
 		idleTimeout := defaultBlkIdleTimeout
 		if blockSyncCfg != nil {
-			reqTimeout = time.Duration(blockSyncCfg.RequestTimeout)
-			recvTimeout = time.Duration(blockSyncCfg.ResponseTimeout)
-			idleTimeout = time.Duration(blockSyncCfg.IdleTimeout)
+			reqTimeout = blockSyncTimeout(blockSyncCfg.RequestTimeout, defaultBlkReqTimeout)
+			recvTimeout = blockSyncTimeout(blockSyncCfg.ResponseTimeout, defaultBlkRespTimeout)
+			idleTimeout = blockSyncTimeout(blockSyncCfg.IdleTimeout, defaultBlkIdleTimeout)
 		}
 		resp, err := requestBlockHeight(ctx, host, peer, height, blkReadLimit, reqTimeout, recvTimeout, idleTimeout)
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrBlkNotFound) {
