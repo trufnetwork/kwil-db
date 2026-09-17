@@ -18,6 +18,7 @@ import (
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
+	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/rpc/transport"
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/extensions/hooks"
@@ -573,11 +574,14 @@ func buildErc20BridgeSignerMgr(d *coreDependencies, db *pg.DB,
 		d.cfg.Erc20Bridge, state, d.rootDir, d.logger.New("EVMRW"))
 }
 
-func buildNode(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
+// nodeConfig assembles the [node.Config] for the running node. Every
+// *config.XConfig field must point into d.cfg. The node treats a nil section as
+// "no configuration supplied" and quietly uses its own hardcoded values, so an
+// omission here discards that part of the operator's kwild.toml without a word.
+func nodeConfig(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
 	ce *consensus.ConsensusEngine, ss *snapshotter.SnapshotStore, db *pg.DB,
-	bp *blockprocessor.BlockProcessor, p2p *node.P2PService) *node.Node {
-	logger := d.logger.New("NODE")
-	nc := &node.Config{
+	bp *blockprocessor.BlockProcessor, p2p *node.P2PService, logger log.Logger) *node.Config {
+	return &node.Config{
 		ChainID:     d.genesisCfg.ChainID,
 		RootDir:     d.rootDir,
 		PrivKey:     d.privKey,
@@ -587,12 +591,20 @@ func buildNode(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
 		BlockStore:  bs,
 		Consensus:   ce,
 		Statesync:   &d.cfg.StateSync,
+		BlockSync:   &d.cfg.BlockSync,
 		Snapshotter: ss,
 		BlockProc:   bp,
 		Logger:      logger,
 		DBConfig:    &d.cfg.DB,
 		P2PService:  p2p,
 	}
+}
+
+func buildNode(d *coreDependencies, mp *mempool.Mempool, bs *store.BlockStore,
+	ce *consensus.ConsensusEngine, ss *snapshotter.SnapshotStore, db *pg.DB,
+	bp *blockprocessor.BlockProcessor, p2p *node.P2PService) *node.Node {
+	logger := d.logger.New("NODE")
+	nc := nodeConfig(d, mp, bs, ce, ss, db, bp, p2p, logger)
 
 	node, err := node.NewNode(nc)
 	if err != nil {

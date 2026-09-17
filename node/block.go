@@ -38,6 +38,9 @@ const (
 	blkReadLimit          = 300_000_000
 	defaultBlkGetTimeout  = 90 * time.Second
 	defaultBlkSendTimeout = 45 * time.Second
+	defaultBlkReqTimeout  = 2 * time.Second
+	defaultBlkRespTimeout = 20 * time.Second
+	defaultBlkIdleTimeout = 500 * time.Millisecond
 	cacheTTL              = 15 * time.Minute
 	maxEntries            = 5_000
 )
@@ -520,9 +523,9 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		}
 
 		t0 := time.Now()
-		reqTimeout := 2 * time.Second
-		recvTimeout := 20 * time.Second
-		idleTimeout := 500 * time.Millisecond
+		reqTimeout := defaultBlkReqTimeout
+		recvTimeout := defaultBlkRespTimeout
+		idleTimeout := defaultBlkIdleTimeout
 		if blockSyncCfg != nil {
 			reqTimeout = time.Duration(blockSyncCfg.RequestTimeout)
 			recvTimeout = time.Duration(blockSyncCfg.ResponseTimeout)
