@@ -34,6 +34,11 @@ import (
 // address on which they can accept incoming connections.
 var ErrNoRecordedAddress = errors.New("no address for peer in peerstore")
 
+// ErrPeerServesNoPeers reports a peer that answered the discovery stream with
+// nothing, which is what a node with peer exchange disabled does. It is a
+// statement about that peer's configuration, not a failure of ours.
+var ErrPeerServesNoPeers = errors.New("peer does not serve a peer list")
+
 var mets metrics.NodeMetrics = metrics.Node
 
 const (
@@ -203,9 +208,7 @@ func NewPeerMan(cfg *Config) (*PeerMan, error) {
 	if cfg.PEX || cfg.SeedMode {
 		host.SetStreamHandler(ProtocolIDDiscover, pm.DiscoveryStreamHandler)
 	} else {
-		host.SetStreamHandler(ProtocolIDDiscover, func(s network.Stream) {
-			s.Close()
-		})
+		host.SetStreamHandler(ProtocolIDDiscover, pm.declineDiscoveryStreamHandler)
 	}
 
 	host.SetStreamHandler(ProtocolIDPrefixChainID+protocol.ID(cfg.ChainID), func(s network.Stream) {
@@ -559,6 +562,10 @@ func (pm *PeerMan) crawlPeer(ctx context.Context, peerID peer.ID) {
 	defer cancel()
 	peersInfo, err := pm.RequestPeers(ctxPR, peerID)
 	if err != nil {
+		if errors.Is(err, ErrPeerServesNoPeers) {
+			pm.log.Debugf("Peer %v does not serve a peer list", peerIDStringer(peerID))
+			return
+		}
 		pm.log.Warnf("Failed to get peers from %v: %v", peerIDStringer(peerID), err)
 		return
 	}
@@ -632,6 +639,12 @@ func (pm *PeerMan) FindPeers(ctx context.Context, ns string, opts ...discovery.O
 			defer cancel()
 			peers, err := pm.RequestPeers(ctx, peerIDCopy)
 			if err != nil {
+				if errors.Is(err, ErrPeerServesNoPeers) {
+					// Nothing is wrong with this peer, and asking again next
+					// cycle is how it gets picked up if PEX is turned on.
+					pm.log.Debugf("Peer %v does not serve a peer list", peerIDStringer(peerIDCopy))
+					return
+				}
 				pm.log.Warnf("Failed to get peers from %v: %v", peerIDStringer(peerIDCopy), err)
 				return
 			}

@@ -3,6 +3,7 @@ package peers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -55,6 +56,24 @@ func (pm *PeerMan) DiscoveryStreamHandler(s network.Stream) {
 		"to_peer", pid)
 }
 
+// declineDiscoveryStreamHandler answers with a well-formed empty peer list on
+// behalf of a node that does not participate in peer exchange.
+//
+// Not registering the protocol at all would be the more direct way to say so,
+// and it is not available: ProtocolIDDiscover is in RequiredStreamProtocols, so
+// a node that stopped advertising it would be tagged lame, stripped of its
+// addresses and disconnected by every peer that checks. Closing the stream
+// without writing is what this used to do, and it reaches the caller as a bare
+// EOF that reads like a broken peer.
+func (pm *PeerMan) declineDiscoveryStreamHandler(s network.Stream) {
+	defer s.Close()
+
+	s.SetWriteDeadline(time.Now().Add(4 * time.Second))
+	if err := writePeers(s, pm.chainID, nil); err != nil {
+		pm.log.Warn("failed to answer the discovery stream", "error", err)
+	}
+}
+
 type peersMsg struct {
 	ChainID string     `json:"chain_id"`
 	Peers   []PeerInfo `json:"peers"`
@@ -95,6 +114,13 @@ func (pm *PeerMan) RequestPeers(ctx context.Context, peerID peer.ID) ([]PeerInfo
 
 	chainID, peers, err := recvPeersProto(stream)
 	if err != nil {
+		// A peer that closes the stream having written nothing is running with
+		// peer exchange disabled, on a release that answers by hanging up. A
+		// truncated message reaches us as ErrUnexpectedEOF instead, so this
+		// does not swallow a real read failure.
+		if errors.Is(err, io.EOF) {
+			return nil, ErrPeerServesNoPeers
+		}
 		return nil, err
 	}
 
