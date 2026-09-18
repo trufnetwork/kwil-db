@@ -815,15 +815,22 @@ func (ce *ConsensusEngine) repairAppAheadOfStore(ctx context.Context, height int
 		return fmt.Errorf("fetched block hash %s does not match commit intent %s at height %d", blkID.String(), expectedHash.String(), height)
 	}
 
+	blk, err := ktypes.DecodeBlock(rawBlk)
+	if err != nil {
+		return fmt.Errorf("decode block %d: %w", height, err)
+	}
+	decodedHash := blk.Hash()
+	if decodedHash != expectedHash || decodedHash != blkID {
+		return fmt.Errorf("decoded block hash %s does not match fetched %s or commit intent %s at height %d", decodedHash.String(), blkID.String(), expectedHash.String(), height)
+	}
+	if blk.Header.Height != height {
+		return fmt.Errorf("decoded block height %d does not match requested height %d", blk.Header.Height, height)
+	}
+
 	// Use the fetched commit-info app hash (what was committed with this block)
 	// as the state commitment. The chain-table cache is only a consistency check.
 	if len(appHash) > 0 && !bytes.Equal(ci.AppHash[:], appHash) {
 		return fmt.Errorf("commit info app hash mismatch for block %d: got %x expected %x", height, ci.AppHash[:], appHash)
-	}
-
-	blk, err := ktypes.DecodeBlock(rawBlk)
-	if err != nil {
-		return fmt.Errorf("decode block %d: %w", height, err)
 	}
 
 	if err := ce.blockStore.Store(blk, ci); err != nil {
