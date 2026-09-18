@@ -785,6 +785,13 @@ func (ce *ConsensusEngine) initializeState(ctx context.Context) (int64, int64, e
 }
 
 func (ce *ConsensusEngine) repairAppAheadOfStore(ctx context.Context, height int64, appHash []byte, intent *commitIntent) error {
+	// A dump-cached kwild_chain.app_hash is not a locally derived state
+	// commitment. Only a commit intent proves this node executed and committed
+	// the block at this height.
+	if intent == nil || intent.Height != height {
+		return fmt.Errorf("app height %d is ahead of blockstore without a local commit intent", height)
+	}
+
 	if ce.blkRequester == nil {
 		return fmt.Errorf("block requester is not configured")
 	}
@@ -800,19 +807,18 @@ func (ce *ConsensusEngine) repairAppAheadOfStore(ctx context.Context, height int
 		return fmt.Errorf("missing commit info for block %d", height)
 	}
 
-	if len(appHash) > 0 && !bytes.Equal(ci.AppHash[:], appHash) {
-		return fmt.Errorf("commit info app hash mismatch for block %d: got %x expected %x", height, ci.AppHash[:], appHash)
+	expectedHash, err := intent.hash()
+	if err != nil {
+		return fmt.Errorf("decode commit intent hash: %w", err)
+	}
+	if expectedHash == zeroHash || expectedHash != blkID {
+		return fmt.Errorf("fetched block hash %s does not match commit intent %s at height %d", blkID.String(), expectedHash.String(), height)
 	}
 
-	if intent != nil {
-		expectedHash, err := intent.hash()
-		if err != nil {
-			return fmt.Errorf("decode commit intent hash: %w", err)
-		}
-		var zeroHash ktypes.Hash
-		if expectedHash != zeroHash && expectedHash != blkID {
-			return fmt.Errorf("fetched block hash %s does not match commit intent %s at height %d", blkID.String(), expectedHash.String(), height)
-		}
+	// Use the fetched commit-info app hash (what was committed with this block)
+	// as the state commitment. The chain-table cache is only a consistency check.
+	if len(appHash) > 0 && !bytes.Equal(ci.AppHash[:], appHash) {
+		return fmt.Errorf("commit info app hash mismatch for block %d: got %x expected %x", height, ci.AppHash[:], appHash)
 	}
 
 	blk, err := ktypes.DecodeBlock(rawBlk)

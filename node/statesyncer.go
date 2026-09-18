@@ -30,6 +30,7 @@ import (
 	"github.com/trufnetwork/kwil-db/node/meta"
 	"github.com/trufnetwork/kwil-db/node/peers"
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 var (
@@ -97,6 +98,9 @@ func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error)
 				err := s.verifyState(ctx, snap)
 				if err != nil {
 					s.log.Warn("failed to verify state after DB restore", "error", err)
+					if cleanErr := dropRestoreSchemasWithPsql(ctx, s.dbConfig); cleanErr != nil {
+						return -1, errors.Join(err, cleanErr)
+					}
 					return -1, err
 				}
 
@@ -636,8 +640,6 @@ func (s *StateSyncService) verifyState(ctx context.Context, snapshot *snapshotMe
 	return nil
 }
 
-// RestoreDB restores the database from the logical sql dump using psql command
-// It also validates the snapshot hash, before restoring the database
 func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMetadata) error {
 	// Log detailed information about the restoration process
 	sysInfo := utils.GetSystemInfo()
@@ -666,41 +668,44 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	return RestoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.log)
 }
 
+// RestoreDB verifies the whole-dump hash, then imports via psql. On hash or
+// import failure it waits for psql and drops leftover kwild_/ds_* schemas so a
+// partial restore cannot be treated as initialized state on restart.
 func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
-
-	// unzip and stream the sql dump to psql
-	cmd := exec.CommandContext(ctx,
-		"psql",
-		"--username", db.User,
-		"--host", db.Host,
-		"--port", db.Port,
-		"--dbname", db.DBName,
-		"--no-password",
-	)
-	if db.Pass != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
-	}
-
-	// cmd.Stdout = &stderr
-	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
+	dump, err := stageSnapshotDump(reader, snapshotHash)
 	if err != nil {
 		return err
 	}
-	defer stdinPipe.Close()
+	defer func() {
+		dump.Close()
+		os.Remove(dump.Name())
+	}()
+
+	cmd := psqlCommand(ctx, db, "--set", "ON_ERROR_STOP=1")
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
 
 	logger.Info("Restore DB: ", "command", cmd.String())
 
 	if err := cmd.Start(); err != nil {
+		stdinPipe.Close()
 		return err
 	}
 
-	// decompress the chunk streams and stream the sql dump to psql stdinPipe
-	if err := decompressAndValidateSnapshotHash(stdinPipe, reader, snapshotHash); err != nil {
+	copyErr := func() error {
+		defer stdinPipe.Close()
+		_, err := io.Copy(stdinPipe, dump)
 		return err
-	}
-	stdinPipe.Close() // signifies the end of the input stream to the psql command
+	}()
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	if copyErr != nil || waitErr != nil {
+		err := errors.Join(copyErr, waitErr)
+		if cleanErr := dropRestoreSchemasWithPsql(ctx, db); cleanErr != nil {
+			err = errors.Join(err, cleanErr)
+		}
 		return err
 	}
 
@@ -708,20 +713,88 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	return nil
 }
 
-// decompressAndValidateSnapshotHash decompresses the chunk streams and validates the snapshot hash
-func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snapshotHash []byte) error {
-	hasher := sha256.New()
-	_, err := io.Copy(io.MultiWriter(output, hasher), reader)
-	if err != nil {
-		return fmt.Errorf("failed to decompress chunk streams: %w", err)
+// stageSnapshotDump buffers the dump and verifies the whole-dump hash before
+// any bytes are sent to psql. The caller must close and remove the returned file.
+func stageSnapshotDump(reader io.Reader, snapshotHash []byte) (*os.File, error) {
+	if len(snapshotHash) == 0 {
+		return nil, fmt.Errorf("missing snapshot hash")
 	}
-	hash := hasher.Sum(nil)
 
-	// Validate the hash of the decompressed chunks
+	dump, err := os.CreateTemp("", "kwild-restore-*.sql")
+	if err != nil {
+		return nil, err
+	}
+
+	cleanup := func() {
+		dump.Close()
+		os.Remove(dump.Name())
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(dump, hasher), reader); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("failed to buffer snapshot dump: %w", err)
+	}
+
+	hash := hasher.Sum(nil)
 	if !bytes.Equal(hash, snapshotHash) {
-		return fmt.Errorf("invalid snapshot hash %x, expected %x", hash, snapshotHash)
+		cleanup()
+		return nil, fmt.Errorf("invalid snapshot hash %x, expected %x", hash, snapshotHash)
+	}
+
+	if _, err := dump.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return dump, nil
+}
+
+const dropRestoreSchemasSQL = `
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT nspname FROM pg_namespace
+    WHERE nspname LIKE 'kwild\_%' ESCAPE '\'
+       OR nspname LIKE 'ds\_%' ESCAPE '\'
+  LOOP
+    EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', r.nspname);
+  END LOOP;
+END
+$$;`
+
+func psqlCommand(ctx context.Context, db config.DBConfig, extraArgs ...string) *exec.Cmd {
+	args := []string{
+		"--username", db.User,
+		"--host", db.Host,
+		"--port", db.Port,
+		"--dbname", db.DBName,
+		"--no-password",
+		"--no-psqlrc",
+	}
+	args = append(args, extraArgs...)
+	cmd := exec.CommandContext(ctx, "psql", args...)
+	if db.Pass != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
+	}
+	return cmd
+}
+
+func dropRestoreSchemasWithPsql(ctx context.Context, db config.DBConfig) error {
+	cmd := psqlCommand(ctx, db, "--set", "ON_ERROR_STOP=1", "-c", dropRestoreSchemasSQL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("drop restore schemas: %w: %s", err, out)
 	}
 	return nil
+}
+
+// DropRestoreSchemas removes leftover kwild_/ds_* schemas from a failed restore
+// so a subsequent statesync or genesis recovery can run against an empty DB.
+func DropRestoreSchemas(ctx context.Context, exec sql.Executor) error {
+	_, err := exec.Execute(ctx, dropRestoreSchemasSQL)
+	return err
 }
 
 // Utility to stream chunks of a snapshot
