@@ -98,7 +98,7 @@ func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error)
 				err := s.verifyState(ctx, snap)
 				if err != nil {
 					s.log.Warn("failed to verify state after DB restore", "error", err)
-					if cleanErr := dropRestoreSchemasWithPsql(ctx, s.dbConfig); cleanErr != nil {
+					if cleanErr := dropRestoreSchemasAfterFailure(s.dbConfig); cleanErr != nil {
 						return -1, errors.Join(err, cleanErr)
 					}
 					return -1, err
@@ -703,7 +703,7 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	waitErr := cmd.Wait()
 	if copyErr != nil || waitErr != nil {
 		err := errors.Join(copyErr, waitErr)
-		if cleanErr := dropRestoreSchemasWithPsql(ctx, db); cleanErr != nil {
+		if cleanErr := dropRestoreSchemasAfterFailure(db); cleanErr != nil {
 			err = errors.Join(err, cleanErr)
 		}
 		return err
@@ -779,6 +779,14 @@ func psqlCommand(ctx context.Context, db config.DBConfig, extraArgs ...string) *
 		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
 	}
 	return cmd
+}
+
+const restoreCleanupTimeout = 30 * time.Second
+
+func dropRestoreSchemasAfterFailure(db config.DBConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), restoreCleanupTimeout)
+	defer cancel()
+	return dropRestoreSchemasWithPsql(ctx, db)
 }
 
 func dropRestoreSchemasWithPsql(ctx context.Context, db config.DBConfig) error {

@@ -96,3 +96,23 @@ exit 1
 	require.Contains(t, out, "CLEANUP")
 	require.Less(t, strings.Index(out, "WAITED"), strings.Index(out, "CLEANUP"), "cleanup must run after cmd.Wait")
 }
+
+func TestDropRestoreSchemasAfterFailure(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "psql.log")
+	script := filepath.Join(dir, "psql")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho CLEANUP >> \""+logPath+"\"\n"), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := dropRestoreSchemasAfterFailure(config.DBConfig{
+		Host:   "127.0.0.1",
+		Port:   "5432",
+		User:   "kwild",
+		DBName: "kwild",
+	})
+	require.NoError(t, err)
+
+	logged, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Contains(t, string(logged), "CLEANUP")
+}
