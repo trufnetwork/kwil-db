@@ -672,7 +672,7 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 // import failure it waits for psql and drops leftover kwild_/ds_* schemas so a
 // partial restore cannot be treated as initialized state on restart.
 func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
-	dump, err := stageSnapshotDump(reader, snapshotHash)
+	dump, err := stageSnapshotDump(ctx, reader, snapshotHash)
 	if err != nil {
 		return err
 	}
@@ -713,9 +713,21 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	return nil
 }
 
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r ctxReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
 // stageSnapshotDump buffers the dump and verifies the whole-dump hash before
 // any bytes are sent to psql. The caller must close and remove the returned file.
-func stageSnapshotDump(reader io.Reader, snapshotHash []byte) (*os.File, error) {
+func stageSnapshotDump(ctx context.Context, reader io.Reader, snapshotHash []byte) (*os.File, error) {
 	if len(snapshotHash) == 0 {
 		return nil, fmt.Errorf("missing snapshot hash")
 	}
@@ -731,7 +743,7 @@ func stageSnapshotDump(reader io.Reader, snapshotHash []byte) (*os.File, error) 
 	}
 
 	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(dump, hasher), reader); err != nil {
+	if _, err := io.Copy(io.MultiWriter(dump, hasher), ctxReader{ctx: ctx, r: reader}); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("failed to buffer snapshot dump: %w", err)
 	}
