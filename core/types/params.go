@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -251,9 +252,7 @@ func ValidateUpdates(pu ParamUpdates) error {
 }
 
 func (pu ParamUpdates) Merge(other ParamUpdates) {
-	for k, v := range other {
-		pu[k] = v
-	}
+	maps.Copy(pu, other)
 }
 
 func (pu ParamUpdates) Equals(other ParamUpdates) bool {
