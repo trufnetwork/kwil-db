@@ -266,6 +266,10 @@ func (ce *ConsensusEngine) executeBlock(ctx context.Context, blkProp *blockPropo
 	ce.catchupTicker.Reset(ce.catchupTimeout)
 
 	if !syncing { // ignore these logs during syncing
+		// duration covers ExecuteBlock and nothing after it. The commit half —
+		// the two COMMIT PREPAREDs, the badger fsync, the commit-intent write —
+		// has no log line on any path or level, so consensus.commit.latency is
+		// the only way to see it.
 		ce.log.Info("Executed block", "height", blkProp.height, "blockID", blkProp.blkHash, "appHash", results.AppHash.String(), "numTxs", blkProp.blk.Header.NumTxns, "duration", time.Since(now))
 	}
 	return nil

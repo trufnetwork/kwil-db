@@ -3,8 +3,11 @@
 package consensus
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,4 +254,67 @@ func (bp *testBlockProcessor) BlockExecutionStatus() *ktypes.BlockExecutionStatu
 func (bp *testBlockProcessor) HasEvents() bool { return false }
 func (bp *testBlockProcessor) StateHashes() *blockprocessor.StateHashes {
 	return &blockprocessor.StateHashes{}
+}
+
+// logLine finds the JSON log record with the given msg in a captured log.
+func logLine(t *testing.T, captured, msg string) map[string]any {
+	t.Helper()
+	for _, raw := range strings.Split(strings.TrimSpace(captured), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			t.Fatalf("log line is not JSON: %s", raw)
+		}
+		if rec["msg"] == msg {
+			return rec
+		}
+	}
+	t.Fatalf("no %q line in the captured log:\n%s", msg, captured)
+	return nil
+}
+
+// nanos reads a duration field, which the JSON handler writes as nanoseconds.
+func nanos(t *testing.T, rec map[string]any, key string) time.Duration {
+	t.Helper()
+	v, ok := rec[key].(float64)
+	if !ok {
+		t.Fatalf("%q is %T, not a duration: %v", key, rec[key], rec[key])
+	}
+	return time.Duration(v)
+}
+
+// Test that a catch-up run reports where its time went, rather than one
+// combined rate that cannot tell a slow link from a slow apply.
+func TestReplayBlockFromNetwork_ReportsWhereTheTimeWent(t *testing.T) {
+	ctx := context.Background()
+
+	var captured bytes.Buffer
+	ce := &ConsensusEngine{
+		mempool:        mempool.New(1000000, 100000),
+		blockProcessor: &testBlockProcessor{},
+		log:            log.New(log.WithWriter(&captured), log.WithFormat(log.FormatJSON)),
+	}
+
+	now := time.Now()
+	blk := &ktypes.Block{Header: &ktypes.BlockHeader{Height: 1, Timestamp: now}}
+	ce.stateInfo.lastCommit.blk = blk
+	ce.stateInfo.lastCommit.height = 1
+	ce.state.lc = &lastCommit{blk: blk, height: 1}
+
+	// One slow request, which comes back empty and ends the sync. Nothing is
+	// applied, so the whole run is network time and the split has to say so.
+	const requestTook = 40 * time.Millisecond
+	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+		time.Sleep(requestTook)
+		return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
+	}
+
+	require.NoError(t, ce.replayBlockFromNetwork(ctx))
+
+	done := logLine(t, captured.String(), "Block sync completed")
+	network, apply, elapsed := nanos(t, done, "network"), nanos(t, done, "apply"), nanos(t, done, "elapsed")
+
+	require.GreaterOrEqual(t, network, requestTook,
+		"the request that ended the sync still cost its round trip and has to be counted")
+	require.Zero(t, apply, "no block was applied, so no time belongs to apply")
+	require.LessOrEqual(t, network, elapsed, "the split cannot exceed the run it is splitting")
 }
