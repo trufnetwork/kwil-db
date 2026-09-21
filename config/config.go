@@ -428,7 +428,7 @@ type Logging struct {
 }
 
 type Telemetry struct {
-	Enable       bool   `toml:"enable" comment:"enable telemetry"`
+	Enable       bool   `toml:"enable" comment:"enable telemetry\nconsensus.exec.latency and consensus.commit.latency carry the per-block execute and commit times, during catch-up as well as consensus"`
 	OTLPEndpoint string `toml:"otlp_endpoint" comment:"open telemetry protocol collector endpoint"` // "127.0.0.1:4318"
 }
 

@@ -90,10 +90,7 @@ func (ce *ConsensusEngine) replayBlockFromNetwork(ctx context.Context) error {
 	var startHeight, height int64
 	startHeight = ce.lastCommitHeight() + 1
 	height = startHeight
-	t0 := time.Now()
-	tI := t0
-
-	var cnt int64 // count the number of blocks synced since last log
+	prog := newSyncProgress(time.Now())
 
 	ce.log.Info("Starting block sync...", "height", startHeight-1) // -1 to agree with "from" in progress log, which is half open: (start,end]
 SYNC:
@@ -111,7 +108,9 @@ SYNC:
 	RETRY:
 		for {
 			var err error
+			tFetch := time.Now()
 			blkID, rawBlk, ci, _, err = ce.blkRequester(ctx, height)
+			prog.fetched(time.Since(tFetch))
 			if err == nil {
 				break RETRY // fetch success => applyBlock
 			}
@@ -141,23 +140,21 @@ SYNC:
 			}
 		}
 
+		tApply := time.Now()
 		err := ce.applyBlock(ctx, rawBlk, ci, blkID) // fatal
 		if err != nil {
 			return fmt.Errorf("failed to apply block at height: %d: error: %w", height, err)
 		}
+		prog.applied(time.Since(tApply))
 
-		cnt++
 		if height%100 == 0 && height > 0 {
-			now := time.Now()
-			since := now.Sub(tI)
-			ce.log.Info("Processed blocks", "from", height-cnt, "to", height, "elapsed", since.Truncate(time.Millisecond),
-				"rate", fmt.Sprintf("%.04f", float64(cnt)/since.Seconds()))
-			cnt, tI = 0, now
+			ce.log.Info("Processed blocks", prog.windowArgs(height, time.Now())...)
 		}
 		height++
 	}
 
-	ce.log.Info("Block sync completed", "startHeight", startHeight, "endHeight", height-1, "elapsed", time.Since(t0))
+	done := append([]any{"startHeight", startHeight, "endHeight", height - 1}, prog.runArgs(time.Now())...)
+	ce.log.Info("Block sync completed", done...)
 	return nil
 }
 
