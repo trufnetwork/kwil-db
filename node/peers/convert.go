@@ -223,15 +223,26 @@ func ResolveHost(addr string) (ip, ipv string, err error) {
 	return
 }
 
+// CompressDialError flattens swarm's multi-line DialError onto one line, since
+// a log entry is one line. Each address keeps the reason it failed: a refused
+// connection, a timed-out handshake and a peer ID mismatch all end a dial, and
+// each one asks the operator for a different fix, so a list of bare addresses
+// tells them which dial to look at without telling them what to look for.
 func CompressDialError(err error) error {
 	var dErr *swarm.DialError
 	if errors.Is(err, swarm.ErrAllDialsFailed) && errors.As(err, &dErr) {
-		// the actual DialError string is multi-line
-		addrs := make([]string, len(dErr.DialErrors))
-		for i, te := range dErr.DialErrors {
-			addrs[i] = te.Address.String()
+		fails := make([]string, 0, len(dErr.DialErrors)+1)
+		for _, te := range dErr.DialErrors {
+			fails = append(fails, fmt.Sprintf("%s: %v", te.Address, te.Cause))
 		}
-		err = fmt.Errorf("%w: [%s]", dErr.Cause, strings.Join(addrs, ", "))
+		// swarm stops recording after 16 addresses and counts the rest. Listing
+		// only the ones it kept would read as the whole story.
+		if dErr.Skipped > 0 {
+			fails = append(fails, fmt.Sprintf("and %d more", dErr.Skipped))
+		}
+		// Wrap Cause rather than replace it: callers match the result against
+		// swarm's sentinel, so the message changes and the identity does not.
+		err = fmt.Errorf("%w: [%s]", dErr.Cause, strings.Join(fails, ", "))
 	}
 	return err
 }

@@ -2,7 +2,12 @@ package peers
 
 import (
 	"encoding/hex"
+	"errors"
+	"strings"
 	"testing"
+
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
+	"github.com/multiformats/go-multiaddr"
 
 	"github.com/trufnetwork/kwil-db/core/crypto"
 )
@@ -71,6 +76,101 @@ func TestPeerIDPubKeyRoundTrip(t *testing.T) {
 				t.Errorf("PubKeyFromPeerID() = %x, want %x", recoveredPubKey.Bytes(), pubKeyBytes)
 			}
 
+		})
+	}
+}
+
+// dialFail is one address and the reason dialing it failed.
+type dialFail struct{ addr, cause string }
+
+// dialErr builds the error swarm returns when every address for a peer failed,
+// which is the only shape CompressDialError rewrites.
+func dialErr(t *testing.T, skipped int, fails ...dialFail) *swarm.DialError {
+	t.Helper()
+	dErr := &swarm.DialError{
+		Cause:   swarm.ErrAllDialsFailed,
+		Skipped: skipped,
+	}
+	for _, f := range fails {
+		addr, err := multiaddr.NewMultiaddr(f.addr)
+		if err != nil {
+			t.Fatalf("bad fixture address %q: %v", f.addr, err)
+		}
+		dErr.DialErrors = append(dErr.DialErrors, swarm.TransportError{
+			Address: addr,
+			Cause:   errors.New(f.cause),
+		})
+	}
+	return dErr
+}
+
+func TestCompressDialErrorKeepsCauses(t *testing.T) {
+	const (
+		refusedAddr  = "/ip4/1.2.3.4/tcp/26656"
+		timedOutAddr = "/ip4/5.6.7.8/tcp/26656"
+	)
+
+	got := CompressDialError(dialErr(t, 0,
+		dialFail{refusedAddr, "connection refused"},
+		dialFail{timedOutAddr, "i/o timeout"},
+	)).Error()
+
+	// Two addresses that failed for different reasons have to read
+	// differently, or the operator cannot tell which fix applies to which.
+	for _, want := range []string{
+		refusedAddr, "connection refused",
+		timedOutAddr, "i/o timeout",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("compressed error lost %q\ngot: %s", want, got)
+		}
+	}
+
+	// Compressing is the whole reason this function exists: swarm's own
+	// Error() spreads the same information over one line per address.
+	if strings.Contains(got, "\n") {
+		t.Errorf("compressed error must stay on one line, got:\n%s", got)
+	}
+}
+
+func TestCompressDialErrorReportsSkippedAddresses(t *testing.T) {
+	got := CompressDialError(dialErr(t, 7,
+		dialFail{"/ip4/1.2.3.4/tcp/26656", "connection refused"},
+	)).Error()
+
+	// swarm records at most 16 transport errors and counts the rest. Printing
+	// the ones it kept without saying how many it dropped understates how
+	// broadly the dial failed.
+	if !strings.Contains(got, "and 7 more") {
+		t.Errorf("compressed error hides the 7 skipped addresses, got: %s", got)
+	}
+}
+
+func TestCompressDialErrorStaysMatchable(t *testing.T) {
+	// Callers test the result against swarm's sentinel, so rewriting the
+	// message must not rewrite the error's identity.
+	got := CompressDialError(dialErr(t, 0,
+		dialFail{"/ip4/1.2.3.4/tcp/26656", "connection refused"},
+	))
+
+	if !errors.Is(got, swarm.ErrAllDialsFailed) {
+		t.Errorf("compressed error no longer matches swarm.ErrAllDialsFailed: %v", got)
+	}
+}
+
+func TestCompressDialErrorPassesOtherErrorsThrough(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"nil", nil},
+		{"not a dial error", errors.New("context deadline exceeded")},
+		{"dial error from another cause", &swarm.DialError{Cause: errors.New("no addresses")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CompressDialError(tt.err); got != tt.err {
+				t.Errorf("CompressDialError(%v) = %v, want it returned unchanged", tt.err, got)
+			}
 		})
 	}
 }

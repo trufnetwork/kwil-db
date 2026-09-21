@@ -420,7 +420,7 @@ type Config struct {
 }
 
 type Logging struct {
-	Level          log.Level  `toml:"level" comment:"log level\npossible values: 'debug', 'info', 'warn', and 'error'"`
+	Level          log.Level  `toml:"level" comment:"log level\npossible values: 'debug', 'info', 'warn', and 'error'\ndoes not apply to libp2p's own logs, which carry the reason a dial failed\nfor those, set GOLOG_LOG_LEVEL=swarm2=debug,tcp-tpt=debug in the environment"`
 	Format         log.Format `toml:"format" comment:"log format\npossible values: 'json', 'text' (kv), and 'plain' (fmt-style)"`
 	Output         []string   `toml:"output" comment:"output paths for the log"`
 	FileRollSize   int64      `toml:"file_roll_size" comment:"threshold in KB at which the log file rolls over and archives the current one"`
