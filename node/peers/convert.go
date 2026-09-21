@@ -233,7 +233,7 @@ func CompressDialError(err error) error {
 	if errors.Is(err, swarm.ErrAllDialsFailed) && errors.As(err, &dErr) {
 		fails := make([]string, 0, len(dErr.DialErrors)+1)
 		for _, te := range dErr.DialErrors {
-			fails = append(fails, fmt.Sprintf("%s: %v", te.Address, te.Cause))
+			fails = append(fails, oneLine(fmt.Sprintf("%s: %v", te.Address, te.Cause)))
 		}
 		// swarm stops recording after 16 addresses and counts the rest. Listing
 		// only the ones it kept would read as the whole story.
@@ -245,4 +245,20 @@ func CompressDialError(err error) error {
 		err = fmt.Errorf("%w: [%s]", dErr.Cause, strings.Join(fails, ", "))
 	}
 	return err
+}
+
+// causeLineBreaks folds a cause's own line breaks into a separator that reads
+// differently from the ", " between addresses, so several causes for one
+// address stay visibly grouped under it.
+var causeLineBreaks = strings.NewReplacer("\r\n", "; ", "\n", "; ", "\r", "; ")
+
+// oneLine keeps a transport cause on one line. The causes come from libp2p's
+// transports rather than from here, and an errors.Join renders one error per
+// line, which would put the compressed form back on the several lines it
+// exists to collapse.
+func oneLine(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	return causeLineBreaks.Replace(strings.TrimRight(s, "\r\n"))
 }

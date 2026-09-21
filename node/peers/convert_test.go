@@ -174,3 +174,36 @@ func TestCompressDialErrorPassesOtherErrorsThrough(t *testing.T) {
 		})
 	}
 }
+
+func TestCompressDialErrorFlattensAMultiLineCause(t *testing.T) {
+	addr, err := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/26656")
+	if err != nil {
+		t.Fatalf("bad fixture address: %v", err)
+	}
+
+	// errors.Join renders one error per line, so a transport that reports its
+	// attempts as a joined error hands back a cause that would split the
+	// compressed form over several lines.
+	got := CompressDialError(&swarm.DialError{
+		Cause: swarm.ErrAllDialsFailed,
+		DialErrors: []swarm.TransportError{{
+			Address: addr,
+			Cause: errors.Join(
+				errors.New("connection refused"),
+				errors.New("i/o timeout"),
+			),
+		}},
+	}).Error()
+
+	if strings.ContainsAny(got, "\r\n") {
+		t.Errorf("compressed error broke onto more than one line: %q", got)
+	}
+
+	// Flattening has to keep the two causes apart. Deleting the break instead
+	// of replacing it would also pass a no-newline check, while running them
+	// together into one unreadable string.
+	const want = "connection refused; i/o timeout"
+	if !strings.Contains(got, want) {
+		t.Errorf("joined causes should stay separated as %q\ngot: %s", want, got)
+	}
+}
