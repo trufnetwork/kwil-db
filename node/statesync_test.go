@@ -205,7 +205,7 @@ func TestStateSyncService(t *testing.T) {
 type mockBS struct {
 }
 
-func (m *mockBS) GetByHeight(height int64) (types.Hash, *ktypes.Block, *ktypes.CommitInfo, error) {
+func (m *mockBS) GetRawByHeight(height int64) (types.Hash, []byte, *ktypes.CommitInfo, error) {
 	return types.Hash{}, nil, &ktypes.CommitInfo{AppHash: types.Hash{}}, nil
 }
 
@@ -366,7 +366,7 @@ func (s *snapshotStore) snapshotMetadataRequestHandler(stream network.Stream) {
 	meta := snapshotToMetadata(snap)
 
 	// get the app hash from the db
-	_, _, ci, err := s.bs.GetByHeight(int64(snap.Height))
+	_, _, ci, err := s.bs.GetRawByHeight(int64(snap.Height))
 	if err != nil || ci == nil {
 		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
 		stream.Write(noData)
