@@ -129,22 +129,44 @@ func writeBlockByHash(w io.Writer, height int64, ciBytes, rawBlk []byte) error {
 	return bw.Flush()
 }
 
+// blockHeightServer is the part of a block store that answering a
+// ProtocolIDBlockHeight request needs.
+type blockHeightServer interface {
+	Best() (height int64, blkHash, appHash types.Hash, stamp time.Time)
+	GetRawByHeight(height int64) (types.Hash, []byte, *ktypes.CommitInfo, error)
+}
+
 // blkGetHeightStreamHandler is the stream handler for ProtocolIDBlockHeight.
 func (n *Node) blkGetHeightStreamHandler(s network.Stream) {
+	serveBlockByHeight(s, n.bki, n.log)
+}
+
+// serveBlockByHeight answers one ProtocolIDBlockHeight request.
+//
+// Two services answer this protocol on one node. The state-sync service holds
+// it from startup and the node takes it over once it is up, and a peer cannot
+// tell which one it reached: it sends one request and runs one parser over the
+// reply. So there is one implementation of the reply, and both register it.
+//
+// They did not share one before. 66d983ec bumped the protocol to 1.1.0 and
+// added the leading flag byte and the trailing best height to the node's copy,
+// leaving the state-sync copy writing the frame from before it — which a 1.1.0
+// client reads as a status flag followed by a block that starts one byte late.
+func serveBlockByHeight(s network.Stream, bs blockHeightServer, log log.Logger) {
 	defer s.Close()
 
 	s.SetReadDeadline(time.Now().Add(reqRWTimeout))
 
 	var req blockHeightReq
 	if _, err := req.ReadFrom(s); err != nil {
-		n.log.Warn("Bad get block (height) request", "error", err) // Debug when we ship
+		log.Warn("Bad get block (height) request", "error", err) // Debug when we ship
 		return
 	}
-	n.log.Debug("Peer requested block", "height", req.Height)
+	log.Debug("Peer requested block", "height", req.Height)
 
-	bestHeight, _, _, _ := n.bki.Best()
+	bestHeight, _, _, _ := bs.Best()
 
-	hash, rawBlk, ci, err := n.bki.GetRawByHeight(req.Height)
+	hash, rawBlk, ci, err := bs.GetRawByHeight(req.Height)
 	if err != nil || ci == nil {
 		s.SetWriteDeadline(time.Now().Add(reqRWTimeout))
 		// Don't have it, so say so and tell them how far we have got. That is
@@ -156,7 +178,7 @@ func (n *Node) blkGetHeightStreamHandler(s network.Stream) {
 	ciBytes, _ := ci.MarshalBinary()
 	s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
 	if err := writeBlockByHeight(s, hash, ciBytes, rawBlk, bestHeight); err != nil {
-		n.log.Debug("Failed to send block", "height", req.Height, "error", err)
+		log.Debug("Failed to send block", "height", req.Height, "error", err)
 		return
 	}
 

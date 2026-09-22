@@ -21,7 +21,6 @@ import (
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/peers"
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
-	"github.com/trufnetwork/kwil-db/node/types"
 )
 
 const (
@@ -34,8 +33,7 @@ type snapshotMetadata = snapshotter.SnapshotMetadata
 type snapshotReq = snapshotter.SnapshotReq
 
 type blockStore interface {
-	GetByHeight(height int64) (types.Hash, *ktypes.Block, *ktypes.CommitInfo, error)
-	Best() (height int64, blkHash, appHash types.Hash, stamp time.Time)
+	blockHeightServer
 	Store(*ktypes.Block, *ktypes.CommitInfo) error
 }
 
@@ -119,8 +117,12 @@ func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncS
 		return nil, err
 	}
 
-	// provide stream handler for snapshot catalogs requests and chunk requests.
-	// This is replaced by the Node's handler when it comes up.
+	// Answer block requests until the node comes up and replaces this with its
+	// own handler. Leaving the protocol unserved for that window is not an
+	// option: ProtocolIDBlockHeight is in RequiredStreamProtocols, so a peer
+	// that connects while we are state syncing and does not find it tags us
+	// lame and clears our addresses, which stops it advertising us to anyone
+	// else (node/peers/peers.go).
 	ss.host.SetStreamHandler(ProtocolIDBlockHeight, ss.blkGetHeightRequestHandler)
 	if err := ss.Bootstrap(ctx); err != nil {
 		return nil, err
@@ -212,33 +214,11 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// blkGetHeightRequestHandler handles the incoming block requests for a given height.
+// blkGetHeightRequestHandler answers a block request while the node is still
+// coming up. It answers exactly as the node does, because the peer asking
+// cannot tell the two apart. See serveBlockByHeight.
 func (ss *StateSyncService) blkGetHeightRequestHandler(stream network.Stream) {
-	defer stream.Close()
-
-	stream.SetReadDeadline(time.Now().Add(reqRWTimeout))
-
-	var req blockHeightReq
-	if _, err := req.ReadFrom(stream); err != nil {
-		ss.log.Warn("Bad get block (height) request", "error", err) // Debug when we ship
-		return
-	}
-	ss.log.Debug("Peer requested block", "height", req.Height)
-
-	hash, blk, ci, err := ss.blockStore.GetByHeight(req.Height)
-	if err != nil || ci == nil {
-		stream.SetWriteDeadline(time.Now().Add(reqRWTimeout))
-		stream.Write(noData) // don't have it
-	} else {
-		rawBlk := ktypes.EncodeBlock(blk) // blkHash := blk.Hash()
-		ciBytes, _ := ci.MarshalBinary()
-		// maybe we remove hash from the protocol, was thinking receiver could
-		// hang up earlier depending...
-		stream.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
-		stream.Write(hash[:])
-		ktypes.WriteCompactBytes(stream, ciBytes)
-		ktypes.WriteCompactBytes(stream, rawBlk)
-	}
+	serveBlockByHeight(stream, ss.blockStore, ss.log)
 }
 
 // VerifySnapshot verifies the snapshot with the trusted provider and returns the verification result and app hash.
