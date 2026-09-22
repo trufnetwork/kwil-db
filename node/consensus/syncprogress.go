@@ -40,7 +40,11 @@ func (p *syncProgress) fetched(d time.Duration) {
 	p.runNetwork += d
 }
 
-// applied records one block executed and committed.
+// applied records one block taken from the wire to committed: the wait for the
+// consensus state lock, the decode, the execution and the commit. The lock is
+// held by another path only when a reset lands mid-sync, which a node catching
+// up is not taking part in rounds for, so in practice this is decode plus
+// execute plus commit.
 func (p *syncProgress) applied(d time.Duration) {
 	p.apply += d
 	p.runApply += d

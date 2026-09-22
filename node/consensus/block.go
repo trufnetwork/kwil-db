@@ -245,14 +245,14 @@ func (ce *ConsensusEngine) executeBlock(ctx context.Context, blkProp *blockPropo
 		Proposer: ce.leader,
 	}
 
-	now := time.Now()
 	results, err := ce.blockProcessor.ExecuteBlock(ctx, req, syncing)
 	if err != nil {
 		return err
 	}
 
 	ce.state.tExecuted = time.Now()
-	mets.RecordExecuted(ctx, ce.state.tExecuted.Sub(t0), blkProp.blk.Header.Height, int64(blkProp.blk.Header.NumTxns))
+	execution := ce.state.tExecuted.Sub(t0)
+	mets.RecordExecuted(ctx, execution, blkProp.blk.Header.Height, int64(blkProp.blk.Header.NumTxns))
 
 	ce.state.blockRes = &blockResult{
 		ack:       true,
@@ -266,11 +266,12 @@ func (ce *ConsensusEngine) executeBlock(ctx context.Context, blkProp *blockPropo
 	ce.catchupTicker.Reset(ce.catchupTimeout)
 
 	if !syncing { // ignore these logs during syncing
-		// duration covers ExecuteBlock and nothing after it. The commit half —
-		// the two COMMIT PREPAREDs, the badger fsync, the commit-intent write —
-		// has no log line on any path or level, so consensus.commit.latency is
-		// the only way to see it.
-		ce.log.Info("Executed block", "height", blkProp.height, "blockID", blkProp.blkHash, "appHash", results.AppHash.String(), "numTxs", blkProp.blk.Header.NumTxns, "duration", time.Since(now))
+		// duration is the number consensus.exec.latency records, read at the
+		// same instant, so the log and the histogram cannot disagree. It covers
+		// execution alone: the commit half — the two COMMIT PREPAREDs, the
+		// badger fsync, the commit-intent write — has no log line on any path
+		// or level, and consensus.commit.latency is the only way to see it.
+		ce.log.Info("Executed block", "height", blkProp.height, "blockID", blkProp.blkHash, "appHash", results.AppHash.String(), "numTxs", blkProp.blk.Header.NumTxns, "duration", execution)
 	}
 	return nil
 }
