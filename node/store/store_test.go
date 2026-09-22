@@ -10,11 +10,13 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"text/tabwriter"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
@@ -814,4 +816,85 @@ func TestBlockStore_Result(t *testing.T) {
 	if err == nil {
 		t.Error("expected error after store closure, got nil")
 	}
+}
+
+// TestBlockStore_GetRawIsWhatWasStored pins the contract that block serving now
+// rests on: GetRaw hands back the bytes in the store, not the result of
+// decoding them and encoding them again.
+//
+// The trailing byte is what tells those two apart from outside. DecodeBlock
+// stops after the last transaction and ignores whatever follows it, so a block
+// that went through a decode and a re-encode would come back one byte shorter.
+func TestBlockStore_GetRawIsWhatWasStored(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+
+	block, appHash, _ := createTestBlock(t, 1, 2)
+	require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+
+	blkHash := block.Hash()
+	stored := append(ktypes.EncodeBlock(block), 0xff)
+	require.NoError(t, bs.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(slices.Concat(nsBlock, blkHash[:]), stored)
+	}))
+
+	height, rawBlk, ci, err := bs.GetRaw(blkHash)
+	require.NoError(t, err)
+	require.Equal(t, stored, rawBlk, "GetRaw must return the stored bytes, not a re-encoding of them")
+	require.Equal(t, block.Header.Height, height, "a lookup by hash already knows the height")
+	require.Equal(t, appHash, ci.AppHash)
+}
+
+func TestBlockStore_GetRawByHeightAgreesWithGetRaw(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+
+	block, appHash, _ := createTestBlock(t, 4, 2)
+	require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+
+	hash, byHeight, ciByHeight, err := bs.GetRawByHeight(4)
+	require.NoError(t, err)
+	require.Equal(t, block.Hash(), hash, "a lookup by height already knows the hash")
+
+	height, byHash, ciByHash, err := bs.GetRaw(hash)
+	require.NoError(t, err)
+	require.EqualValues(t, 4, height)
+	require.Equal(t, byHeight, byHash)
+	require.Equal(t, ciByHeight.AppHash, ciByHash.AppHash)
+	require.Equal(t, appHash, ciByHash.AppHash)
+}
+
+func TestBlockStore_GetRawUnknownBlock(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+
+	block, appHash, _ := createTestBlock(t, 1, 1)
+	require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+
+	height, rawBlk, ci, err := bs.GetRaw(types.Hash{0xaa})
+	require.ErrorIs(t, err, types.ErrNotFound)
+	require.Zero(t, height)
+	require.Nil(t, rawBlk)
+	require.Nil(t, ci)
+
+	_, _, _, err = bs.GetRawByHeight(block.Header.Height + 1)
+	require.ErrorIs(t, err, types.ErrNotFound)
+}
+
+// TestBlockStore_GetRawReportsAReadFailure covers a read that fails for a
+// reason other than the block being absent. GetRaw is what answers a peer now,
+// and it used to return that case as a nil error with no block.
+func TestBlockStore_GetRawReportsAReadFailure(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+
+	block, appHash, _ := createTestBlock(t, 1, 1)
+	require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+
+	// The index keeps saying we have the block after the store is closed under
+	// it, so the failure surfaces from the read rather than the lookup.
+	require.NoError(t, bs.Close())
+
+	height, rawBlk, ci, err := bs.GetRaw(block.Hash())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, types.ErrNotFound, "the block is not missing, the read failed")
+	require.Zero(t, height)
+	require.Nil(t, rawBlk)
+	require.Nil(t, ci)
 }

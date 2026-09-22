@@ -48,8 +48,13 @@ type BlockGetter interface {
 	GetBlockHeaderByHeight(int64) (*types.BlockHeader, error)
 }
 
+// RawGetter returns a block as it is stored, without decoding it. A caller
+// that only hands the block to someone else — a peer asking for it, an RPC
+// client — saves the decode and the re-encode that Get and GetByHeight cost.
+// Each method also returns the identity the caller would otherwise have to
+// compute: the height for a lookup by hash, the hash for a lookup by height.
 type RawGetter interface {
-	GetRaw(Hash) ([]byte, *types.CommitInfo, error)
+	GetRaw(Hash) (int64, []byte, *types.CommitInfo, error)
 	GetRawByHeight(int64) (Hash, []byte, *types.CommitInfo, error)
 }
 
