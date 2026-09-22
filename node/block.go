@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -43,6 +44,18 @@ const (
 	defaultBlkIdleTimeout = 500 * time.Millisecond
 	cacheTTL              = 15 * time.Minute
 	maxEntries            = 5_000
+
+	// blkRespBufSize buffers one block response on its way to the stream.
+	//
+	// A response is a flag, a hash, the commit info, the block and our best
+	// height, and WriteCompactBytes sends a length ahead of each variable
+	// piece, so unbuffered it leaves as five to seven separate Writes. Each of
+	// those is its own yamux frame, with its own header and its own trip
+	// through the connection. One buffer collapses a response that fits into a
+	// single write, and holds any response at all to three: a buffer's worth,
+	// the rest of the block straight to the stream, then the best height. So
+	// the size is a ceiling on what gets copied, not on what can be served.
+	blkRespBufSize = 16 << 10
 )
 
 // blockSyncTimeout returns the duration an operator configured, or fallback if
@@ -85,20 +98,35 @@ func (n *Node) blkGetStreamHandler(s network.Stream) {
 	}
 	n.log.Debug("Peer requested block", "hash", req.Hash)
 
-	blk, ci, err := n.bki.Get(req.Hash)
+	height, rawBlk, ci, err := n.bki.GetRaw(req.Hash)
 	if err != nil || ci == nil {
 		s.SetWriteDeadline(time.Now().Add(reqRWTimeout))
 		s.Write(noData) // don't have it
-	} else {
-		rawBlk := ktypes.EncodeBlock(blk)
-		ciBytes, _ := ci.MarshalBinary()
-		s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
-		binary.Write(s, binary.LittleEndian, blk.Header.Height)
-		ktypes.WriteCompactBytes(s, ciBytes)
-		ktypes.WriteCompactBytes(s, rawBlk)
-
-		mets.ServedBlock(context.Background(), blk.Header.Height, int64(len(rawBlk)))
+		return
 	}
+
+	ciBytes, _ := ci.MarshalBinary()
+	s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
+	if err := writeBlockByHash(s, height, ciBytes, rawBlk); err != nil {
+		n.log.Debug("Failed to send block", "hash", req.Hash, "error", err)
+		return
+	}
+
+	mets.ServedBlock(context.Background(), height, int64(len(rawBlk)))
+}
+
+// writeBlockByHash writes a ProtocolIDBlock response: the height, the commit
+// info, then the block.
+//
+// The pieces go through one buffer, so a block of ordinary size reaches the
+// peer as one frame instead of five. bufio keeps the first error and returns it
+// from every call after it, so the flush is the only place to check.
+func writeBlockByHash(w io.Writer, height int64, ciBytes, rawBlk []byte) error {
+	bw := bufio.NewWriterSize(w, blkRespBufSize)
+	binary.Write(bw, binary.LittleEndian, height)
+	ktypes.WriteCompactBytes(bw, ciBytes)
+	ktypes.WriteCompactBytes(bw, rawBlk)
+	return bw.Flush()
 }
 
 // blkGetHeightStreamHandler is the stream handler for ProtocolIDBlockHeight.
@@ -116,26 +144,39 @@ func (n *Node) blkGetHeightStreamHandler(s network.Stream) {
 
 	bestHeight, _, _, _ := n.bki.Best()
 
-	hash, blk, ci, err := n.bki.GetByHeight(req.Height)
+	hash, rawBlk, ci, err := n.bki.GetRawByHeight(req.Height)
 	if err != nil || ci == nil {
 		s.SetWriteDeadline(time.Now().Add(reqRWTimeout))
-		s.Write(noData) // don't have it
-		// also write our best height
-		binary.Write(s, binary.LittleEndian, bestHeight)
-	} else {
-		rawBlk := ktypes.EncodeBlock(blk) // blkHash := blk.Hash()
-		ciBytes, _ := ci.MarshalBinary()
-		// maybe we remove hash from the protocol, was thinking receiver could
-		// hang up earlier depending...
-		s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
-		s.Write(withData)
-		s.Write(hash[:])
-		ktypes.WriteCompactBytes(s, ciBytes)
-		ktypes.WriteCompactBytes(s, rawBlk)
-		binary.Write(s, binary.LittleEndian, bestHeight)
-
-		mets.ServedBlock(context.Background(), blk.Header.Height, int64(len(rawBlk)))
+		// Don't have it, so say so and tell them how far we have got. That is
+		// nine bytes, and two Writes would make it two frames.
+		s.Write(binary.LittleEndian.AppendUint64(slices.Clone(noData), uint64(bestHeight)))
+		return
 	}
+
+	ciBytes, _ := ci.MarshalBinary()
+	s.SetWriteDeadline(time.Now().Add(defaultBlkSendTimeout))
+	if err := writeBlockByHeight(s, hash, ciBytes, rawBlk, bestHeight); err != nil {
+		n.log.Debug("Failed to send block", "height", req.Height, "error", err)
+		return
+	}
+
+	mets.ServedBlock(context.Background(), req.Height, int64(len(rawBlk)))
+}
+
+// writeBlockByHeight writes a ProtocolIDBlockHeight response: the data flag,
+// the block hash, the commit info, the block, then our own best height. As with
+// writeBlockByHash, the buffer is what makes that one frame rather than seven.
+func writeBlockByHeight(w io.Writer, hash types.Hash, ciBytes, rawBlk []byte, bestHeight int64) error {
+	bw := bufio.NewWriterSize(w, blkRespBufSize)
+	bw.Write(withData)
+	// The hash precedes the block so that a receiver could hang up before
+	// reading it. Nothing does yet, and it could leave the protocol if nothing
+	// ever will.
+	bw.Write(hash[:])
+	ktypes.WriteCompactBytes(bw, ciBytes)
+	ktypes.WriteCompactBytes(bw, rawBlk)
+	binary.Write(bw, binary.LittleEndian, bestHeight)
+	return bw.Flush()
 }
 
 func (n *Node) blkAnnStreamHandler(s network.Stream) {
@@ -720,7 +761,8 @@ func (n *Node) RawBlockByHeight(height int64) (types.Hash, []byte, *ktypes.Commi
 
 // RawBlockByHash returns the block by block hash.
 func (n *Node) RawBlockByHash(hash types.Hash) ([]byte, *ktypes.CommitInfo, error) {
-	return n.bki.GetRaw(hash)
+	_, rawBlk, ci, err := n.bki.GetRaw(hash)
+	return rawBlk, ci, err
 }
 
 // GetBlockHeader returns the block header by block hash.

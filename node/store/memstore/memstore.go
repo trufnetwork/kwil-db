@@ -42,12 +42,12 @@ func NewMemBS() *MemBS {
 
 var _ ntypes.BlockStore = &MemBS{}
 
-func (bs *MemBS) GetRaw(hash types.Hash) ([]byte, *types.CommitInfo, error) {
+func (bs *MemBS) GetRaw(hash types.Hash) (int64, []byte, *types.CommitInfo, error) {
 	blk, ci, err := bs.Get(hash)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, nil, err
 	}
-	return blk.Bytes(), ci, nil
+	return blk.Header.Height, blk.Bytes(), ci, nil
 }
 
 func (bs *MemBS) Get(hash types.Hash) (*types.Block, *types.CommitInfo, error) {

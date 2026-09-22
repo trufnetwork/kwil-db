@@ -425,9 +425,17 @@ func (bki *BlockStore) Best() (height int64, blkHash, appHash types.Hash, stamp 
 	return
 }
 
-func (bki *BlockStore) GetRaw(blkHash types.Hash) ([]byte, *ktypes.CommitInfo, error) {
-	if !bki.Have(blkHash) {
-		return nil, nil, types.ErrNotFound
+// GetRaw returns the block exactly as it was stored, along with its height and
+// commit info. Store writes what EncodeBlock produced, so these are the bytes a
+// decode-and-re-encode would arrive back at, minus the work.
+func (bki *BlockStore) GetRaw(blkHash types.Hash) (int64, []byte, *ktypes.CommitInfo, error) {
+	// The height comes from the same index lookup that Have does, so knowing
+	// which block this is costs nothing on top of knowing that we have it.
+	bki.mtx.RLock()
+	height, have := bki.idx[blkHash]
+	bki.mtx.RUnlock()
+	if !have {
+		return 0, nil, nil, types.ErrNotFound
 	}
 
 	var rawBlock []byte
@@ -459,12 +467,17 @@ func (bki *BlockStore) GetRaw(blkHash types.Hash) ([]byte, *ktypes.CommitInfo, e
 	})
 
 	if errors.Is(err, badger.ErrKeyNotFound) {
-		return nil, nil, types.ErrNotFound
+		return 0, nil, nil, types.ErrNotFound
+	}
+	if err != nil {
+		// Returning nil here handed the caller an empty block and no reason,
+		// which now means serving one to a peer.
+		return 0, nil, nil, err
 	}
 
-	mets.BlockRetrieved(context.Background(), -1, int64(len(rawBlock)))
+	mets.BlockRetrieved(context.Background(), height, int64(len(rawBlock)))
 
-	return rawBlock, &ci, nil
+	return height, rawBlock, &ci, nil
 }
 
 func (bki *BlockStore) Get(blkHash types.Hash) (*ktypes.Block, *ktypes.CommitInfo, error) {
@@ -522,7 +535,7 @@ func (bki *BlockStore) GetRawByHeight(height int64) (types.Hash, []byte, *ktypes
 	if !have {
 		return types.Hash{}, nil, nil, types.ErrNotFound
 	}
-	blk, ci, err := bki.GetRaw(hashes.hash)
+	_, blk, ci, err := bki.GetRaw(hashes.hash)
 	if err != nil {
 		return types.Hash{}, nil, nil, err
 	}
