@@ -1917,6 +1917,12 @@ func (i *interpreterPlanner) VisitCreateActionStatement(p0 *parse.CreateActionSt
 			if p0.IfNotExists {
 				return nil
 			} else if p0.OrReplace {
+				// Replace is drop-then-create; CREATE alone must not rewrite
+				// existing PRIVATE/OWNER actions into PUBLIC.
+				if err := exec.checkPrivilege(_DROP_PRIVILEGE); err != nil {
+					return err
+				}
+
 				// we delete the existing function.
 				// If it is an action, we need to unstore it
 				// If it is a built-in function, we just remove it from the map.

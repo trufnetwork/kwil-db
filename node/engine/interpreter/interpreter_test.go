@@ -499,6 +499,30 @@ func Test_SQL(t *testing.T) {
 			caller:  "default",
 		},
 		{
+			name: "CREATE-only cannot replace existing action",
+			sql: []string{
+				"CREATE ACTION act() private {};",
+				"CREATE ROLE creator;",
+				"GRANT CREATE TO creator;",
+				"GRANT creator TO 'user';",
+			},
+			execSQL: `CREATE OR REPLACE ACTION act() public {};`,
+			err:     engine.ErrDoesNotHavePrivilege,
+			caller:  "user",
+		},
+		{
+			name: "CREATE and DROP can replace existing action",
+			sql: []string{
+				"CREATE ACTION act() private {};",
+				"CREATE ROLE creator;",
+				"GRANT CREATE TO creator;",
+				"GRANT DROP TO creator;",
+				"GRANT creator TO 'user';",
+			},
+			execSQL: `CREATE OR REPLACE ACTION act() public {};`,
+			caller:  "user",
+		},
+		{
 			name: "default role cannot assign roles",
 			sql: []string{
 				"CREATE ROLE test_role;",
