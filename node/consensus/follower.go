@@ -465,20 +465,12 @@ func (ce *ConsensusEngine) acceptCommitInfo(ci *ktypes.CommitInfo, blkID ktypes.
 }
 
 func (ce *ConsensusEngine) verifyVotes(ci *ktypes.CommitInfo, blkID ktypes.Hash) error {
-	// Validate CommitInfo
+	seen := make(map[string]struct{}, len(ci.Votes))
 	var acks int
 	for _, vote := range ci.Votes {
-		// vote is from a validator
-		_, ok := ce.validatorSet[hex.EncodeToString(vote.Signature.PubKey)]
-		if !ok {
-			return fmt.Errorf("vote is from a non-validator: %s", hex.EncodeToString(vote.Signature.PubKey))
+		if err := ce.validateVote(vote, blkID, ci.AppHash, seen); err != nil {
+			return err
 		}
-
-		err := vote.Verify(blkID, ci.AppHash)
-		if err != nil {
-			return fmt.Errorf("error verifying vote: %w", err)
-		}
-
 		if vote.AckStatus == ktypes.AckAgree {
 			acks++
 		}
@@ -488,5 +480,38 @@ func (ce *ConsensusEngine) verifyVotes(ci *ktypes.CommitInfo, blkID ktypes.Hash)
 		return fmt.Errorf("invalid blkAnn message, not enough acks in the commitInfo, leader misbehavior: %d", acks)
 	}
 
+	return nil
+}
+
+// voteSignerID is the canonical validator identity carried by a vote signature.
+func voteSignerID(sig *ktypes.Signature) string {
+	return string(sig.PubKeyType) + "#" + hex.EncodeToString(sig.PubKey)
+}
+
+// validateVote checks that vote is from a current validator, the signature is
+// valid for blkID and appHash, and this (PubKeyType, PubKey) has not already
+// been accepted. seen is updated only when the vote is accepted.
+func (ce *ConsensusEngine) validateVote(vote *ktypes.VoteInfo, blkID, appHash ktypes.Hash, seen map[string]struct{}) error {
+	if vote == nil {
+		return errors.New("nil vote")
+	}
+
+	pubHex := hex.EncodeToString(vote.Signature.PubKey)
+	val, ok := ce.validatorSet[pubHex]
+	if !ok {
+		return fmt.Errorf("vote is from a non-validator: %s", pubHex)
+	}
+	if val.KeyType != vote.Signature.PubKeyType {
+		return fmt.Errorf("vote key type %s does not match validator %s", vote.Signature.PubKeyType, val.KeyType)
+	}
+	if err := vote.Verify(blkID, appHash); err != nil {
+		return fmt.Errorf("error verifying vote: %w", err)
+	}
+
+	id := voteSignerID(&vote.Signature)
+	if _, dup := seen[id]; dup {
+		return fmt.Errorf("duplicate vote from %s", id)
+	}
+	seen[id] = struct{}{}
 	return nil
 }

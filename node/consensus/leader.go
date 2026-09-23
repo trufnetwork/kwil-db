@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -299,6 +300,14 @@ func (ce *ConsensusEngine) addVote(ctx context.Context, voteMsg *vote, sender st
 		return errors.New("missing signature in the vote")
 	}
 
+	signer := hex.EncodeToString(vote.Signature.PubKey)
+	if signer != sender {
+		return fmt.Errorf("vote signer %s does not match sender %s", signer, sender)
+	}
+	if ce.validatorSet[sender].KeyType != vote.Signature.PubKeyType {
+		return fmt.Errorf("vote key type %s does not match validator %s", vote.Signature.PubKeyType, ce.validatorSet[sender].KeyType)
+	}
+
 	// check if the vote is a Nack vote and the leader is out of sync
 	proof, ok := vote.OutOfSync()
 	if ok {
@@ -367,8 +376,14 @@ func (ce *ConsensusEngine) addVote(ctx context.Context, voteMsg *vote, sender st
 			AppHash:   appHash,
 		}
 
-		// verify signature
-		if err := voteInfo.Verify(vote.BlkHash, ce.state.blockRes.appHash); err != nil {
+		seen := make(map[string]struct{}, len(ce.state.votes)+1)
+		for _, existing := range ce.state.votes {
+			if existing == nil {
+				continue
+			}
+			seen[voteSignerID(&existing.Signature)] = struct{}{}
+		}
+		if err := ce.validateVote(voteInfo, vote.BlkHash, ce.state.blockRes.appHash, seen); err != nil {
 			ce.log.Errorf("Error verifying the vote signature: %v", err)
 			return fmt.Errorf("error verifying the vote signature: %w", err)
 		}
@@ -402,9 +417,16 @@ func (ce *ConsensusEngine) processVotes(ctx context.Context) {
 		return
 	}
 
-	// Count the votes
+	// Count distinct valid votes. A repeated signer must not move quorum or the halt threshold.
+	seen := make(map[string]struct{}, len(ce.state.votes))
+	votes := make([]*ktypes.VoteInfo, 0, len(ce.state.votes))
 	var acks, nacks int
 	for _, vote := range ce.state.votes {
+		if err := ce.validateVote(vote, blkProp.blkHash, blkRes.appHash, seen); err != nil {
+			ce.log.Warn("ignoring vote that cannot be included in the commit proof", "error", err)
+			continue
+		}
+		votes = append(votes, vote)
 		if vote.AckStatus == ktypes.AckAgree {
 			acks++
 		} else {
@@ -426,10 +448,6 @@ func (ce *ConsensusEngine) processVotes(ctx context.Context) {
 	ce.log.Info("Majority of the validators have accepted the block, proceeding to commit the block",
 		"height", blkProp.blk.Header.Height, "hash", blkProp.blkHash, "acks", acks, "nacks", nacks)
 
-	votes := make([]*ktypes.VoteInfo, 0, len(ce.state.votes))
-	for _, v := range ce.state.votes {
-		votes = append(votes, v)
-	}
 	slices.SortFunc(votes, func(a, b *ktypes.VoteInfo) int {
 		if diff := bytes.Compare(a.Signature.PubKey, b.Signature.PubKey); diff != 0 {
 			return diff
