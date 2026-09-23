@@ -205,9 +205,10 @@ func TestPeerFailureHold(t *testing.T) {
 	// A failure that cost next to nothing is held back next to nothing, and
 	// the hold doubles for each failure in a row.
 	var flaky peerInfo
-	for _, want := range []time.Duration{30, 60, 120, 240} {
-		flaky.failed(time.Millisecond, now)
-		require.Equal(t, want*time.Millisecond, flaky.hold)
+	ms := time.Millisecond
+	for _, want := range []time.Duration{30 * ms, 60 * ms, 120 * ms, 240 * ms} {
+		flaky.failed(ms, now)
+		require.Equal(t, want, flaky.hold)
 	}
 	// A costlier failure sets its own hold if that is longer.
 	flaky.failed(2*time.Second, now)
