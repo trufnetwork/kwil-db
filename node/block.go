@@ -617,6 +617,12 @@ func requestBlockHeight(ctx context.Context, host host.Host, peer peer.ID,
 		return nil, peers.CompressDialError(err)
 	}
 	defer stream.Close()
+	// ctx only bounds opening the stream. Once it is open, nothing below reads
+	// ctx, so a request we have given up on would wait out the response
+	// timeout, 20 s by default, on a peer we no longer want an answer from.
+	// Resetting the stream ends the write or read under way.
+	stopReset := context.AfterFunc(ctx, func() { stream.Reset() })
+	defer stopReset()
 
 	stream.SetWriteDeadline(time.Now().Add(reqTimeout))
 

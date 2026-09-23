@@ -534,6 +534,42 @@ func TestGetBlkHeightKeepsAskingTheFastestPeer(t *testing.T) {
 	require.Equal(t, before, farAsked())
 }
 
+// TestRequestBlockHeightStopsWaitingWhenCancelled is a peer taking its time
+// over a request we have given up on. mocknet has no read deadlines, so without
+// the reset the request would wait for as long as the peer does.
+func TestRequestBlockHeightStopsWaitingWhenCancelled(t *testing.T) {
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	const peerTakes = 10 * time.Second
+	asked, done := make(chan struct{}), make(chan struct{})
+	server, _ := blockPeer(t, mn, func(s network.Stream) {
+		defer s.Close()
+		var req blockHeightReq
+		req.ReadFrom(s)
+		close(asked)
+		select {
+		case <-done:
+		case <-time.After(peerTakes):
+		}
+	})
+	t.Cleanup(func() { close(done) })
+	connectPeers(t, mn)
+	waitForIdentify(t, client, server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-asked
+		cancel()
+	}()
+	start := time.Now()
+	_, err := requestBlockHeight(ctx, client, server.ID(), 1, blkReadLimit,
+		2*time.Second, 20*time.Second, 500*time.Millisecond)
+	require.Error(t, err)
+	require.Less(t, time.Since(start), peerTakes/2, "it stops when we give up, not when the peer answers")
+}
+
 func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
 	resetPeerBest(t)
 	mn := mock.New()
@@ -541,11 +577,9 @@ func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
 
 	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
 	asked, cancelled := make(chan struct{}), make(chan struct{})
-	// We give up while the peer is still working on the request. Cancelling
-	// does not close the stream, which ctx only bounds while it opens, so the
-	// request ends with whatever error comes next: here the peer resetting
-	// it, in production the response timeout. That follows from our giving
-	// up, and must not count against the peer.
+	// We give up while the peer is still working on the request, and the
+	// stream is reset under it, by us or by the peer, whichever comes first.
+	// That follows from our giving up, and must not count against the peer.
 	server, _ := blockPeer(t, mn, func(s network.Stream) {
 		close(asked)
 		<-cancelled
