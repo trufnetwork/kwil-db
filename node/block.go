@@ -131,7 +131,14 @@ func (pi *peerInfo) served(took time.Duration, now time.Time) {
 // failed records a request the peer did not answer with the block, which cost
 // took.
 func (pi *peerInfo) failed(took time.Duration, now time.Time) {
-	pi.hold = min(max(2*pi.hold, peerFailHoldFactor*took, 1), maxPeerFailHold)
+	grow := 2 * pi.hold
+	if pi.askedAt.After(now.Add(-took)) {
+		// Another request to this peer ended while this one was out, so they
+		// failed together, as every request on a connection does when it
+		// drops. That is one failure, not a second in a row.
+		grow = pi.hold
+	}
+	pi.hold = min(max(grow, peerFailHoldFactor*took, 1), maxPeerFailHold)
 	pi.askedAt = now
 }
 

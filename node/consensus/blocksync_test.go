@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -317,4 +318,101 @@ func TestReplayBlockFromNetwork_ReportsWhereTheTimeWent(t *testing.T) {
 		"the request that ended the sync still cost its round trip and has to be counted")
 	require.Zero(t, apply, "no block was applied, so no time belongs to apply")
 	require.LessOrEqual(t, network, elapsed, "the split cannot exceed the run it is splitting")
+}
+
+// replayEngine is a consensus engine at height 1 with just enough to run
+// replayBlockFromNetwork, fetching through fetch.
+func replayEngine(prefetchBytes int64, fetch BlkRequester, recheck func()) *ConsensusEngine {
+	now := time.Now()
+	blk := &ktypes.Block{Header: &ktypes.BlockHeader{Height: 1, Timestamp: now}}
+	ce := &ConsensusEngine{
+		mempool: mempool.New(1000000, 100000),
+		blockProcessor: &testBlockProcessor{
+			recheckTxsFunc: func(context.Context, int64, time.Time) error {
+				if recheck != nil {
+					recheck()
+				}
+				return nil
+			},
+		},
+		log:           log.DiscardLogger,
+		blkRequester:  fetch,
+		prefetchBytes: prefetchBytes,
+	}
+	ce.stateInfo.height = 1 // so replay starts at 2
+	ce.stateInfo.lastCommit.blk = blk
+	ce.stateInfo.lastCommit.height = 1
+	ce.state.lc = &lastCommit{blk: blk, height: 1}
+	return ce
+}
+
+// replayWithin runs replay, failing the test rather than hanging it if replay
+// does not return in time.
+func replayWithin(t *testing.T, ce *ConsensusEngine, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- ce.replayBlockFromNetwork(context.Background()) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("replay did not return within %v", limit)
+		return nil
+	}
+}
+
+// A node already at the tip runs replay on every catch-up tick. With prefetch
+// on, the tick has to end the way it did before, on the one request it made.
+func TestReplayBlockFromNetwork_PrefetchAsksOnceWhenInSync(t *testing.T) {
+	var asked atomic.Int32
+	var rechecked bool
+	ce := replayEngine(1<<20, func(context.Context, int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+		asked.Add(1)
+		return types.Hash{}, nil, nil, 1, types.ErrBlkNotFound
+	}, func() { rechecked = true })
+
+	require.NoError(t, replayWithin(t, ce, 10*time.Second))
+	require.True(t, rechecked, "the end of sync still rechecks the mempool")
+	require.EqualValues(t, 1, asked.Load())
+}
+
+// The prefetcher fetches the next blocks while a block applies, and belongs
+// to the replay that started it. applyBlock takes ce.state.mtx before anything
+// else, so holding it keeps block 2 waiting to apply: the workers have to get
+// on without it, which is the spec's rule that they never touch it. Then block
+// 2 fails to decode, and when replay returns every request it had out is over.
+func TestReplayBlockFromNetwork_PrefetchRunsDuringApplyAndStopsWithIt(t *testing.T) {
+	var asked, active atomic.Int32
+	ce := replayEngine(1<<20, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+		asked.Add(1)
+		if h == 2 {
+			// Peers are at 100, so the prefetcher starts on 3 onwards.
+			return types.Hash{2}, []byte("not a block"), &ktypes.CommitInfo{}, 100, nil
+		}
+		active.Add(1)
+		defer active.Add(-1)
+		<-ctx.Done() // a peer that never answers
+		return types.Hash{}, nil, nil, 0, ctx.Err()
+	}, nil)
+
+	ce.state.mtx.Lock()
+	var sawAll atomic.Bool
+	go func() {
+		defer ce.state.mtx.Unlock()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			if active.Load() == prefetchWorkers {
+				sawAll.Store(true)
+				return
+			}
+		}
+	}()
+
+	err := replayWithin(t, ce, 10*time.Second)
+	require.ErrorContains(t, err, "failed to apply block at height: 2")
+	require.True(t, sawAll.Load(), "the next blocks were on their way while block 2 waited to apply")
+	require.Zero(t, active.Load(), "no request outlives the replay")
+
+	sent := asked.Load()
+	time.Sleep(20 * time.Millisecond)
+	require.Equal(t, sent, asked.Load(), "and none is sent after it")
 }

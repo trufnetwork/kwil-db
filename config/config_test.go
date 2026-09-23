@@ -567,3 +567,17 @@ auto_blacklist_duration = "1h"
 		})
 	}
 }
+
+// TestPrefetchBytesIsOffAndCommented pins what spec'd defaults require of a new
+// key: off by default, so an unchanged config file syncs as it always did, and
+// written commented out, so a file from this binary still starts one that does
+// not know the key. go-toml comments it out whatever its value, so a non-zero
+// value set when a file is generated is written commented too.
+func TestPrefetchBytesIsOffAndCommented(t *testing.T) {
+	cfg := DefaultConfig()
+	require.Zero(t, cfg.BlockSync.PrefetchBytes)
+
+	b, err := cfg.ToTOML()
+	require.NoError(t, err)
+	require.Contains(t, string(b), "\n# prefetch_bytes = 0\n")
+}

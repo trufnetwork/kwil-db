@@ -525,7 +525,20 @@ func buildMigrator(d *coreDependencies, ctx context.Context, db *pg.DB, accounts
 
 func buildConsensusEngine(_ context.Context, d *coreDependencies, db *pg.DB,
 	mempool *mempool.Mempool, bs *store.BlockStore, bp *blockprocessor.BlockProcessor) *consensus.ConsensusEngine {
-	ceCfg := &consensus.Config{
+	ce, err := consensus.New(consensusConfig(d, db, mempool, bs, bp))
+	if err != nil {
+		failBuild(err, "failed to create consensus engine")
+	}
+
+	return ce
+}
+
+// consensusConfig assembles the consensus engine's configuration from the
+// loaded config, kept apart from buildConsensusEngine so that it can be tested
+// without starting one.
+func consensusConfig(d *coreDependencies, db *pg.DB, mempool *mempool.Mempool,
+	bs *store.BlockStore, bp *blockprocessor.BlockProcessor) *consensus.Config {
+	return &consensus.Config{
 		RootDir:               d.rootDir,
 		PrivateKey:            d.privKey,
 		Leader:                d.genesisCfg.Leader.PublicKey,
@@ -541,14 +554,8 @@ func buildConsensusEngine(_ context.Context, d *coreDependencies, db *pg.DB,
 		BroadcastTxTimeout:    time.Duration(d.cfg.RPC.BroadcastTxTimeout),
 		GenesisHeight:         d.genesisCfg.InitialHeight,
 		Checkpoint:            d.cfg.Checkpoint,
+		PrefetchBytes:         d.cfg.BlockSync.PrefetchBytes,
 	}
-
-	ce, err := consensus.New(ceCfg)
-	if err != nil {
-		failBuild(err, "failed to create consensus engine")
-	}
-
-	return ce
 }
 
 func buildErc20BridgeSignerMgr(d *coreDependencies, db *pg.DB,
