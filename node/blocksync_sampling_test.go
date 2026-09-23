@@ -19,6 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	mock "github.com/libp2p/go-libp2p/p2p/net/mock"
+	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/stretchr/testify/require"
 )
 
@@ -445,20 +446,32 @@ func connectPeers(t *testing.T, mn mock.Mocknet) {
 	require.NoError(t, mn.ConnectAllButSelf())
 }
 
-// waitForIdentify waits until client knows that each of peers serves block
-// requests. Until then, the first stream to a peer also has to negotiate the
-// protocol, and that peer's first request would be timed with the extra
-// round trip in it.
+// waitForIdentify waits until identify has finished on client's connections
+// to each of peers, so that the first stream to a peer opens without having
+// to negotiate the protocol, and that peer's first request is not timed with
+// the extra round trip in it.
+//
+// It also makes sure client knows each peer serves block requests. libp2p
+// hands a new connection a snapshot of the protocols a host serves, and it
+// refreshes that snapshot some time after a handler is registered. A test
+// that registers a handler and connects straight away can be identified with
+// the old list, and the push meant to correct it does not always follow. The
+// peer does serve the protocol, so this records what identify should have.
 func waitForIdentify(t *testing.T, client host.Host, peers ...host.Host) {
 	t.Helper()
-	require.Eventually(t, func() bool {
-		for _, p := range peers {
-			if ps, _ := client.Peerstore().SupportsProtocols(p.ID(), ProtocolIDBlockHeight); len(ps) == 0 {
-				return false
+	ids := client.(interface{ IDService() identify.IDService }).IDService()
+	for _, p := range peers {
+		conns := client.Network().ConnsToPeer(p.ID())
+		require.NotEmpty(t, conns, "not connected to %s", p.ID())
+		for _, c := range conns {
+			select {
+			case <-ids.IdentifyWait(c):
+			case <-time.After(5 * time.Second):
+				t.Fatalf("identify with %s did not finish", p.ID())
 			}
 		}
-		return true
-	}, 5*time.Second, 5*time.Millisecond)
+		require.NoError(t, client.Peerstore().AddProtocols(p.ID(), ProtocolIDBlockHeight))
+	}
 }
 
 // fetchBlock asks the peers of client for block 1, which one of them has.
@@ -534,6 +547,42 @@ func TestGetBlkHeightKeepsAskingTheFastestPeer(t *testing.T) {
 	require.Equal(t, before, farAsked())
 }
 
+// TestRequestBlockHeightStopsWaitingWhenCancelled is a peer taking its time
+// over a request we have given up on. mocknet has no read deadlines, so without
+// the reset the request would wait for as long as the peer does.
+func TestRequestBlockHeightStopsWaitingWhenCancelled(t *testing.T) {
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	const peerTakes = 10 * time.Second
+	asked, done := make(chan struct{}), make(chan struct{})
+	server, _ := blockPeer(t, mn, func(s network.Stream) {
+		defer s.Close()
+		var req blockHeightReq
+		req.ReadFrom(s)
+		close(asked)
+		select {
+		case <-done:
+		case <-time.After(peerTakes):
+		}
+	})
+	t.Cleanup(func() { close(done) })
+	connectPeers(t, mn)
+	waitForIdentify(t, client, server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-asked
+		cancel()
+	}()
+	start := time.Now()
+	_, err := requestBlockHeight(ctx, client, server.ID(), 1, blkReadLimit,
+		2*time.Second, 20*time.Second, 500*time.Millisecond)
+	require.Error(t, err)
+	require.Less(t, time.Since(start), peerTakes/2, "it stops when we give up, not when the peer answers")
+}
+
 func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
 	resetPeerBest(t)
 	mn := mock.New()
@@ -541,11 +590,9 @@ func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
 
 	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
 	asked, cancelled := make(chan struct{}), make(chan struct{})
-	// We give up while the peer is still working on the request. Cancelling
-	// does not close the stream, which ctx only bounds while it opens, so the
-	// request ends with whatever error comes next: here the peer resetting
-	// it, in production the response timeout. That follows from our giving
-	// up, and must not count against the peer.
+	// We give up while the peer is still working on the request, and the
+	// stream is reset under it, by us or by the peer, whichever comes first.
+	// That follows from our giving up, and must not count against the peer.
 	server, _ := blockPeer(t, mn, func(s network.Stream) {
 		close(asked)
 		<-cancelled
@@ -564,11 +611,49 @@ func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
 	}()
 	_, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
 	require.Error(t, err)
-	require.NotErrorIs(t, err, context.Canceled, "the request got as far as the reset")
+	require.ErrorIs(t, err, context.Canceled, "a request we gave up on says so")
 
 	v, _ := peerBest.Load(server.ID())
 	pi, _ := v.(peerInfo)
 	require.Zero(t, pi.hold)
+}
+
+// TestGetBlkHeightReportsOurCancellationNotTheTip is a cancel that lands
+// after one peer has said it does not have the block. Reported as that
+// not-found, the cancel would read to catch-up as the chain's tip, and it
+// would end the sync as though it had finished.
+func TestGetBlkHeightReportsOurCancellationNotTheTip(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	behind, _ := blockPeer(t, mn, serveBlocks(t))
+	asked, done := make(chan struct{}), make(chan struct{})
+	slow, _ := blockPeer(t, mn, func(s network.Stream) {
+		defer s.Close()
+		var req blockHeightReq
+		req.ReadFrom(s)
+		close(asked)
+		<-done
+	})
+	t.Cleanup(func() { close(done) })
+	connectPeers(t, mn)
+	waitForIdentify(t, client, behind, slow)
+
+	// Asked in this order: the peer that is behind answers first.
+	now := time.Now()
+	peerBest.Store(behind.ID(), peerInfo{latency: time.Millisecond, askedAt: now})
+	peerBest.Store(slow.ID(), peerInfo{latency: 100 * time.Millisecond, askedAt: now})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-asked
+		cancel()
+	}()
+	_, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, ErrBlkNotFound)
 }
 
 func TestGetBlkHeightRecordsWhatEachPeerCost(t *testing.T) {
