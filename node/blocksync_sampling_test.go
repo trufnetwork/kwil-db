@@ -1,14 +1,35 @@
 package node
 
 import (
+	"bytes"
+	"context"
+	"runtime"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/log"
+	ktypes "github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/store/memstore"
 
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	mock "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// resetPeerBest empties peerBest now and again when the test ends. It is one
+// map for the whole package, so whatever a test leaves in it is what the next
+// test's block requests read.
+func resetPeerBest(t *testing.T) {
+	t.Helper()
+	peerBest.Clear()
+	t.Cleanup(peerBest.Clear)
+}
 
 func TestPeerSamplingInSmallNetworks(t *testing.T) {
 	// Test that the peer sampling logic queries more peers in small networks
@@ -38,6 +59,7 @@ func TestPeerSamplingInSmallNetworks(t *testing.T) {
 
 func TestPeerCacheFiltering(t *testing.T) {
 	// Test that peers with stale cache entries are not filtered out
+	resetPeerBest(t)
 	mn := mock.New()
 	defer mn.Close()
 
@@ -51,7 +73,7 @@ func TestPeerCacheFiltering(t *testing.T) {
 	const targetHeight = int64(200)
 
 	// Add a stale cache entry (older than cacheTTL)
-	oldTime := time.Now().Add(-2 * cacheTTL) // cacheTTL is 5 minutes, so this is 10 minutes ago
+	oldTime := time.Now().Add(-2 * cacheTTL)
 	peerBest.Store(hPeer.ID(), peerInfo{height: targetHeight - 1, seenAt: oldTime})
 
 	// Get all peers - should include the peer despite stale cache
@@ -62,6 +84,7 @@ func TestPeerCacheFiltering(t *testing.T) {
 
 func TestPeerBestCacheCleanup(t *testing.T) {
 	// Test the cache cleanup functionality
+	resetPeerBest(t)
 	mn := mock.New()
 	defer mn.Close()
 
@@ -122,4 +145,553 @@ func TestSampleSizeCalculation(t *testing.T) {
 				"Sample size calculation for %d peers", tc.eligiblePeers)
 		})
 	}
+}
+
+func TestPeerLatencyIsSmoothed(t *testing.T) {
+	now := time.Now()
+	var pi peerInfo
+
+	pi.served(20*time.Millisecond, now)
+	require.Equal(t, 20*time.Millisecond, pi.latency, "the first answer is the estimate")
+
+	// One slow answer, a retransmit or a fat block, moves it a sixteenth of
+	// the way. A 20 ms peer stays well ahead of a 300 ms one.
+	pi.served(1620*time.Millisecond, now)
+	require.Equal(t, 120*time.Millisecond, pi.latency)
+
+	// A peer that has really slowed down loses its place within a few answers.
+	pi = peerInfo{}
+	pi.served(20*time.Millisecond, now)
+	var answers int
+	for pi.latency <= 300*time.Millisecond {
+		pi.served(time.Second, now)
+		answers++
+	}
+	require.Equal(t, 6, answers)
+
+	// Nothing recent to smooth against: a peer only asked first once a minute
+	// is judged on its latest answer.
+	later := now.Add(peerProbeInterval + time.Second)
+	pi.served(40*time.Millisecond, later)
+	require.Equal(t, 40*time.Millisecond, pi.latency)
+	require.Equal(t, later, pi.askedAt)
+
+	// Nor after a failure. The answer that ends it replaces the estimate and
+	// clears the hold.
+	pi.failed(time.Millisecond, later)
+	pi.served(90*time.Millisecond, later)
+	require.Equal(t, 90*time.Millisecond, pi.latency)
+	require.Zero(t, pi.hold)
+
+	// A zero duration still counts as having answered.
+	pi = peerInfo{}
+	pi.served(0, now)
+	require.Positive(t, pi.latency)
+}
+
+func TestPeerFailureHold(t *testing.T) {
+	now := time.Now()
+
+	// A peer that ate the whole response budget waits thirty times that
+	// before it is asked first again. It keeps its latency, which orders it
+	// among the other peers held back.
+	var hung peerInfo
+	hung.served(20*time.Millisecond, now)
+	hung.failed(20*time.Second, now)
+	require.Equal(t, 10*time.Minute, hung.hold)
+	require.Equal(t, 20*time.Millisecond, hung.latency)
+	require.Equal(t, now, hung.askedAt)
+
+	// A failure that cost next to nothing is held back next to nothing, and
+	// the hold doubles for each failure in a row.
+	var flaky peerInfo
+	ms := time.Millisecond
+	for _, want := range []time.Duration{30 * ms, 60 * ms, 120 * ms, 240 * ms} {
+		flaky.failed(ms, now)
+		require.Equal(t, want, flaky.hold)
+	}
+	// A costlier failure sets its own hold if that is longer.
+	flaky.failed(2*time.Second, now)
+	require.Equal(t, time.Minute, flaky.hold)
+
+	// Never longer than maxPeerFailHold, however many in a row.
+	for range 20 {
+		flaky.failed(20*time.Second, now)
+	}
+	require.Equal(t, maxPeerFailHold, flaky.hold)
+
+	// A failure too quick to measure is still a failure.
+	var instant peerInfo
+	instant.failed(0, now)
+	require.Positive(t, instant.hold)
+}
+
+func TestOrderPeers(t *testing.T) {
+	now := time.Now()
+	served := func(latency, askedAgo time.Duration) peerInfo {
+		return peerInfo{latency: latency, askedAt: now.Add(-askedAgo)}
+	}
+	failed := func(latency, hold, askedAgo time.Duration) peerInfo {
+		return peerInfo{latency: latency, hold: hold, askedAt: now.Add(-askedAgo)}
+	}
+	const a, b, c, d = peer.ID("a"), peer.ID("b"), peer.ID("c"), peer.ID("d")
+	ms := time.Millisecond
+
+	for _, tc := range []struct {
+		name  string
+		known map[peer.ID]peerInfo
+		peers []peer.ID
+		want  []peer.ID
+	}{{
+		name:  "knowing nothing leaves the order as it came, which peerHosts shuffles",
+		peers: []peer.ID{c, a, b},
+		want:  []peer.ID{c, a, b},
+	}, {
+		name:  "the fastest first",
+		known: map[peer.ID]peerInfo{a: served(300*ms, 0), b: served(20*ms, 0), c: served(150*ms, 0)},
+		peers: []peer.ID{a, b, c},
+		want:  []peer.ID{b, c, a},
+	}, {
+		name:  "one peer never asked goes first, the others after the peers that served",
+		known: map[peer.ID]peerInfo{c: served(20*ms, 0)},
+		peers: []peer.ID{a, b, c},
+		want:  []peer.ID{a, c, b},
+	}, {
+		name:  "a peer only heard announcing has never been asked",
+		known: map[peer.ID]peerInfo{a: {height: 9, seenAt: now}, b: served(20*ms, 0)},
+		peers: []peer.ID{b, a},
+		want:  []peer.ID{a, b},
+	}, {
+		name: "peers whose last request failed go last, the fastest of them first",
+		known: map[peer.ID]peerInfo{
+			a: failed(20*ms, time.Minute, 0),
+			b: served(300*ms, 0),
+			c: failed(50*ms, time.Minute, 0),
+			d: failed(0, time.Minute, 0),
+		},
+		peers: []peer.ID{d, c, a, b},
+		want:  []peer.ID{b, a, c, d},
+	}, {
+		name:  "a peer not asked for peerProbeInterval is asked first",
+		known: map[peer.ID]peerInfo{a: served(20*ms, 0), b: served(300*ms, peerProbeInterval)},
+		peers: []peer.ID{a, b},
+		want:  []peer.ID{b, a},
+	}, {
+		name:  "only the one most overdue, wherever it sits",
+		known: map[peer.ID]peerInfo{a: served(20*ms, 0), b: served(150*ms, 2*time.Minute), c: served(300*ms, 5*time.Minute)},
+		peers: []peer.ID{a, b, c},
+		want:  []peer.ID{c, a, b},
+	}, {
+		name:  "a failed peer is asked first once its hold is up",
+		known: map[peer.ID]peerInfo{a: served(20*ms, 0), b: failed(20*ms, time.Second, 2*time.Second)},
+		peers: []peer.ID{a, b},
+		want:  []peer.ID{b, a},
+	}, {
+		name:  "and not before",
+		known: map[peer.ID]peerInfo{a: served(20*ms, 0), b: failed(5*ms, time.Minute, 2*time.Second)},
+		peers: []peer.ID{a, b},
+		want:  []peer.ID{a, b},
+	}, {
+		// Two never asked, since the most overdue of them goes first anyway.
+		name:  "peers never asked before peers whose last request failed",
+		known: map[peer.ID]peerInfo{c: failed(20*ms, time.Minute, 0)},
+		peers: []peer.ID{c, a, b},
+		want:  []peer.ID{a, b, c},
+	}, {
+		name: "with every peer held back, the one due soonest goes first anyway",
+		known: map[peer.ID]peerInfo{
+			a: failed(20*ms, 10*time.Minute, 0),
+			b: failed(50*ms, 10*time.Minute, 5*time.Minute),
+			c: failed(30*ms, 10*time.Minute, time.Minute),
+		},
+		peers: []peer.ID{a, b, c},
+		want:  []peer.ID{b, a, c},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := append([]peer.ID(nil), tc.peers...)
+			orderPeers(got, tc.known, now)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestUpdatePeerKeepsWhatItDoesNotSet(t *testing.T) {
+	resetPeerBest(t)
+	p := peer.ID("p")
+	load := func() peerInfo {
+		v, ok := peerBest.Load(p)
+		require.True(t, ok)
+		return v.(peerInfo)
+	}
+
+	// An announcement, which is all the block announcement handler records,
+	// must not wipe what block requests learned.
+	updatePeer(p, func(pi *peerInfo) { pi.served(20*time.Millisecond, time.Now()) })
+	notePeerHeight(p, 7)
+	pi := load()
+	require.EqualValues(t, 7, pi.height)
+	require.Equal(t, 20*time.Millisecond, pi.latency)
+
+	// Nor may two writers at once lose either write.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 1000 {
+				// Yield between the read and the write, so that a lost
+				// update shows on one CPU too.
+				updatePeer(p, func(pi *peerInfo) { pi.height++; runtime.Gosched() })
+			}
+		}()
+	}
+	wg.Wait()
+	require.EqualValues(t, 8007, load().height)
+}
+
+// TestBlockAnnouncementKeepsWhatRequestsLearned is the same guarantee through
+// the announcement handler itself, which used to Store a fresh peerInfo.
+func TestBlockAnnouncementKeepsWhatRequestsLearned(t *testing.T) {
+	resetPeerBest(t)
+	nodes, extraHosts, _, mn := makeTestHosts(t, 1, 1, 5*time.Hour, crypto.KeyTypeSecp256k1)
+	linkAll(t, mn)
+	n1, h2 := nodes[0], extraHosts[0]
+	// The handler records the height, then stops at AcceptCommit.
+	n1.ce.(*dummyCE).Fake().RejectNextCommit()
+
+	updatePeer(h2.ID(), func(pi *peerInfo) { pi.served(20*time.Millisecond, time.Now()) })
+
+	blk, appHash := createTestBlock(7, 0)
+	ann, err := blockAnnMsg{Hash: blk.Hash(), Height: 7, Header: blk.Header,
+		CommitInfo: &ktypes.CommitInfo{AppHash: appHash}}.MarshalBinary()
+	require.NoError(t, err)
+	s, err := h2.NewStream(context.Background(), n1.host.ID(), ProtocolIDBlkAnn)
+	require.NoError(t, err)
+	defer s.Close()
+	_, err = s.Write(ann)
+	require.NoError(t, err)
+	require.NoError(t, s.CloseWrite())
+
+	var pi peerInfo
+	require.Eventually(t, func() bool {
+		v, _ := peerBest.Load(h2.ID())
+		pi, _ = v.(peerInfo)
+		return pi.height == 7
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, 20*time.Millisecond, pi.latency)
+}
+
+func TestPeerCacheRemembersAPeerItIsHoldingBack(t *testing.T) {
+	resetPeerBest(t)
+	longAgo := time.Now().Add(-2 * cacheTTL)
+	held, gone := peer.ID("held"), peer.ID("gone")
+	peerBest.Store(held, peerInfo{seenAt: longAgo, askedAt: time.Now(), hold: maxPeerFailHold})
+	peerBest.Store(gone, peerInfo{seenAt: longAgo, askedAt: longAgo})
+
+	gcPeerCache()
+
+	// Forgetting it would make it a peer never asked, and ask it first.
+	_, ok := peerBest.Load(held)
+	require.True(t, ok, "a peer asked within cacheTTL is kept, whenever it last announced")
+	_, ok = peerBest.Load(gone)
+	require.False(t, ok, "a peer neither heard from nor asked within cacheTTL is dropped")
+}
+
+// blockPeer puts a host on mn that answers ProtocolIDBlockHeight with serve,
+// and counts the requests it gets.
+func blockPeer(t *testing.T, mn mock.Mocknet, serve func(network.Stream)) (host.Host, *atomic.Int32) {
+	t.Helper()
+	_, h := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	asked := new(atomic.Int32)
+	h.SetStreamHandler(ProtocolIDBlockHeight, func(s network.Stream) {
+		asked.Add(1)
+		serve(s)
+	})
+	return h, asked
+}
+
+// serveBlocks answers from a store holding a block at each of heights.
+func serveBlocks(t *testing.T, heights ...int64) func(network.Stream) {
+	t.Helper()
+	bs := memstore.NewMemBS()
+	for _, h := range heights {
+		blk, appHash := createTestBlock(h, 1)
+		require.NoError(t, bs.Store(blk, &ktypes.CommitInfo{AppHash: appHash}))
+	}
+	return func(s network.Stream) { serveBlockByHeight(s, bs, log.DiscardLogger) }
+}
+
+// hangUp reads the request and closes without a word, which the asking side
+// sees as ErrNoResponse.
+func hangUp(s network.Stream) {
+	defer s.Close()
+	var req blockHeightReq
+	req.ReadFrom(s)
+}
+
+// reply answers every request with resp.
+func reply(resp []byte) func(network.Stream) {
+	return func(s network.Stream) {
+		defer s.Close()
+		var req blockHeightReq
+		req.ReadFrom(s)
+		s.Write(resp)
+	}
+}
+
+func connectPeers(t *testing.T, mn mock.Mocknet) {
+	t.Helper()
+	require.NoError(t, mn.LinkAll())
+	require.NoError(t, mn.ConnectAllButSelf())
+}
+
+// waitForIdentify waits until client knows that each of peers serves block
+// requests. Until then, the first stream to a peer also has to negotiate the
+// protocol, and that peer's first request would be timed with the extra
+// round trip in it.
+func waitForIdentify(t *testing.T, client host.Host, peers ...host.Host) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, p := range peers {
+			if ps, _ := client.Peerstore().SupportsProtocols(p.ID(), ProtocolIDBlockHeight); len(ps) == 0 {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, 5*time.Millisecond)
+}
+
+// fetchBlock asks the peers of client for block 1, which one of them has.
+func fetchBlock(t *testing.T, client host.Host) {
+	t.Helper()
+	_, rawBlk, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, rawBlk)
+}
+
+func TestGetBlkHeightKeepsAskingTheFastestPeer(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	serve := serveBlocks(t, 1)
+	var fastServes atomic.Bool
+	fastServes.Store(true)
+	fast, fastAsked := blockPeer(t, mn, func(s network.Stream) {
+		if fastServes.Load() {
+			serve(s)
+		} else {
+			hangUp(s)
+		}
+	})
+	far1, far1Asked := blockPeer(t, mn, serve)
+	far2, far2Asked := blockPeer(t, mn, serve)
+	connectPeers(t, mn)
+	waitForIdentify(t, client, fast, far1, far2)
+	// mocknet delays every Write on a link, so a request to either of these
+	// takes at least 200 ms, and one to the fast peer only as long as the
+	// machine takes to run it: about a millisecond, far less than that even
+	// under load and -race.
+	for _, far := range []host.Host{far1, far2} {
+		for _, l := range mn.LinksBetweenPeers(client.ID(), far.ID()) {
+			l.SetOptions(mock.LinkOptions{Latency: 100 * time.Millisecond})
+		}
+	}
+	farAsked := func() int32 { return far1Asked.Load() + far2Asked.Load() }
+
+	// Whoever the shuffle puts first serves the first block. Each of the next
+	// two requests goes first to a peer not yet asked. After that every block
+	// comes from the fast peer: no other is due a turn for a minute.
+	for range 20 {
+		fetchBlock(t, client)
+	}
+	require.EqualValues(t, 1, far1Asked.Load())
+	require.EqualValues(t, 1, far2Asked.Load())
+	require.EqualValues(t, 18, fastAsked.Load())
+
+	// The fast peer stops answering. Every block still arrives, each from one
+	// of the others.
+	fastServes.Store(false)
+	before := farAsked()
+	for range 5 {
+		fetchBlock(t, client)
+	}
+	require.EqualValues(t, 5, farAsked()-before)
+
+	// Once it answers again it is asked first when its hold is up, serves,
+	// and keeps its place.
+	fastServes.Store(true)
+	deadline := time.Now().Add(10 * time.Second)
+	for asked := fastAsked.Load(); fastAsked.Load() == asked; {
+		require.True(t, time.Now().Before(deadline), "the fast peer was never asked again")
+		fetchBlock(t, client)
+	}
+	before = farAsked()
+	for range 5 {
+		fetchBlock(t, client)
+	}
+	require.Equal(t, before, farAsked())
+}
+
+func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	asked, cancelled := make(chan struct{}), make(chan struct{})
+	// We give up while the peer is still working on the request. Cancelling
+	// does not close the stream, which ctx only bounds while it opens, so the
+	// request ends with whatever error comes next: here the peer resetting
+	// it, in production the response timeout. That follows from our giving
+	// up, and must not count against the peer.
+	server, _ := blockPeer(t, mn, func(s network.Stream) {
+		close(asked)
+		<-cancelled
+		s.Reset()
+	})
+	connectPeers(t, mn)
+	// Otherwise opening the stream waits on the protocol negotiation, and our
+	// cancelling can end the request there, before the peer has answered.
+	waitForIdentify(t, client, server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-asked
+		cancel()
+		close(cancelled)
+	}()
+	_, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.Canceled, "the request got as far as the reset")
+
+	v, _ := peerBest.Load(server.ID())
+	pi, _ := v.(peerInfo)
+	require.Zero(t, pi.hold)
+}
+
+func TestGetBlkHeightRecordsWhatEachPeerCost(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	server, _ := blockPeer(t, mn, serveBlocks(t, 1))
+	silent, _ := blockPeer(t, mn, hangUp)
+	// Claims height 10 but lacks block 1, as a peer that state synced past it would.
+	lacking, _ := blockPeer(t, mn, serveBlocks(t, 10))
+	behind, behindAsked := blockPeer(t, mn, serveBlocks(t))
+	connectPeers(t, mn)
+
+	// Every request asks one peer not yet asked first, so by the fourth all
+	// of them have been.
+	for range 8 {
+		fetchBlock(t, client)
+	}
+
+	known := func(h host.Host) peerInfo {
+		t.Helper()
+		v, ok := peerBest.Load(h.ID())
+		require.True(t, ok)
+		return v.(peerInfo)
+	}
+
+	pi := known(server)
+	require.Positive(t, pi.latency, "a peer that serves is timed")
+	require.Zero(t, pi.hold)
+
+	pi = known(silent)
+	require.Positive(t, pi.hold, "a peer that hangs up is held back")
+	require.Zero(t, pi.latency, "and a failure is never a time: it would look fast")
+
+	pi = known(lacking)
+	require.Positive(t, pi.hold, "claiming a height without the block is a failure")
+	require.Zero(t, pi.latency)
+	require.EqualValues(t, 10, pi.height)
+
+	pi = known(behind)
+	require.Zero(t, pi.hold, "being behind is not a failure")
+	require.EqualValues(t, 1, behindAsked.Load(), "and it is not asked again while it is known to be")
+}
+
+func TestGetBlkHeightHoldsBackEveryKindOfFailure(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	blk, appHash := createTestBlock(1, 1)
+	ciBytes, err := (&ktypes.CommitInfo{AppHash: appHash}).MarshalBinary()
+	require.NoError(t, err)
+	var full bytes.Buffer
+	hash := blk.Hash()
+	full.Write(withData)
+	full.Write(hash[:])
+	ktypes.WriteCompactBytes(&full, ciBytes)
+	ktypes.WriteCompactBytes(&full, ktypes.EncodeBlock(blk))
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	blockPeer(t, mn, serveBlocks(t, 1))
+	// Five peers at most, so that every one is in every sample.
+	_, noHandler := newTestHost(t, mn, crypto.KeyTypeSecp256k1) // the stream never opens
+	failing := []host.Host{noHandler}
+	for _, resp := range [][]byte{
+		append(slices.Clone(noData), 0, 0, 0, 0),      // not found, with no best height
+		append(slices.Clone(withData), 1, 2, 3, 4, 5), // shorter than a hash
+		full.Bytes()[:full.Len()-100],                 // cut off inside the block
+	} {
+		h, _ := blockPeer(t, mn, reply(resp))
+		failing = append(failing, h)
+	}
+	connectPeers(t, mn)
+
+	// Every request asks a peer not yet asked first, then gets the block from
+	// the one that has it. A cut-off block is not a block: returned as one,
+	// fetchBlock fails.
+	for range 8 {
+		fetchBlock(t, client)
+	}
+
+	for i, h := range failing {
+		v, ok := peerBest.Load(h.ID())
+		require.True(t, ok, "peer %d", i)
+		pi := v.(peerInfo)
+		require.Positive(t, pi.hold, "peer %d is held back", i)
+		require.Zero(t, pi.latency, "peer %d is not timed", i)
+	}
+}
+
+// TestGetBlkHeightAsksAroundWhenNoPeerIsKnownToHaveTheBlock is the end of a
+// catch-up with more than five peers. The three fastest do not have the next
+// block yet. The other three do, but nothing we have heard says so.
+func TestGetBlkHeightAsksAroundWhenNoPeerIsKnownToHaveTheBlock(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	now := time.Now()
+	for i := range 6 {
+		serve, latency := serveBlocks(t), time.Millisecond
+		if i >= 3 {
+			serve, latency = serveBlocks(t, 1), 100*time.Millisecond
+		}
+		h, _ := blockPeer(t, mn, serve)
+		// Last heard at height 0, all six, so none is eligible for block 1.
+		peerBest.Store(h.ID(), peerInfo{seenAt: now, latency: latency, askedAt: now})
+	}
+	connectPeers(t, mn)
+
+	// Taken fastest first, the sample of three would be the three without the
+	// block on every request, and every request would end in ErrBlkNotFound.
+	// Shuffled, one request in twenty misses all three that have it.
+	for range 20 {
+		_, rawBlk, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
+		if err == nil {
+			require.NotEmpty(t, rawBlk)
+			return
+		}
+		require.ErrorIs(t, err, ErrBlkNotFound)
+	}
+	t.Fatal("twenty requests in a row asked only the peers without the block")
 }

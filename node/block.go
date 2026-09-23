@@ -3,11 +3,13 @@ package node
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -35,6 +37,9 @@ import (
 //
 // When the cache is stale we fall back to the full peer set, so liveness is
 // preserved at the cost of extra bandwidth.
+//
+// The same cache records what asking each peer for a block has cost, and the
+// sample is taken in that order rather than at random. See orderPeers.
 const (
 	blkReadLimit          = 300_000_000
 	defaultBlkGetTimeout  = 90 * time.Second
@@ -44,6 +49,31 @@ const (
 	defaultBlkIdleTimeout = 500 * time.Millisecond
 	cacheTTL              = 15 * time.Minute
 	maxEntries            = 5_000
+
+	// peerProbeInterval is how long a peer that is not the first choice waits
+	// before it is asked first anyway, which is how a peer that has got faster
+	// is noticed. With one near peer and four far ones, that is four far round
+	// trips a minute.
+	peerProbeInterval = time.Minute
+
+	// A peer whose request failed is not asked first again until
+	// peerFailHoldFactor times what the failure cost has passed, doubled for
+	// each failure in a row, up to maxPeerFailHold. That holds the cost of
+	// retrying a failing peer to a thirtieth of the time spent, for any failure
+	// up to the default 20 s response timeout. One that hangs until that
+	// timeout is asked first again ten minutes later, where a random pick asked
+	// it first on one block in every few. One that refuses in a millisecond can
+	// be asked again almost at once, since that costs next to nothing.
+	// maxPeerFailHold must stay below cacheTTL: see gcPeerCache.
+	peerFailHoldFactor = 30
+	maxPeerFailHold    = 10 * time.Minute
+
+	// peerLatencySmoothing is how far one answer moves a peer's latency: a
+	// sixteenth of the way. A 20 ms peer needs a single answer of over 4.5 s
+	// to fall behind a 300 ms one, so a retransmit or a fat block does not
+	// cost it its place, while one that really has slowed to a second loses it
+	// in six answers.
+	peerLatencySmoothing = 16
 
 	// blkRespBufSize buffers one block response on its way to the stream.
 	//
@@ -77,14 +107,135 @@ func blockSyncTimeout(configured ktypes.Duration, fallback time.Duration) time.D
 type peerInfo struct {
 	height int64
 	seenAt time.Time
+
+	// What asking the peer for a block has cost, which decides whom to ask
+	// first. See orderPeers.
+	latency time.Duration // smoothed time to serve one; zero until it has
+	askedAt time.Time     // when it last served or failed a request
+	hold    time.Duration // how long it waits after a failure; zero once it serves
 }
 
-// peerBest remembers the highest block height we have *ever* seen from each
-// peer.  It is an opportunistic heuristic: if we know a peer is at height 10
-// and we need block 20, we can skip querying it.  Entries are evicted by
-// gcPeerCache; if we evict too aggressively we merely sample the peer again
-// later.  sync.Map lets hot paths read/write without explicit locks.
+// served records a request the peer answered with the block, in took.
+func (pi *peerInfo) served(took time.Duration, now time.Time) {
+	took = max(took, 1) // a zero latency means it never has
+	if pi.latency == 0 || pi.hold > 0 || now.Sub(pi.askedAt) > peerProbeInterval {
+		// Nothing recent to smooth against. A peer asked first once a minute
+		// would otherwise need many minutes to show it had got faster.
+		pi.latency = took
+	} else {
+		pi.latency += (took - pi.latency) / peerLatencySmoothing
+	}
+	pi.askedAt, pi.hold = now, 0
+}
+
+// failed records a request the peer did not answer with the block, which cost
+// took.
+func (pi *peerInfo) failed(took time.Duration, now time.Time) {
+	pi.hold = min(max(2*pi.hold, peerFailHoldFactor*took, 1), maxPeerFailHold)
+	pi.askedAt = now
+}
+
+// dueAt is when the peer is next asked first, whatever its latency: once its
+// hold is up if its last request failed, otherwise peerProbeInterval after it
+// was last asked. A peer never asked is due from the start.
+func (pi peerInfo) dueAt() time.Time {
+	if pi.hold > 0 {
+		return pi.askedAt.Add(pi.hold)
+	}
+	return pi.askedAt.Add(peerProbeInterval)
+}
+
+// rank is the peer's place in the order orderPeers sorts into, lowest first.
+func (pi peerInfo) rank() (group int, latency time.Duration) {
+	switch {
+	case pi.hold > 0 && pi.latency > 0:
+		return 2, pi.latency
+	case pi.hold > 0: // failed, and never served: after those that have
+		return 2, math.MaxInt64
+	case pi.latency == 0: // never asked
+		return 1, 0
+	default:
+		return 0, pi.latency
+	}
+}
+
+// orderPeers puts peers in the order they are asked for a block, going by what
+// asking each of them has cost before, as recorded in known:
+//
+//   - peers that served their last request, fastest first,
+//   - then peers never asked,
+//   - then peers whose last request failed, fastest first.
+//
+// Ties keep the order the peers came in, which peerHosts shuffles, so a node
+// that knows nothing yet asks in as random an order as it always did.
+//
+// Then the one peer most overdue for a turn (see dueAt) is moved to the front.
+// That is what keeps a preference from becoming exclusive: every peer is asked
+// first now and then, so one that has got faster or recovered is noticed, at a
+// cost of one peer asked out of turn per request. A peer held back sorts last:
+// with five peers or fewer getBlkHeight asks every one, so it is still asked
+// after the others; with more, the sample usually stops before it.
+//
+// If every peer is held back, the holds no longer tell them apart, and the
+// failures were more likely ours than theirs. The one due soonest goes first
+// anyway, so that each retry reaches a peer the last one did not.
+func orderPeers(peers []peer.ID, known map[peer.ID]peerInfo, now time.Time) {
+	slices.SortStableFunc(peers, func(a, b peer.ID) int {
+		ga, la := known[a].rank()
+		gb, lb := known[b].rank()
+		return cmp.Or(cmp.Compare(ga, gb), cmp.Compare(la, lb))
+	})
+
+	allHeld := len(peers) > 0 && known[peers[0]].hold > 0 // held peers sort last
+	due := -1
+	for i, p := range peers {
+		at := known[p].dueAt()
+		if (allHeld || !at.After(now)) && (due < 0 || at.Before(known[peers[due]].dueAt())) {
+			due = i
+		}
+	}
+	if due > 0 {
+		p := peers[due]
+		copy(peers[1:due+1], peers[:due])
+		peers[0] = p
+	}
+}
+
+// peerBest remembers, for each peer, the latest best height it has told us of
+// and what asking it for a block has cost.  The height is an
+// opportunistic heuristic: if we know a peer is at height 10 and we need block
+// 20, we can skip querying it.  The cost decides whom to ask first.  Entries
+// are evicted by gcPeerCache; if we evict too aggressively we merely sample
+// the peer again later.  sync.Map lets hot paths read/write without explicit
+// locks; write through updatePeer so that no writer wipes what another
+// recorded.
 var peerBest sync.Map // map[peer.ID]peerInfo
+
+// updatePeer applies update to what we know of p. Two writers at once, say a
+// block announcement arriving as a block request to the same peer ends, both
+// keep what they wrote.
+func updatePeer(p peer.ID, update func(*peerInfo)) {
+	for {
+		v, loaded := peerBest.Load(p)
+		var pi peerInfo
+		if loaded {
+			pi = v.(peerInfo)
+		}
+		update(&pi)
+		if loaded {
+			if peerBest.CompareAndSwap(p, v, pi) {
+				return
+			}
+		} else if _, loaded = peerBest.LoadOrStore(p, pi); !loaded {
+			return
+		}
+	}
+}
+
+// notePeerHeight records height as the best block p has, as of now.
+func notePeerHeight(p peer.ID, height int64) {
+	updatePeer(p, func(pi *peerInfo) { pi.height, pi.seenAt = height, time.Now() })
+}
 
 func (n *Node) blkGetStreamHandler(s network.Stream) {
 	defer s.Close()
@@ -243,7 +394,7 @@ func (n *Node) blkAnnStreamHandler(s network.Stream) {
 	peerID := s.Conn().RemotePeer()
 
 	// Update peer height cache with observed announcement height
-	peerBest.Store(peerID, peerInfo{height: height, seenAt: time.Now()})
+	notePeerHeight(peerID, height)
 
 	n.log.Debug("Accept commit?", "height", height, "blockID", blkid, "appHash", ci.AppHash,
 		"from_peer", peers.PeerIDStringer(peerID)) // maybe debug level
@@ -572,11 +723,14 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 	}
 
 	// Filter out peers we know can't have this block
+	now := time.Now()
+	known := make(map[peer.ID]peerInfo, len(allPeers))
 	var eligiblePeers []peer.ID
 	for _, p := range allPeers {
 		if v, ok := peerBest.Load(p); ok {
 			pi := v.(peerInfo)
-			if time.Since(pi.seenAt) < cacheTTL && pi.height < height {
+			known[p] = pi
+			if now.Sub(pi.seenAt) < cacheTTL && pi.height < height {
 				continue // definitely behind
 			}
 		}
@@ -584,7 +738,8 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 	}
 
 	// If no eligible peers, fall back to all peers (maybe our cache is stale)
-	if len(eligiblePeers) == 0 {
+	fellBack := len(eligiblePeers) == 0
+	if fellBack {
 		eligiblePeers = allPeers
 	}
 
@@ -599,10 +754,18 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		sampleSize = max(len(eligiblePeers)/5, 3) // Query at least 3, up to 1/5 (original behavior)
 	}
 
-	// Shuffle to randomize peer selection
-	rng.Shuffle(len(eligiblePeers), func(i, j int) {
-		eligiblePeers[i], eligiblePeers[j] = eligiblePeers[j], eligiblePeers[i]
-	})
+	// Ask first the peers that have answered fastest, so the sample is the
+	// best of them rather than a random few. peerHosts has already shuffled
+	// them, which settles ties.
+	//
+	// Not when no peer is known to have the block, which is where every
+	// catch-up ends. The question then is whether anyone has it yet, and the
+	// fastest peers can be the last to: a sentry next to us hears of a block
+	// after the validators it hangs off. Asking them first, with more than
+	// five peers, would end catch-up a block early. The shuffle asks around.
+	if !fellBack {
+		orderPeers(eligiblePeers, known, now)
+	}
 	availablePeers := eligiblePeers[:sampleSize]
 
 	log.Debugf("Querying %d peers for block %d (filtered %d/%d eligible)", sampleSize, height, len(eligiblePeers), len(allPeers))
@@ -631,6 +794,14 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 			idleTimeout = blockSyncTimeout(blockSyncCfg.IdleTimeout, defaultBlkIdleTimeout)
 		}
 		resp, err := requestBlockHeight(ctx, host, peer, height, blkReadLimit, reqTimeout, recvTimeout, idleTimeout)
+		took := time.Since(t0)
+		// failed counts this request against the peer. Our own cancellation
+		// says nothing about it.
+		failed := func() {
+			if ctx.Err() == nil {
+				updatePeer(peer, func(pi *peerInfo) { pi.failed(took, time.Now()) })
+			}
+		}
 		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrBlkNotFound) {
 			notFoundCount++
 			be := new(ErrNotFoundWithBestHeight)
@@ -641,18 +812,26 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 				}
 
 				// Update our cache with this peer's best height
-				peerBest.Store(peer, peerInfo{height: theirBest, seenAt: time.Now()})
+				notePeerHeight(peer, theirBest)
 
 				if theirBest == height-1 {
 					bestHCount++
 				}
+				if theirBest >= height {
+					// It has the height but not the block, as when it state
+					// synced past it. Behind is no fault; this, asked first
+					// every time, would cost a round trip on every block.
+					failed()
+				}
 				log.Infof("block %d not found on peer %s; their best height is %d", height, peer, theirBest)
 			} else {
+				failed()
 				log.Warnf("block not available on %v", peer)
 			}
 			continue
 		}
 		if errors.Is(err, ErrNoResponse) {
+			failed()
 			log.Warnf("no response to block request to %v", peer)
 			continue
 		}
@@ -661,46 +840,54 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		}
 		if err != nil {
 			// e.g. "i/o deadline reached", probably network error
+			failed()
 			log.Warnf("unexpected error from %v: %v", peer, err)
 			continue
 		}
 
 		if len(resp) < types.HashLen+1 {
+			failed()
 			log.Warnf("block response too short")
 			continue
 		}
 
-		log.Debug("obtained block contents", "height", height, "elapsed", time.Since(t0))
+		log.Debug("obtained block contents", "height", height, "peer", peer, "elapsed", took)
 
 		rd := bytes.NewReader(resp)
 		var hash types.Hash
 
 		if _, err := io.ReadFull(rd, hash[:]); err != nil {
+			failed()
 			log.Warn("failed to read block hash in the block response", "error", err)
 			continue
 		}
 
 		ciBts, err := ktypes.ReadCompactBytes(rd)
 		if err != nil {
+			failed()
 			log.Info("failed to read commit info in the block response", "error", err)
 			continue
 		}
 
 		var ci ktypes.CommitInfo
 		if err = ci.UnmarshalBinary(ciBts); err != nil {
+			failed()
 			log.Warn("failed to unmarshal commit info", "error", err)
 			continue
 		}
 
 		rawBlk, err := ktypes.ReadCompactBytes(rd)
 		if err != nil {
+			failed()
 			log.Warn("failed to read block in the block response", "error", err)
+			continue
 		}
 
 		var theirBest int64
 		err = binary.Read(rd, binary.LittleEndian, &theirBest)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
+				failed()
 				log.Info("failed to read best block height", "error", err)
 				continue
 			} // else the peer didn't want to send it (this is backwards compatible)
@@ -709,8 +896,9 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 				bestHeight = theirBest
 			}
 			// Update our cache - this peer has at least the requested height
-			peerBest.Store(peer, peerInfo{height: max(theirBest, height), seenAt: time.Now()})
+			notePeerHeight(peer, max(theirBest, height))
 		}
+		updatePeer(peer, func(pi *peerInfo) { pi.served(took, time.Now()) })
 
 		mets.DownloadedBlock(context.Background(), height, int64(len(rawBlk)))
 
@@ -816,8 +1004,12 @@ func gcPeerCache() {
 
 	peerBest.Range(func(k, v any) bool {
 		pi := v.(peerInfo)
-		if now.Sub(pi.seenAt) > cacheTTL || count > maxEntries {
-			peerBest.Delete(k)
+		// Keep a peer asked within cacheTTL even if it has stopped announcing.
+		// Every hold is shorter than that, and a peer forgotten during its
+		// hold would count as never asked, and be asked first.
+		stale := now.Sub(pi.seenAt) > cacheTTL && now.Sub(pi.askedAt) > cacheTTL
+		// CompareAndDelete, so as not to delete what a request has just written.
+		if (stale || count > maxEntries) && peerBest.CompareAndDelete(k, v) {
 			count--
 		}
 		return true
