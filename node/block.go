@@ -801,6 +801,13 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		}
 		resp, err := requestBlockHeight(ctx, host, peer, height, blkReadLimit, reqTimeout, recvTimeout, idleTimeout)
 		took := time.Since(t0)
+		// Once we have given up, the stream is reset under the request and it
+		// fails the way a transport error does. That is ours, not the peer's,
+		// and not a not-found either: counted as one, a peer that had already
+		// said not-found would turn our cancelling into the end of catch-up.
+		if err != nil && ctx.Err() != nil {
+			return types.Hash{}, nil, nil, 0, ctx.Err()
+		}
 		// failed counts this request against the peer. Our own cancellation
 		// says nothing about it.
 		failed := func() {
@@ -840,9 +847,6 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 			failed()
 			log.Warnf("no response to block request to %v", peer)
 			continue
-		}
-		if errors.Is(err, context.Canceled) {
-			return types.Hash{}, nil, nil, 0, err
 		}
 		if err != nil {
 			// e.g. "i/o deadline reached", probably network error
