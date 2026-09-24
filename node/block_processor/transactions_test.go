@@ -923,17 +923,34 @@ func TestMissingSignatureRejected(t *testing.T) {
 		},
 		Sender: unsigned.Sender,
 	}
-	duplicate := cloneTx(signed)
+	// A second accepted sender sits after the unsigned tx, so a duplicate of
+	// that sender is not adjacent to it in okTxns. Comparing with okTxns[i-1]
+	// would see the unsigned tx and keep the duplicate.
+	distinct := &types.Transaction{
+		Signature: &auth.Signature{Data: []byte{2}, Type: auth.Ed25519Auth},
+		Body: &types.TransactionBody{
+			Description: "other",
+			Payload:     []byte(`y`),
+			Fee:         big.NewInt(0),
+			Nonce:       1,
+		},
+		Sender: edPubKey([]byte(`other`)),
+	}
+	duplicate := cloneTx(distinct)
 	duplicate.Body.Description = "dup"
 	finalTxs, invalidTxs, err = bp.prepareBlockTransactions(context.Background(), nil, []*nodetypes.Tx{
 		nodetypes.NewTx(signed),
 		nodetypes.NewTx(unsigned),
+		nodetypes.NewTx(distinct),
 		nodetypes.NewTx(duplicate),
 	})
 	require.NoError(t, err)
-	require.Len(t, finalTxs, 1)
+	require.Len(t, finalTxs, 2)
 	require.Equal(t, signed.Hash(), finalTxs[0].Hash())
+	require.Equal(t, distinct.Hash(), finalTxs[1].Hash())
 	require.Len(t, invalidTxs, 2)
+	require.Nil(t, invalidTxs[0].Signature)
+	require.Equal(t, duplicate.Hash(), invalidTxs[1].Hash())
 }
 
 func authExtVerifyCtx() authExt.VerifyContext {
