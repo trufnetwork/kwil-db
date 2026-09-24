@@ -906,6 +906,28 @@ func TestMissingSignatureRejected(t *testing.T) {
 	require.Empty(t, finalTxs)
 	require.Len(t, invalidTxs, 1)
 	require.Nil(t, invalidTxs[0].Signature)
+
+	signed := &types.Transaction{
+		Signature: &auth.Signature{Data: []byte{1}, Type: auth.Ed25519Auth},
+		Body: &types.TransactionBody{
+			Description: "t",
+			Payload:     []byte(`x`),
+			Fee:         big.NewInt(0),
+			Nonce:       1,
+		},
+		Sender: unsigned.Sender,
+	}
+	duplicate := cloneTx(signed)
+	duplicate.Body.Description = "dup"
+	finalTxs, invalidTxs, err = bp.prepareBlockTransactions(context.Background(), nil, []*nodetypes.Tx{
+		nodetypes.NewTx(signed),
+		nodetypes.NewTx(unsigned),
+		nodetypes.NewTx(duplicate),
+	})
+	require.NoError(t, err)
+	require.Len(t, finalTxs, 1)
+	require.Equal(t, signed.Hash(), finalTxs[0].Hash())
+	require.Len(t, invalidTxs, 2)
 }
 
 func authExtVerifyCtx() authExt.VerifyContext {

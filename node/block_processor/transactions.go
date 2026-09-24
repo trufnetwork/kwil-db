@@ -93,6 +93,7 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 
 	nonces := make([]uint64, 0, len(okTxns))
 	var propTxs, otherTxns []*indexedTxn
+	var lastAcceptedSender []byte
 	i = 0
 	proposerNonce := uint64(0)
 
@@ -106,7 +107,9 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 			continue
 		}
 
-		if i > 0 && tx.Body.Nonce == nonces[i-1] && bytes.Equal(tx.Sender, okTxns[i-1].Sender) {
+		// i counts accepted transactions, so okTxns[i-1] is not the last one
+		// after an unsigned transaction is skipped.
+		if i > 0 && tx.Body.Nonce == nonces[i-1] && bytes.Equal(tx.Sender, lastAcceptedSender) {
 			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)
 			bp.log.Warn("Transaction has a duplicate nonce", "tx", tx)
 			continue
@@ -157,6 +160,7 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 			otherTxns = append(otherTxns, tx)
 		}
 		nonces = append(nonces, tx.Body.Nonce)
+		lastAcceptedSender = tx.Sender
 		i++
 	}
 
