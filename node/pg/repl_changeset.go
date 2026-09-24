@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -282,8 +281,10 @@ func decodeTuple(cols []*TupleColumn, relation *Relation) ([]any, error) {
 	values := make([]any, len(cols))
 	for i, col := range cols {
 		switch col.ValueType {
-		case NullValue, ToastValue:
-		case UnchangedUpdate: // deduped ChangesetEntry.NewTupls for an UPDATE
+		case NullValue:
+		case ToastValue, UnchangedUpdate:
+			// Toast is PostgreSQL's unchanged-TOAST marker ('u'), not SQL NULL.
+			// UnchangedUpdate is the same omission after old/new dedup.
 			values[i] = unchanged{}
 		case SerializedValue:
 			dt, ok := kwilTypeToDataType[*relation.Columns[i].Type]
@@ -323,6 +324,11 @@ func (c *ChangesetEntry) applyInserts(ctx context.Context, tx sql.DB, rel *Relat
 	if err != nil {
 		return err
 	}
+	for i, v := range newVals {
+		if IsUnchanged(v) {
+			return fmt.Errorf("relation %s.%s insert column %s is unchanged toast", rel.Schema, rel.Table, rel.Columns[i].Name)
+		}
+	}
 
 	_, err = tx.Execute(ctx, insertSql, newVals...)
 	return err
@@ -348,32 +354,42 @@ func (c *ChangesetEntry) applyUpdates(ctx context.Context, tx sql.DB, rel *Relat
 
 	// In the context of an UPDATE, the changeset may omit the new values if
 	// they are unchanged. This is made explicit with an unchanged{} instance.
+	// An update that changes nothing (for example edit_attribute called with
+	// the current values) has an empty assignment list. Executing it would
+	// emit "UPDATE ... SET WHERE ...", which PostgreSQL rejects and which
+	// stalls changeset replay.
 
-	var updateSql strings.Builder
-	fmt.Fprintf(&updateSql, "UPDATE %s.%s SET ", rel.Schema, rel.Table)
-	var placeholder int = 1 // e.g. $1
+	var assignments []string
+	var setArgs []any
 	for i, col := range rel.Columns {
 		if IsUnchanged(newVals[i]) {
 			continue
 		}
-		if placeholder > 1 {
-			updateSql.WriteString(", ")
-		}
-		fmt.Fprintf(&updateSql, "%s = $%d", col.Name, placeholder)
-		placeholder++
+		assignments = append(assignments, fmt.Sprintf("%s = $%d", col.Name, len(setArgs)+1))
+		setArgs = append(setArgs, newVals[i])
+	}
+	if len(assignments) == 0 {
+		return nil
 	}
 
 	// Conflict resolution:
 	// If new network's current record is same as the oldValues in the old network, then update the record
-	// Else, discard the update in favor of whatever data exists on the new network
-	updateSql.WriteString(" WHERE ")
+	// Else, discard the update in favor of whatever data exists on the new network.
+	// Unchanged TOAST columns have no old image to compare, so they are left out.
+	var updateSql strings.Builder
+	fmt.Fprintf(&updateSql, "UPDATE %s.%s SET %s WHERE ", rel.Schema, rel.Table, strings.Join(assignments, ", "))
 
 	var oldArgs []any
+	placeholder := len(setArgs) + 1
+	wrotePred := false
 	for i, v := range oldVals {
-		if i > 0 {
+		if IsUnchanged(v) {
+			continue
+		}
+		if wrotePred {
 			updateSql.WriteString(" AND ")
 		}
-
+		wrotePred = true
 		if v == nil {
 			fmt.Fprintf(&updateSql, "%s IS NULL", rel.Columns[i].Name)
 		} else {
@@ -382,13 +398,11 @@ func (c *ChangesetEntry) applyUpdates(ctx context.Context, tx sql.DB, rel *Relat
 			placeholder++
 		}
 	}
+	if !wrotePred {
+		return fmt.Errorf("relation %s.%s update has no old values to match", rel.Schema, rel.Table)
+	}
 
-	// Clip out unchanged cols in newVals to match set stmt.
-	newVals = slices.DeleteFunc(newVals, func(val any) bool {
-		return IsUnchanged(val)
-	})
-
-	_, err = tx.Execute(ctx, updateSql.String(), append(newVals, oldArgs...)...)
+	_, err = tx.Execute(ctx, updateSql.String(), append(setArgs, oldArgs...)...)
 	return err
 }
 
@@ -410,10 +424,15 @@ func (ce *ChangesetEntry) applyDeletes(ctx context.Context, tx sql.DB, rel *Rela
 
 	var args []any
 	cnt := 1
+	wrotePred := false
 	for i, v := range record {
-		if i > 0 {
+		if IsUnchanged(v) {
+			continue
+		}
+		if wrotePred {
 			deleteSql.WriteString(" AND ")
 		}
+		wrotePred = true
 		if v == nil {
 			fmt.Fprintf(&deleteSql, "%s IS NULL", rel.Columns[i].Name)
 		} else {
@@ -421,6 +440,9 @@ func (ce *ChangesetEntry) applyDeletes(ctx context.Context, tx sql.DB, rel *Rela
 			args = append(args, v)
 			cnt++
 		}
+	}
+	if !wrotePred {
+		return fmt.Errorf("relation %s.%s delete has no old values to match", rel.Schema, rel.Table)
 	}
 
 	_, err = tx.Execute(ctx, deleteSql.String(), args...)
