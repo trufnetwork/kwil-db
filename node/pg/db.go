@@ -627,7 +627,7 @@ func (db *DB) precommit(ctx context.Context, changes chan<- any) ([]byte, error)
 	// Wait for the "commit id" from the replication monitor.
 	// NOTE: activeTx is not moved to preparedTxns until commitID is received.
 	// If the wait fails, the caller can rollback the active tx (which has txid set).
-	commitID, err := awaitCommitID(ctx, resChan, db.repl.done, db.repl.received, commitIDStall)
+	commitID, err := awaitCommitID(ctx, resChan, db.repl.done, db.repl.received, commitIDStall, commitIDMaxWait)
 	if err != nil {
 		return nil, err
 	}

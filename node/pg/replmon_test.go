@@ -31,7 +31,7 @@ func TestAwaitCommitIDWaitsWhileDataArrives(t *testing.T) {
 		}
 	}()
 
-	id, err := awaitCommitID(context.Background(), resChan, make(chan struct{}), received, stall)
+	id, err := awaitCommitID(context.Background(), resChan, make(chan struct{}), received, stall, time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, []byte{1}, id)
 }
@@ -44,9 +44,35 @@ func TestAwaitCommitIDGivesUpOnASilentStream(t *testing.T) {
 	defer cancel()
 
 	t0 := time.Now()
-	_, err := awaitCommitID(ctx, make(chan []byte), make(chan struct{}), new(atomic.Uint64), stall)
+	_, err := awaitCommitID(ctx, make(chan []byte), make(chan struct{}), new(atomic.Uint64), stall, time.Minute)
 	require.ErrorContains(t, err, "timed out waiting for commit ID")
 	require.GreaterOrEqual(t, time.Since(t0), stall)
+}
+
+// TestAwaitCommitIDGivesUpEventually checks that data that keeps arriving, from
+// other transactions for all the wait knows, does not keep it going for good.
+func TestAwaitCommitIDGivesUpEventually(t *testing.T) {
+	const stall, maxWait = 150 * time.Millisecond, 400 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 4*maxWait)
+	defer cancel()
+	received := new(atomic.Uint64)
+	go func() {
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				received.Add(1)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	t0 := time.Now()
+	_, err := awaitCommitID(ctx, make(chan []byte), make(chan struct{}), received, stall, maxWait)
+	require.ErrorContains(t, err, "gave up waiting for commit ID")
+	require.GreaterOrEqual(t, time.Since(t0), maxWait)
 }
 
 // TestAwaitCommitIDEndsWithTheStream checks that the wait ends when the
@@ -56,6 +82,6 @@ func TestAwaitCommitIDEndsWithTheStream(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	close(done)
-	_, err := awaitCommitID(ctx, make(chan []byte), done, new(atomic.Uint64), time.Minute)
+	_, err := awaitCommitID(ctx, make(chan []byte), done, new(atomic.Uint64), time.Minute, time.Minute)
 	require.ErrorContains(t, err, "interrupted")
 }

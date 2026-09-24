@@ -150,6 +150,10 @@ func (rm *replMon) recvID(seq int64, changes chan<- any) (chan []byte, bool) {
 	}
 	rm.promises[seq] = c
 
+	// TODO: bind the changeset writer to seq. If a precommit gives up before
+	// its PREPARE is decoded, and the next transaction calls recvID first, the
+	// old transaction's changes go to the new changes channel, and its PREPARE
+	// closes that channel.
 	rm.changesetWriter.setChangesetWriter(changes) // set the changeset writer to the changes channel
 
 	return c, true
@@ -159,16 +163,25 @@ func (rm *replMon) recvID(seq int64, changes chan<- any) (chan []byte, bool) {
 // while the replication stream delivers nothing. Tests shorten it.
 var commitIDStall = 30 * time.Second
 
+// commitIDMaxWait bounds the whole wait. Postgres is silent for about 1.2 s per
+// million rows after PREPARE, so the stall already fails a block past about 25
+// million changed rows, some 13 minutes of hashing. This only ends a wait
+// that the stream's other traffic keeps alive after the commit ID was lost.
+const commitIDMaxWait = 30 * time.Minute
+
 // awaitCommitID waits for the commit ID promised on resChan. Postgres sends a
 // prepared transaction's changes only once it is prepared, and a large one can
 // take minutes to arrive and hash, so the wait lasts while the stream keeps
 // delivering data. It gives up once stall passes with nothing received: if the
 // stream dies between PREPARE TRANSACTION and done closing, no other case
-// fires, and the wait would otherwise freeze consensus.
+// fires, and the wait would otherwise freeze consensus. It also gives up after
+// maxWait, since data from other transactions counts as delivery too.
 func awaitCommitID(ctx context.Context, resChan <-chan []byte, done <-chan struct{},
-	received *atomic.Uint64, stall time.Duration) ([]byte, error) {
+	received *atomic.Uint64, stall, maxWait time.Duration) ([]byte, error) {
 	tick := time.NewTicker(stall / 30)
 	defer tick.Stop()
+	limit := time.NewTimer(maxWait)
+	defer limit.Stop()
 	seen, since := received.Load(), time.Now()
 	for {
 		select {
@@ -185,6 +198,8 @@ func awaitCommitID(ctx context.Context, resChan <-chan []byte, done <-chan struc
 			} else if now.Sub(since) >= stall {
 				return nil, errors.New("precommit timed out waiting for commit ID from replication monitor")
 			}
+		case <-limit.C:
+			return nil, fmt.Errorf("precommit gave up waiting for commit ID after %v", maxWait)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
