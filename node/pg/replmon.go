@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -44,6 +46,8 @@ type replMon struct {
 	quit context.CancelFunc
 	done chan struct{} // termination broadcast channel
 	err  error         // specific error, safe to read after done is closed
+
+	received *atomic.Uint64 // WAL data messages taken off the stream, see awaitCommitID
 
 	mtx      sync.Mutex
 	promises map[int64]chan []byte
@@ -77,7 +81,8 @@ func newReplMon(ctx context.Context, host, port, user, pass, dbName string, sche
 	}
 
 	var slotName = publicationName + random.String(8) // arbitrary, so just avoid collisions
-	commitChan, errChan, quit, err := startRepl(ctx, conn, publicationName, slotName, schemaFilter, cs)
+	received := new(atomic.Uint64)
+	commitChan, errChan, quit, err := startRepl(ctx, conn, publicationName, slotName, schemaFilter, cs, received)
 	if err != nil {
 		conn.Close(context.Background())
 		return nil, err
@@ -87,6 +92,7 @@ func newReplMon(ctx context.Context, host, port, user, pass, dbName string, sche
 		conn:            conn,
 		quit:            quit,
 		done:            make(chan struct{}),
+		received:        received,
 		promises:        make(map[int64]chan []byte),
 		changesetWriter: cs,
 	}
@@ -144,11 +150,45 @@ func (rm *replMon) recvID(seq int64, changes chan<- any) (chan []byte, bool) {
 	}
 	rm.promises[seq] = c
 
-	// TODO: fix rollback so changesetWriter.fail() is not in a race with this.
-	// This means having the rollback method wait on the fail call (the rollback repl mesg)
 	rm.changesetWriter.setChangesetWriter(changes) // set the changeset writer to the changes channel
 
 	return c, true
+}
+
+// commitIDStall is how long a prepared transaction waits for its commit ID
+// while the replication stream delivers nothing. Tests shorten it.
+var commitIDStall = 30 * time.Second
+
+// awaitCommitID waits for the commit ID promised on resChan. Postgres sends a
+// prepared transaction's changes only once it is prepared, and a large one can
+// take minutes to arrive and hash, so the wait lasts while the stream keeps
+// delivering data. It gives up once stall passes with nothing received: if the
+// stream dies between PREPARE TRANSACTION and done closing, no other case
+// fires, and the wait would otherwise freeze consensus.
+func awaitCommitID(ctx context.Context, resChan <-chan []byte, done <-chan struct{},
+	received *atomic.Uint64, stall time.Duration) ([]byte, error) {
+	tick := time.NewTicker(stall / 30)
+	defer tick.Stop()
+	seen, since := received.Load(), time.Now()
+	for {
+		select {
+		case commitID, ok := <-resChan:
+			if !ok {
+				return nil, errors.New("resChan unexpectedly closed")
+			}
+			return commitID, nil
+		case <-done: // the replMon has died after we executed PREPARE TRANSACTION
+			return nil, errors.New("replication stream interrupted")
+		case now := <-tick.C:
+			if n := received.Load(); n != seen {
+				seen, since = n, now
+			} else if now.Sub(since) >= stall {
+				return nil, errors.New("precommit timed out waiting for commit ID from replication monitor")
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }
 
 func (rm *replMon) stop() {

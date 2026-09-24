@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/trufnetwork/kwil-db/core/utils/random"
 	"github.com/trufnetwork/kwil-db/node/metrics"
@@ -628,31 +627,17 @@ func (db *DB) precommit(ctx context.Context, changes chan<- any) ([]byte, error)
 	// Wait for the "commit id" from the replication monitor.
 	// NOTE: activeTx is not moved to preparedTxns until commitID is received.
 	// If the wait fails, the caller can rollback the active tx (which has txid set).
-	//
-	// A timeout is used as a safety net: if the replication stream dies between
-	// PREPARE TRANSACTION and close(rm.done), there is a race where none of the
-	// other select cases fire, causing an infinite hang that freezes consensus.
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	select {
-	case commitID, ok := <-resChan:
-		if !ok {
-			return nil, errors.New("resChan unexpectedly closed")
-		}
-		logger.Debugf("received commit ID %x", commitID)
-		// Success — move to prepared list. The transaction is ready to commit,
-		// stored in a file with postgres in the pg_twophase folder.
-		db.activeTx.commitID = commitID
-		db.preparedTxns = append(db.preparedTxns, db.activeTx)
-		db.activeTx = nil
-		return commitID, nil
-	case <-db.repl.done: // the replMon has died after we executed PREPARE TRANSACTION
-		return nil, errors.New("replication stream interrupted")
-	case <-timer.C:
-		return nil, errors.New("precommit timed out waiting for commit ID from replication monitor")
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	commitID, err := awaitCommitID(ctx, resChan, db.repl.done, db.repl.received, commitIDStall)
+	if err != nil {
+		return nil, err
 	}
+	logger.Debugf("received commit ID %x", commitID)
+	// Success — move to prepared list. The transaction is ready to commit,
+	// stored in a file with postgres in the pg_twophase folder.
+	db.activeTx.commitID = commitID
+	db.preparedTxns = append(db.preparedTxns, db.activeTx)
+	db.activeTx = nil
+	return commitID, nil
 }
 
 // commit is called from the Commit method of the sql.Tx

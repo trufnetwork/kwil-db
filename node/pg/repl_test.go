@@ -3,19 +3,21 @@
 package pg
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/utils/random"
-	"github.com/trufnetwork/kwil-db/node/utils/muhash"
 )
 
 // This not-a-unit-test isolates the unexported internal logical replication
@@ -78,7 +80,7 @@ func Test_repl(t *testing.T) {
 
 	const publicationName = "kwild_repl"
 	var slotName = publicationName + random.String(8)
-	commitChan, errChan, quit, err := startRepl(ctx, conn, publicationName, slotName, schemaFilter, &changesetIoWriter{})
+	commitChan, errChan, quit, err := startRepl(ctx, conn, publicationName, slotName, schemaFilter, &changesetIoWriter{}, new(atomic.Uint64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,188 +154,164 @@ func Test_repl(t *testing.T) {
 	connQ.Close(ctx)
 }
 
-// TestResetTransactionState tests that resetTransactionState properly cleans up all state
-func TestResetTransactionState(t *testing.T) {
-	// Setup hasher with some data
-	hasher := muhash.New()
-	hasher.Add([]byte("test data"))
+// Test_replHashesALargeTransactionWhole checks that a transaction too large for
+// Postgres to decode in memory gets one commit hash, whatever happens while it
+// runs. With streaming on, Postgres sent such a transaction in pieces before it
+// ended. captureRepl then hashed away everything before a rolled-back
+// savepoint, started over when another transaction committed in between, and
+// after an aborted one stopped with "sequence already set".
+func Test_replHashesALargeTransactionWhole(t *testing.T) {
+	host, port, user, pass, dbName := "127.0.0.1", "5432", "kwild", "kwild", "kwil_test_db"
 
-	// Setup stats with some counts
-	stats := &walStats{
-		inserts: 5,
-		updates: 3,
-		deletes: 2,
-		truncs:  1,
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	connQ, err := pgx.Connect(ctx, connString(host, port, user, pass, dbName, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connQ.Close(context.Background())
+	// A second writer, as the event store is on a node.
+	other, err := pgx.Connect(ctx, connString(host, port, user, pass, dbName, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close(context.Background())
+
+	if err = ensureFullReplicaIdentityTrigger(ctx, connQ); err != nil {
+		t.Fatal(err)
+	}
+	if err = ensureSentryTable(ctx, connQ); err != nil {
+		t.Fatal(err)
+	}
+	if err = ensurePublication(ctx, connQ); err != nil {
+		t.Fatal(err)
 	}
 
-	// Setup changeset writer with mock channel
-	changesetChan := make(chan any, 10)
-	changesetWriter := &changesetIoWriter{
-		csChan: changesetChan,
-		metadata: &changesetMetadata{
-			relationIdx: map[[2]string]int{
-				{"test", "table"}: 0,
-			},
-			Relations: []*Relation{{Schema: "test", Table: "table"}},
-		},
-	}
-
-	// Setup sequence with non-default value
-	seq := int64(42)
-
-	// Verify initial state is dirty
-	if hasher.DigestHash() == [32]byte{} {
-		t.Error("hasher should have data before reset")
-	}
-	if stats.inserts == 0 && stats.updates == 0 && stats.deletes == 0 && stats.truncs == 0 {
-		t.Error("stats should have counts before reset")
-	}
-	if seq == -1 {
-		t.Error("seq should not be -1 before reset")
-	}
-
-	// Call resetTransactionState
-	resetTransactionState(hasher, stats, changesetWriter, &seq)
-
-	// Verify hasher is reset
-	emptyHash := muhash.New().DigestHash()
-	if hasher.DigestHash() != emptyHash {
-		t.Error("hasher should be reset to empty state")
-	}
-
-	// Verify stats are reset
-	if stats.inserts != 0 || stats.updates != 0 || stats.deletes != 0 || stats.truncs != 0 {
-		t.Error("stats should be reset to zero")
-	}
-
-	// Verify sequence is reset
-	if seq != -1 {
-		t.Errorf("seq should be reset to -1, got %d", seq)
-	}
-
-	// Verify changeset writer finalize was called (channel should be closed)
-	select {
-	case _, ok := <-changesetChan:
-		if ok {
-			t.Error("changeset channel should be closed after finalize")
+	exec := func(q interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	}, stmt string) {
+		t.Helper()
+		if _, err := q.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
 		}
-	default:
-		t.Error("changeset channel should be closed after finalize")
 	}
-}
+	exec(connQ, `DROP TABLE IF EXISTS big_txn, other_writes`)
+	exec(connQ, `CREATE TABLE big_txn (id INT8 PRIMARY KEY, stuff TEXT NOT NULL)`)
+	exec(connQ, `CREATE TABLE other_writes (id INT8 PRIMARY KEY)`)
 
-// TestStreamAbortMessageV2StateReset tests that StreamAbortMessageV2 triggers proper state reset
-func TestStreamAbortMessageV2StateReset(t *testing.T) {
-	// Setup dirty state
-	hasher := muhash.New()
-	hasher.Add([]byte("dirty data"))
-
-	stats := &walStats{inserts: 1, updates: 2}
-	seq := int64(100)
-
-	changesetChan := make(chan any, 1)
-	changesetWriter := &changesetIoWriter{
-		csChan: changesetChan,
-		metadata: &changesetMetadata{
-			relationIdx: make(map[[2]string]int),
-		},
+	// Postgres may hold 64 kB of a transaction in memory while decoding it,
+	// and each transaction below writes about 500 kB.
+	conn, err := pgconn.Connect(ctx, connString(host, port, user, pass, dbName, true)+
+		" options='-c logical_decoding_work_mem=64kB'")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer conn.Close(context.Background())
 
-	// Test the reset function directly (simulating StreamAbortMessageV2 handling)
-	resetTransactionState(hasher, stats, changesetWriter, &seq)
-
-	// Verify state was reset
-	emptyHash := muhash.New().DigestHash()
-	if hasher.DigestHash() != emptyHash {
-		t.Error("hasher should be reset after StreamAbortMessageV2")
+	// The sentry table's sequence differs in every transaction. Leave it out
+	// of the hash so the transactions' own changes can be compared.
+	schemaFilter := func(schema string) bool { return schema != InternalSchemaName }
+	slotName := "kwild_repl" + random.String(8)
+	received := new(atomic.Uint64)
+	commitChan, errChan, quit, err := startRepl(ctx, conn, "kwild_repl", slotName, schemaFilter, &changesetIoWriter{}, received)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stats.inserts != 0 || stats.updates != 0 {
-		t.Error("stats should be reset after StreamAbortMessageV2")
-	}
-	if seq != -1 {
-		t.Error("seq should be reset to -1 after StreamAbortMessageV2")
-	}
-}
+	defer quit()
 
-// TestRollbackPreparedMessageV3StateReset tests that RollbackPreparedMessageV3 triggers proper state reset
-func TestRollbackPreparedMessageV3StateReset(t *testing.T) {
-	// Setup dirty state
-	hasher := muhash.New()
-	hasher.Add([]byte("prepared transaction data"))
+	// run writes 5,000 rows, calls during, writes 10 more, and prepares. It
+	// returns the commit hash replication sends for the transaction.
+	run := func(during func(tx pgx.Tx)) []byte {
+		t.Helper()
+		tx, err := connQ.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantSeq, err := incrementSeq(ctx, tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(tx, `INSERT INTO big_txn SELECT g, repeat('a', 80) FROM generate_series(1, 5000) g`)
+		during(tx)
+		exec(tx, `INSERT INTO big_txn SELECT g, repeat('c', 80) FROM generate_series(20001, 20010) g`)
+		gid := random.String(10)
+		exec(tx, `PREPARE TRANSACTION '`+gid+`'`)
+		_ = tx.Commit(ctx) // only clears pgx's state; PREPARE ended the transaction
+		defer exec(connQ, `ROLLBACK PREPARED '`+gid+`'`)
 
-	stats := &walStats{
-		inserts: 10,
-		updates: 5,
-		deletes: 3,
-		truncs:  1,
-	}
-
-	seq := int64(200)
-
-	changesetChan := make(chan any, 1)
-	changesetWriter := &changesetIoWriter{
-		csChan: changesetChan,
-		metadata: &changesetMetadata{
-			relationIdx: make(map[[2]string]int),
-		},
-	}
-
-	// Test the reset function directly (simulating RollbackPreparedMessageV3 handling)
-	resetTransactionState(hasher, stats, changesetWriter, &seq)
-
-	// Verify state was reset
-	emptyHash := muhash.New().DigestHash()
-	if hasher.DigestHash() != emptyHash {
-		t.Error("hasher should be reset after RollbackPreparedMessageV3")
-	}
-	if stats.inserts != 0 || stats.updates != 0 || stats.deletes != 0 || stats.truncs != 0 {
-		t.Error("stats should be reset after RollbackPreparedMessageV3")
-	}
-	if seq != -1 {
-		t.Error("seq should be reset to -1 after RollbackPreparedMessageV3")
-	}
-}
-
-// TestAppHashConsistencyAfterAbort tests that AppHash remains consistent after transaction abort
-func TestAppHashConsistencyAfterAbort(t *testing.T) {
-	// Create two identical hashers
-	hasher1 := muhash.New()
-	hasher2 := muhash.New()
-
-	// Both hashers process same initial data
-	testData := []byte("some transaction data")
-	hasher1.Add(testData)
-	hasher2.Add(testData)
-
-	// Verify they have same hash
-	hash1 := hasher1.DigestHash()
-	hash2 := hasher2.DigestHash()
-	if hash1 != hash2 {
-		t.Error("initial hashes should be identical")
+		select {
+		case cid, ok := <-commitChan:
+			if !ok {
+				t.Fatalf("replication stopped: %v", <-errChan)
+			}
+			seq, hash, err := decodeCommitPayload(cid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if seq != wantSeq {
+				t.Fatalf("commit ID for seq %d, want %d", seq, wantSeq)
+			}
+			return hash
+		case <-ctx.Done():
+			t.Fatal("no commit ID")
+		}
+		return nil
 	}
 
-	// Simulate abort scenario: hasher1 gets aborted and reset, hasher2 continues
-	stats1 := &walStats{}
-	seq1 := int64(50)
-	changesetWriter1 := &changesetIoWriter{
-		metadata: &changesetMetadata{relationIdx: make(map[[2]string]int)},
+	want := run(func(pgx.Tx) {})
+
+	got := run(func(tx pgx.Tx) { // a failed kwil tx rolls back to its savepoint
+		exec(tx, `SAVEPOINT failed_tx`)
+		exec(tx, `INSERT INTO big_txn SELECT g, repeat('b', 80) FROM generate_series(5001, 10000) g`)
+		exec(tx, `ROLLBACK TO SAVEPOINT failed_tx`)
+	})
+	if !bytes.Equal(got, want) {
+		t.Errorf("a rolled-back savepoint changed the commit hash: %x, want %x", got, want)
 	}
 
-	// hasher1 experiences abort and gets reset
-	resetTransactionState(hasher1, stats1, changesetWriter1, &seq1)
+	got = run(func(pgx.Tx) {
+		exec(other, `INSERT INTO other_writes VALUES (1)`)
+		exec(other, `DELETE FROM other_writes`)
+	})
+	if !bytes.Equal(got, want) {
+		t.Errorf("another writer's commits changed the commit hash: %x, want %x", got, want)
+	}
 
-	// hasher2 continues without abort (simulating validator with sufficient disk space)
-	// Both now process the same next transaction
-	nextData := []byte("next successful transaction")
-	hasher1.Add(nextData)
-	hasher2.Reset() // hasher2 also resets because it commits successfully
-	hasher2.Add(nextData)
+	tx, err := connQ.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = incrementSeq(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	exec(tx, `INSERT INTO big_txn SELECT g, repeat('d', 80) FROM generate_series(1, 5000) g`)
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got = run(func(pgx.Tx) {})
+	if !bytes.Equal(got, want) {
+		t.Errorf("an aborted transaction changed the next commit hash: %x, want %x", got, want)
+	}
 
-	// Final hashes should be identical
-	finalHash1 := hasher1.DigestHash()
-	finalHash2 := hasher2.DigestHash()
-	if finalHash1 != finalHash2 {
-		t.Errorf("final hashes should be identical after proper reset, got %x vs %x",
-			finalHash1, finalHash2)
+	// Postgres should have run out of decoding memory on these. If it did
+	// not, nothing above would have been streamed with streaming on either.
+	var spilled int64
+	for range 50 {
+		err = connQ.QueryRow(ctx, `SELECT spill_txns FROM pg_stat_replication_slots WHERE slot_name = lower($1)`,
+			slotName).Scan(&spilled)
+		if err == nil && spilled > 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if spilled == 0 {
+		t.Errorf("no transaction outgrew logical_decoding_work_mem (err %v)", err)
+	}
+
+	// Precommit waits while this count moves. Each prepared transaction above
+	// sent over 5,000 rows.
+	if n := received.Load(); n < 4*5000 {
+		t.Errorf("counted %d WAL data messages, want at least %d", n, 4*5000)
 	}
 }
