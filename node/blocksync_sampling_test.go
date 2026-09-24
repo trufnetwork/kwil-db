@@ -204,22 +204,35 @@ func TestPeerFailureHold(t *testing.T) {
 	require.Equal(t, now, hung.askedAt)
 
 	// A failure that cost next to nothing is held back next to nothing, and
-	// the hold doubles for each failure in a row.
+	// the hold doubles for each failure in a row. Each starts after the one
+	// before has ended.
 	var flaky peerInfo
 	ms := time.Millisecond
+	at := now
 	for _, want := range []time.Duration{30 * ms, 60 * ms, 120 * ms, 240 * ms} {
-		flaky.failed(ms, now)
+		at = at.Add(time.Second)
+		flaky.failed(ms, at)
 		require.Equal(t, want, flaky.hold)
 	}
 	// A costlier failure sets its own hold if that is longer.
-	flaky.failed(2*time.Second, now)
+	at = at.Add(time.Minute)
+	flaky.failed(2*time.Second, at)
 	require.Equal(t, time.Minute, flaky.hold)
 
 	// Never longer than maxPeerFailHold, however many in a row.
 	for range 20 {
-		flaky.failed(20*time.Second, now)
+		at = at.Add(time.Hour)
+		flaky.failed(20*time.Second, at)
 	}
 	require.Equal(t, maxPeerFailHold, flaky.hold)
+
+	// Eight requests out at once that fail together, as they do when their
+	// connection drops, are one failure, not eight in a row.
+	var dropped peerInfo
+	for i := range 8 {
+		dropped.failed(100*ms, now.Add(time.Duration(i)*ms))
+	}
+	require.Equal(t, 3*time.Second, dropped.hold)
 
 	// A failure too quick to measure is still a failure.
 	var instant peerInfo

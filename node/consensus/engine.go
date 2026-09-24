@@ -73,6 +73,10 @@ type ConsensusEngine struct {
 	// checkpoint is the initial checkpoint for the leader to sync to the network.
 	checkpoint checkpoint
 
+	// prefetchBytes bounds the blocks catch-up fetches ahead of the one it is
+	// applying. Zero or less fetches one at a time. See prefetcher.
+	prefetchBytes int64
+
 	genesisHeight int64                       // height of the genesis block
 	leader        crypto.PublicKey            // TODO: update with network param updates touching it
 	validatorSet  map[string]ktypes.Validator // key: hex encoded pubkey
@@ -192,6 +196,10 @@ type Config struct {
 
 	// Checkpoint is the initial checkpoint for the leader to sync to.
 	Checkpoint config.Checkpoint
+
+	// PrefetchBytes is how many bytes of blocks catch-up may fetch ahead of
+	// the one it is applying. Zero or less fetches one block at a time.
+	PrefetchBytes int64
 
 	// Interfaces
 	DB             *pg.DB
@@ -343,6 +351,7 @@ func New(cfg *Config) (*ConsensusEngine, error) {
 		blkProposalInterval: cfg.BlockProposalInterval,
 		blkAnnInterval:      cfg.BlockAnnInterval,
 		broadcastTxTimeout:  cfg.BroadcastTxTimeout,
+		prefetchBytes:       cfg.PrefetchBytes,
 		db:                  cfg.DB,
 		leaderUpdates:       nil,
 		leaderFile:          config.LeaderUpdatesFilePath(cfg.RootDir),

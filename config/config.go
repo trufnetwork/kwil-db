@@ -600,6 +600,12 @@ type BlockSyncConfig struct {
 	// Transaction timeouts
 	TxGetTimeout types.Duration `toml:"tx_get_timeout" comment:"timeout for fetching transactions"`
 	TxAnnTimeout types.Duration `toml:"tx_ann_timeout" comment:"timeout for transaction announcements"`
+
+	// PrefetchBytes is how many bytes of blocks a catching-up node may fetch
+	// ahead of the one it is applying. Zero fetches one block at a time, as
+	// before. Commented in a generated file, so that the file still starts a
+	// binary that does not know the key.
+	PrefetchBytes int64 `toml:"prefetch_bytes,commented" comment:"bytes of blocks to fetch ahead of the one being applied while catching up; 0 fetches one block at a time"`
 }
 
 type MigrationConfig struct {

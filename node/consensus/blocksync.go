@@ -92,6 +92,15 @@ func (ce *ConsensusEngine) replayBlockFromNetwork(ctx context.Context) error {
 	height = startHeight
 	prog := newSyncProgress(time.Now())
 
+	// With prefetch on, the next blocks are fetched while this one applies,
+	// and the prefetcher goes when this call returns, not with the engine.
+	fetch := ce.blkRequester
+	if ce.prefetchBytes > 0 {
+		pf := newPrefetcher(ctx, ce.blkRequester, startHeight, ce.prefetchBytes)
+		defer pf.stop()
+		fetch = pf.get
+	}
+
 	ce.log.Info("Starting block sync...", "height", startHeight-1) // -1 to agree with "from" in progress log, which is half open: (start,end]
 SYNC:
 	for {
@@ -109,7 +118,7 @@ SYNC:
 		for {
 			var err error
 			tFetch := time.Now()
-			blkID, rawBlk, ci, _, err = ce.blkRequester(ctx, height)
+			blkID, rawBlk, ci, _, err = fetch(ctx, height)
 			prog.fetched(time.Since(tFetch))
 			if err == nil {
 				break RETRY // fetch success => applyBlock

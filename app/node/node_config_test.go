@@ -68,3 +68,22 @@ func TestNodeConfigWiresEverySection(t *testing.T) {
 
 	require.NotZero(t, checked, "found no config sections on node.Config to check")
 }
+
+// TestConsensusConfigCarriesPrefetchBytes is the same guarantee for
+// block_sync.prefetch_bytes, which the consensus engine reads rather than the
+// node. A key that loads and then goes nowhere would make turning prefetch on
+// change nothing, and say nothing about it.
+func TestConsensusConfigCarriesPrefetchBytes(t *testing.T) {
+	cfg := config.DefaultConfig()
+	d := &coreDependencies{
+		rootDir:    t.TempDir(),
+		cfg:        cfg,
+		genesisCfg: &config.GenesisConfig{ChainID: "test-chain"},
+		logger:     log.DiscardLogger,
+	}
+
+	require.Zero(t, consensusConfig(d, nil, nil, nil, nil).PrefetchBytes, "off unless an operator turns it on")
+
+	cfg.BlockSync.PrefetchBytes = 32 << 20
+	require.EqualValues(t, 32<<20, consensusConfig(d, nil, nil, nil, nil).PrefetchBytes)
+}
