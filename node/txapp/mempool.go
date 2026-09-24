@@ -62,6 +62,10 @@ func (m *mempool) accountInfoSafe(ctx context.Context, tx sql.Executor, acctID *
 
 // applyTransaction validates account specific info and applies valid transactions to the mempool state.
 func (m *mempool) applyTransaction(ctx *common.TxContext, tx *types.Transaction, dbTx sql.Executor, rebroadcaster Rebroadcaster) error {
+	if err := types.ValidatePayloadEncoding(tx.Body.PayloadType, tx.Body.Payload); err != nil {
+		return err
+	}
+
 	// if the network is in a migration, there are numerous
 	// transaction types we must disallow.
 	// see [internal/migrations/migrations.go] for more info
