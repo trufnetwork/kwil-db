@@ -870,6 +870,12 @@ func (v *mockValidatorStore) LoadValidatorSet(ctx context.Context, db sql.Execut
 }
 
 func TestMissingSignatureRejected(t *testing.T) {
+	prevGetEvents := getEvents
+	getEvents = func(context.Context, sql.Executor) ([]*types.VotableEvent, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() { getEvents = prevGetEvents })
+
 	err := verifyTransactionWithContext(authExtVerifyCtx(), nil)
 	require.EqualError(t, err, "transaction signature is required")
 
