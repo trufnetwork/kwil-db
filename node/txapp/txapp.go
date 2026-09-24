@@ -168,6 +168,10 @@ func (r *TxApp) Begin(ctx context.Context, height int64) error {
 // This method must only be called from the consensus engine,
 // sequentially, when executing transactions in a block.
 func (r *TxApp) Execute(ctx *common.TxContext, db sql.DB, tx *types.Transaction) *TxResponse {
+	if tx == nil || tx.Signature == nil {
+		return txRes(nil, types.CodeInvalidTxType, "", errors.New("transaction signature is required"))
+	}
+
 	// RegisterRoute call is not concurrent
 	route, ok := routes[tx.Body.PayloadType.String()]
 	if !ok {
@@ -695,6 +699,9 @@ func logErr(l log.Logger, err error) {
 
 // TxSenderAcctID returns the transaction sender's account ID information.
 func TxSenderAcctID(t *types.Transaction) (*types.AccountID, error) {
+	if t == nil || t.Signature == nil {
+		return nil, errors.New("transaction signature is required")
+	}
 	if t.Sender == nil {
 		return nil, errors.New("transaction sender is nil")
 	}

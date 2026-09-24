@@ -244,6 +244,10 @@ func (bp *BlockProcessor) CheckTx(ctx context.Context, ntx *types.Tx, height int
 }
 
 func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types.Tx, height int64, blockTime time.Time, recheck bool) error {
+	if ntx == nil || ntx.Transaction == nil || ntx.Signature == nil {
+		return errors.New("transaction signature is required")
+	}
+
 	tx := ntx.Transaction
 	txHash := ntx.Hash()
 
@@ -416,6 +420,10 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	executionProfile := newBlockExecutionProfile()
 
 	for i, tx := range req.Block.Txns {
+		if tx == nil || tx.Signature == nil {
+			return nil, errors.New("transaction signature is required")
+		}
+
 		requiresContext, err := authExt.RequiresContext(tx.Signature.Type)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect block tx authenticator: %w", err)

@@ -149,6 +149,9 @@ func RequiresContext(authType string) (bool, error) {
 
 // VerifySignature verifies a message's signature.
 func VerifySignature(sender, msg []byte, sig *auth.Signature) error {
+	if sig == nil {
+		return errors.New("transaction signature is required")
+	}
 	authn, err := GetAuthenticator(sig.Type)
 	if err != nil {
 		return err
@@ -160,6 +163,9 @@ func VerifySignature(sender, msg []byte, sig *auth.Signature) error {
 // VerifySignatureWithContext verifies a message's signature with optional
 // request context for authenticators that need deterministic block data.
 func VerifySignatureWithContext(ctx VerifyContext, sender, msg []byte, sig *auth.Signature) error {
+	if sig == nil {
+		return errors.New("transaction signature is required")
+	}
 	authn, err := GetAuthenticator(sig.Type)
 	if err != nil {
 		return err

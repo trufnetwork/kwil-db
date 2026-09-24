@@ -117,7 +117,13 @@ func (ce *ConsensusEngine) lastBlock() (int64, types.Hash, time.Time) {
 // It is an error if the transaction is already in the mempool.
 // It is an error if the transaction fails CheckTx.
 // This method holds the mempool lock for the duration of the call.
-func (ce *ConsensusEngine) QueueTx(ctx context.Context, tx *types.Tx) error {
+func (ce *ConsensusEngine) QueueTx(ctx context.Context, tx *types.Tx) (err error) {
+	// Reject before Store. A missing signature panics in CheckTx, and the
+	// RPC recoverer would otherwise leave the transaction in the mempool.
+	if tx == nil || tx.Transaction == nil || tx.Signature == nil {
+		return errors.New("transaction signature is required")
+	}
+
 	height, _, timestamp := ce.lastBlock()
 
 	// contention on mempoolMtx is high, between here and commit().
@@ -129,13 +135,15 @@ func (ce *ConsensusEngine) QueueTx(ctx context.Context, tx *types.Tx) error {
 	ce.mempoolMtx.Lock()
 	defer ce.mempoolMtx.Unlock()
 
-	err := ce.mempool.Store(tx)
+	err = ce.mempool.Store(tx)
 	if err != nil {
 		return err
 	}
 
 	const recheck = false
-	err = ce.blockProcessor.CheckTx(ctx, tx, height, timestamp, recheck)
+	err = checkTxAdmission(func() error {
+		return ce.blockProcessor.CheckTx(ctx, tx, height, timestamp, recheck)
+	})
 	if err != nil {
 		ce.mempool.Remove(tx.Hash())
 		return err
@@ -167,6 +175,18 @@ func (ce *ConsensusEngine) QueueTx(ctx context.Context, tx *types.Tx) error {
 	}
 
 	return nil
+}
+
+// checkTxAdmission runs mempool validation and removes nothing itself.
+// A panic during validation becomes an error so the caller can drop the tx
+// that was stored before CheckTx.
+func checkTxAdmission(check func() error) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("transaction validation failed: %v", rec)
+		}
+	}()
+	return check()
 }
 
 // lastBlockInternal is like lastBlock but but uses ce.state.lc instead of

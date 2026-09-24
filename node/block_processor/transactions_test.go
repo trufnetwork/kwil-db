@@ -15,6 +15,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/node/txapp"
 	nodetypes "github.com/trufnetwork/kwil-db/node/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
@@ -866,4 +867,47 @@ func (v *mockValidatorStore) ValidatorUpdates() map[string]*types.Validator {
 
 func (v *mockValidatorStore) LoadValidatorSet(ctx context.Context, db sql.Executor) error {
 	return nil
+}
+
+func TestMissingSignatureRejected(t *testing.T) {
+	err := verifyTransactionWithContext(authExtVerifyCtx(), nil)
+	require.EqualError(t, err, "transaction signature is required")
+
+	err = verifyTransactionWithContext(authExtVerifyCtx(), &types.Transaction{})
+	require.EqualError(t, err, "transaction signature is required")
+
+	chainCtx := &common.ChainContext{
+		ChainID: "test",
+		NetworkParameters: &types.NetworkParameters{
+			MaxBlockSize:     6 * 1024 * 1024,
+			MaxVotesPerTx:    100,
+			DisabledGasCosts: true,
+		},
+	}
+	_, signer := genNodeKeyAndSigner(t)
+	bp := &BlockProcessor{
+		db:       &mockDB{},
+		log:      log.DiscardLogger,
+		signer:   signer,
+		chainCtx: chainCtx,
+		txapp:    &mockTxApp{},
+	}
+	unsigned := &types.Transaction{
+		Body: &types.TransactionBody{
+			Description: "t",
+			Payload:     []byte(`x`),
+			Fee:         big.NewInt(0),
+			Nonce:       1,
+		},
+		Sender: edPubKey([]byte(`guy`)),
+	}
+	finalTxs, invalidTxs, err := bp.prepareBlockTransactions(context.Background(), nil, []*nodetypes.Tx{nodetypes.NewTx(unsigned)})
+	require.NoError(t, err)
+	require.Empty(t, finalTxs)
+	require.Len(t, invalidTxs, 1)
+	require.Nil(t, invalidTxs[0].Signature)
+}
+
+func authExtVerifyCtx() authExt.VerifyContext {
+	return authExt.VerifyContext{}
 }
