@@ -2308,3 +2308,45 @@ func Test_DeleteMe(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+// TestPrecommitWaitsForALargeTransaction checks that Precommit waits for a
+// commit ID while the replication stream is still delivering the transaction.
+// Postgres sends a prepared transaction only once it is prepared, and hashing
+// 300,000 updated rows outlasts the stall set here, which a deadline counted
+// from PREPARE would not allow.
+func TestPrecommitWaitsForALargeTransaction(t *testing.T) {
+	stall := commitIDStall
+	defer func() { commitIDStall = stall }()
+	commitIDStall = time.Second
+
+	ctx := context.Background()
+	db, err := NewDB(ctx, cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	exec := func(stmt string) {
+		t.Helper()
+		db.AutoCommit(true)
+		defer db.AutoCommit(false)
+		_, err := db.Execute(ctx, stmt, QueryModeExec)
+		require.NoError(t, err)
+	}
+	exec("drop schema if exists ds_large_txn cascade")
+	defer exec("drop schema if exists ds_large_txn cascade")
+	exec("create schema ds_large_txn")
+	exec("create table ds_large_txn.rows (id int8 primary key, x int8)")
+	exec("insert into ds_large_txn.rows select g, g from generate_series(1, 300000) g")
+
+	tx, err := db.BeginPreparedTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+	_, err = tx.Execute(ctx, "update ds_large_txn.rows set x = x + 1", QueryModeExec)
+	require.NoError(t, err)
+
+	t0 := time.Now()
+	_, err = tx.Precommit(ctx, nil)
+	require.NoError(t, err)
+	// Otherwise this machine hashed the transaction within the stall, and the
+	// test shows nothing.
+	require.Greater(t, time.Since(t0), commitIDStall)
+}
