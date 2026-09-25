@@ -193,7 +193,7 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	var ci *ktypes.CommitInfo
 	for attempt := 1; attempt <= maxBlockRetries; attempt++ {
 		ss.log.Info("Attempting to fetch statesync block", "height", height, "attempt", attempt)
-		_, rawBlk, ci, _, err = getBlkHeight(ctx, height, ss.host, ss.log, ss.blockSyncCfg)
+		_, rawBlk, ci, _, _, err = getBlkHeight(ctx, height, ss.host, ss.log, ss.blockSyncCfg)
 		if err == nil {
 			break
 		}

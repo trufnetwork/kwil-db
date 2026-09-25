@@ -95,30 +95,40 @@ func (ce *ConsensusEngine) replayBlockFromNetwork(ctx context.Context) error {
 	// With prefetch on, the next blocks are fetched while this one applies,
 	// and the prefetcher goes when this call returns, not with the engine.
 	fetch := ce.blkRequester
-	if ce.prefetchBytes > 0 {
-		pf := newPrefetcher(ctx, ce.blkRequester, startHeight, ce.prefetchBytes)
-		defer pf.stop()
-		fetch = pf.get
+	var pf *prefetcher
+	prefetchFrom := func(h int64) {
+		if ce.prefetchBytes > 0 {
+			pf = newPrefetcher(ctx, ce.blkRequester, h, ce.prefetchBytes)
+			fetch = pf.get
+		}
+	}
+	prefetchFrom(startHeight)
+	defer func() {
+		if pf != nil {
+			pf.stop()
+		}
+	}()
+
+	// Reset once a block applies, so each height backs off from the start.
+	retrier := &backoff.Backoff{
+		Min:    250 * time.Millisecond,
+		Max:    30 * time.Second,
+		Factor: 2,
+		Jitter: true,
 	}
 
 	ce.log.Info("Starting block sync...", "height", startHeight-1) // -1 to agree with "from" in progress log, which is half open: (start,end]
 SYNC:
 	for {
-		retrier := &backoff.Backoff{
-			Min:    250 * time.Millisecond,
-			Max:    30 * time.Second,
-			Factor: 2,
-			Jitter: true,
-		}
-
 		var blkID ktypes.Hash
 		var rawBlk []byte
 		var ci *ktypes.CommitInfo
+		var reject func()
 	RETRY:
 		for {
 			var err error
 			tFetch := time.Now()
-			blkID, rawBlk, ci, _, err = fetch(ctx, height)
+			blkID, rawBlk, ci, _, reject, err = fetch(ctx, height)
 			prog.fetched(time.Since(tFetch))
 			if err == nil {
 				break RETRY // fetch success => applyBlock
@@ -150,11 +160,29 @@ SYNC:
 		}
 
 		tApply := time.Now()
-		err := ce.applyBlock(ctx, rawBlk, ci, blkID) // fatal
-		if err != nil {
+		err := ce.applyBlock(ctx, rawBlk, ci, blkID)
+		if errors.Is(err, errUncommittedBlock) {
+			// Nothing of it ran. What else was fetched may be from the same
+			// peer, so it goes too, and it goes before the peer is held back,
+			// so that no answer still on its way puts the peer first again.
+			ce.log.Warn("Fetching a block again", "height", height, "error", err)
+			if pf != nil {
+				pf.stop()
+			}
+			reject()
+			prefetchFrom(height)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retrier.Duration()):
+			}
+			continue
+		}
+		if err != nil { // fatal
 			return fmt.Errorf("failed to apply block at height: %d: error: %w", height, err)
 		}
 		prog.applied(time.Since(tApply))
+		retrier.Reset()
 
 		if height%100 == 0 && height > 0 {
 			ce.log.Info("Processed blocks", prog.windowArgs(height, time.Now())...)
@@ -189,7 +217,7 @@ func (ce *ConsensusEngine) syncBlocksUntilHeight(ctx context.Context, startHeigh
 // certain number of times (getBlockReties) until the block is successfully
 // retrieved from the network. It then applies (executes and commits) the block.
 func (ce *ConsensusEngine) syncBlockWithRetry(ctx context.Context, height int64) error {
-	blkID, rawBlk, ci, err := ce.getBlockWithRetry(ctx, height)
+	blkID, rawBlk, ci, _, err := ce.getBlockWithRetry(ctx, height)
 	if err != nil {
 		return fmt.Errorf("failed to get block from the network: %w", err)
 	}
@@ -207,13 +235,16 @@ func (ce *ConsensusEngine) syncBlockWithRetry(ctx context.Context, height int64)
 	return ce.applyBlock(ctx, rawblk, ci, blkID)
 }*/
 
+// applyBlock executes and commits a fetched block. A block that is not the one
+// the validators committed fails with errUncommittedBlock, before any of it
+// runs.
 func (ce *ConsensusEngine) applyBlock(ctx context.Context, rawBlk []byte, ci *ktypes.CommitInfo, blkID types.Hash) error {
 	ce.state.mtx.Lock()
 	defer ce.state.mtx.Unlock()
 
-	blk, err := ktypes.DecodeBlock(rawBlk)
+	blk, err := ce.decodeCommitted(rawBlk, ci, blkID)
 	if err != nil {
-		return fmt.Errorf("failed to decode block: %w", err)
+		return err
 	}
 
 	if err := ce.processAndCommit(ctx, blk, ci, blkID, true); err != nil {
@@ -223,15 +254,56 @@ func (ce *ConsensusEngine) applyBlock(ctx context.Context, rawBlk []byte, ci *kt
 	return nil
 }
 
+// errUncommittedBlock is a fetched block that is not the one the validators
+// committed at the height it was fetched for. That is the peer's doing, not
+// ours, so the block is fetched again, from another peer.
+var errUncommittedBlock = errors.New("not the block the validators committed")
+
+// decodeCommitted decodes a fetched block and checks, before any of it runs,
+// that it is the block the validators committed at the next height: the block
+// blkID names, at that height, holding the transactions its header lists, with
+// enough of the current validators' votes for it in ci. DecodeBlock reads as
+// many transactions as the header counts, so the merkle root settles which. What processAndCommit
+// checks beyond that is how the block fits our own chain, so a block that
+// passes here and fails there fails on our side, and stays fatal. Call it with
+// ce.state.mtx held.
+func (ce *ConsensusEngine) decodeCommitted(rawBlk []byte, ci *ktypes.CommitInfo, blkID types.Hash) (*ktypes.Block, error) {
+	blk, err := ktypes.DecodeBlock(rawBlk)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errUncommittedBlock, err)
+	}
+
+	var reason error
+	switch want := ce.state.lc.height + 1; {
+	case ci == nil:
+		reason = errors.New("no commit info")
+	case blk.Header.Height != want:
+		reason = fmt.Errorf("height %d, not %d", blk.Header.Height, want)
+	case blk.Header.Hash() != blkID:
+		reason = fmt.Errorf("hash %s, not %s", blk.Header.Hash(), blkID)
+	case blk.CalcMerkleRoot() != blk.Header.MerkleRoot:
+		reason = errors.New("transactions do not match the header's merkle root")
+	default:
+		reason = ce.verifyVotes(ci, blkID)
+		if reason == nil {
+			reason = ktypes.ValidateUpdates(ci.ParamUpdates)
+		}
+	}
+	if reason != nil {
+		return nil, fmt.Errorf("%w: %w", errUncommittedBlock, reason)
+	}
+	return blk, nil
+}
+
 const getBlockReties = 30 // what else are we going to do, shutdown the node because of a network outage?
 
-func (ce *ConsensusEngine) getBlockWithRetry(ctx context.Context, height int64) (blkID types.Hash, rawBlk []byte, ci *ktypes.CommitInfo, err error) {
+func (ce *ConsensusEngine) getBlockWithRetry(ctx context.Context, height int64) (blkID types.Hash, rawBlk []byte, ci *ktypes.CommitInfo, reject func(), err error) {
 	err = blkRetrier(ctx, getBlockReties, func() error { // until no error or ErrBlkNotFound
-		blkID, rawBlk, ci, _, err = ce.blkRequester(ctx, height)
+		blkID, rawBlk, ci, _, reject, err = ce.blkRequester(ctx, height)
 		return err
 	})
 
-	return blkID, rawBlk, ci, err
+	return blkID, rawBlk, ci, reject, err
 }
 
 // retry will retry the function until one of: (1) it is successful, (2) reaches

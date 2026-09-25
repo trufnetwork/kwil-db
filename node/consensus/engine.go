@@ -242,8 +242,12 @@ type TxAnnouncer func(ctx context.Context, txID types.Hash)
 // type AckBroadcaster func(ack bool, height int64, blkID types.Hash, appHash *types.Hash, Signature []byte) error
 type AckBroadcaster func(msg *types.AckRes) error
 
-// BlkRequester requests the block from the network based on the height
-type BlkRequester func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error)
+// BlkRequester requests the block from the network based on the height. It
+// returns the block's hash, the encoded block, its commit info, and the best
+// height a peer reported. reject, never nil when err is, is for a block that
+// turns out not to be the one the validators committed: the peer that sent it
+// is asked last for a while.
+type BlkRequester func(ctx context.Context, height int64) (blkID types.Hash, rawBlk []byte, ci *ktypes.CommitInfo, best int64, reject func(), err error)
 
 type ResetStateBroadcaster func(height int64, txIDs []ktypes.Hash) error
 
@@ -800,7 +804,7 @@ func (ce *ConsensusEngine) repairAppAheadOfStore(ctx context.Context, height int
 
 	ce.log.Warn("App height ahead of blockstore detected, attempting repair", "height", height)
 
-	blkID, rawBlk, ci, _, err := ce.blkRequester(ctx, height)
+	blkID, rawBlk, ci, _, _, err := ce.blkRequester(ctx, height)
 	if err != nil {
 		return fmt.Errorf("fetch block %d: %w", height, err)
 	}
@@ -1036,7 +1040,8 @@ func (ce *ConsensusEngine) doCatchup(ctx context.Context) error {
 
 	startHeight := ce.lastCommitHeight()
 	if err := ce.processCurrentBlock(ctx); err != nil {
-		if errors.Is(err, types.ErrBlkNotFound) || errors.Is(err, types.ErrNotFound) || errors.Is(err, types.ErrPeersNotFound) {
+		if errors.Is(err, types.ErrBlkNotFound) || errors.Is(err, types.ErrNotFound) || errors.Is(err, types.ErrPeersNotFound) ||
+			errors.Is(err, errUncommittedBlock) {
 			return nil // retry again next tick
 		}
 		ce.log.Error("error during block processing in catchup", "height", startHeight+1, "error", err)
@@ -1074,19 +1079,23 @@ func (ce *ConsensusEngine) processCurrentBlock(ctx context.Context) error {
 	// Fetch the block at this height and commit it, if it's the right one,
 	// otherwise rollback.
 	height := ce.state.blkProp.height
-	blkHash, rawBlk, ci, err := ce.getBlockWithRetry(ctx, height)
+	blkHash, rawBlk, ci, reject, err := ce.getBlockWithRetry(ctx, height)
 	if err != nil {
+		return err
+	}
+
+	// Nothing is rolled back, halted or committed on the word of a block the
+	// validators did not commit. The next tick asks again.
+	blk, err := ce.decodeCommitted(rawBlk, ci, blkHash)
+	if err != nil {
+		reject()
+		ce.log.Warn("Fetching a block again", "height", height, "error", err)
 		return err
 	}
 
 	if blkHash != ce.state.blkProp.blkHash { // processed incorrect block
 		if err := ce.rollbackState(ctx); err != nil {
 			return fmt.Errorf("error aborting incorrect block execution: height: %d, blockID: %v, error: %w", height, blkHash, err)
-		}
-
-		blk, err := ktypes.DecodeBlock(rawBlk)
-		if err != nil {
-			return fmt.Errorf("failed to decode the block, blkHeight: %d, blockID: %v, error: %w", height, blkHash, err)
 		}
 
 		if err := ce.processAndCommit(ctx, blk, ci, blkHash, false); err != nil {

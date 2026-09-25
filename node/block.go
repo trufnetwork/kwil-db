@@ -142,6 +142,13 @@ func (pi *peerInfo) failed(took time.Duration, now time.Time) {
 	pi.askedAt = now
 }
 
+// rejected records that the peer sent a block other than the one asked for,
+// or one the validators did not commit. However fast it sent it, it waits as
+// long as the slowest failure does.
+func (pi *peerInfo) rejected(now time.Time) {
+	pi.hold, pi.askedAt = maxPeerFailHold, now
+}
+
 // dueAt is when the peer is next asked first, whatever its latency: once its
 // hold is up if its last request failed, otherwise peerProbeInterval after it
 // was last asked. A peer never asked is due from the start.
@@ -720,19 +727,20 @@ func readAll(s network.Stream, limit int64, deadline time.Time, idleTimeout time
 	}
 }
 
-func (n *Node) getBlkHeight(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+func (n *Node) getBlkHeight(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 	return getBlkHeight(ctx, height, n.host, n.log, n.blockSyncCfg)
 }
 
 // getBlkHeight fetches the block at height from a sample of peers, trying them
 // in turn until one serves it. It returns the block hash, the encoded block,
-// its commit info, and the best height reported by any peer that did not have
-// it. blockSyncCfg may be nil, in which case the package defaults apply. See
-// the peer-sampling notes above for how the sample is chosen.
-func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Logger, blockSyncCfg *config.BlockSyncConfig) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+// its commit info, the best height reported by any peer that did not have it,
+// and a reject func for the peer that served it (see consensus.BlkRequester).
+// blockSyncCfg may be nil, in which case the package defaults apply. See the
+// peer-sampling notes above for how the sample is chosen.
+func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Logger, blockSyncCfg *config.BlockSyncConfig) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 	allPeers := peerHosts(host)
 	if len(allPeers) == 0 {
-		return types.Hash{}, nil, nil, 0, types.ErrPeersNotFound
+		return types.Hash{}, nil, nil, 0, nil, types.ErrPeersNotFound
 	}
 
 	// Filter out peers we know can't have this block
@@ -813,7 +821,7 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		// and not a not-found either: counted as one, a peer that had already
 		// said not-found would turn our cancelling into the end of catch-up.
 		if err != nil && ctx.Err() != nil {
-			return types.Hash{}, nil, nil, 0, ctx.Err()
+			return types.Hash{}, nil, nil, 0, nil, ctx.Err()
 		}
 		// failed counts this request against the peer. Our own cancellation
 		// says nothing about it.
@@ -900,6 +908,15 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 			continue
 		}
 
+		// The validators' votes are checked against the hash, not the block,
+		// so the block has to be the one the hash names, at the height asked.
+		hdr, err := ktypes.DecodeBlockHeader(bytes.NewReader(rawBlk))
+		if err != nil || hdr.Height != height || hdr.Hash() != hash {
+			updatePeer(peer, func(pi *peerInfo) { pi.rejected(time.Now()) })
+			log.Warn("peer sent a block other than the one asked for", "height", height, "peer", peer)
+			continue
+		}
+
 		var theirBest int64
 		err = binary.Read(rd, binary.LittleEndian, &theirBest)
 		if err != nil {
@@ -919,7 +936,11 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 
 		mets.DownloadedBlock(context.Background(), height, int64(len(rawBlk)))
 
-		return hash, rawBlk, &ci, bestHeight, nil
+		reject := func() {
+			updatePeer(peer, func(pi *peerInfo) { pi.rejected(time.Now()) })
+			log.Warn("peer sent a block the validators did not commit", "height", height, "peer", peer)
+		}
+		return hash, rawBlk, &ci, bestHeight, reject, nil
 	}
 
 	// Being here, we did not find the block on any peer, either because of
@@ -931,7 +952,7 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		// for each peer. Do NOT signal down the call stack that we believe the
 		// block does not exist, as this may direct logic as if we are fully
 		// synchronized, when in reality we should keep trying.
-		return types.Hash{}, nil, nil, 0, errors.New("all peers failed")
+		return types.Hash{}, nil, nil, 0, nil, errors.New("all peers failed")
 	}
 
 	err := ErrBlkNotFound
@@ -939,7 +960,7 @@ func getBlkHeight(ctx context.Context, height int64, host host.Host, log log.Log
 		err = errors.Join(err, &ErrNotFoundWithBestHeight{BestHeight: bestHeight})
 	}
 
-	return types.Hash{}, nil, nil, 0, err
+	return types.Hash{}, nil, nil, 0, nil, err
 }
 
 // ErrNotFoundWithBestHeight is an error that contains a BestHeight field, which

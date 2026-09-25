@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"math/big"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -369,6 +371,7 @@ func TestValidatorStateMachine(t *testing.T) {
 	}
 
 	var blkProp1, blkProp2 *blockProposal
+	var rejectedForged, rejectedVotes atomic.Int32
 
 	testcases := []struct {
 		name    string
@@ -733,13 +736,13 @@ func TestValidatorStateMachine(t *testing.T) {
 						rawBlk := ktypes.EncodeBlock(blkProp2.blk)
 						cnt := 0
 						bestHeight := blkProp2.height + 10 // TODO: update test when this is used
-						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 							defer func() { cnt += 1 }()
 
-							if cnt < 1 {
-								return zeroHash, nil, nil, 0, types.ErrBlkNotFound
+							if cnt < 1 || height != blkProp2.height { // nobody has a block past it
+								return zeroHash, nil, nil, 0, nil, types.ErrBlkNotFound
 							}
-							return blkProp2.blkHash, rawBlk, ci, bestHeight, nil
+							return blkProp2.blkHash, rawBlk, ci, bestHeight, func() {}, nil
 						}
 						val.doCatchup(context.Background())
 					},
@@ -771,8 +774,87 @@ func TestValidatorStateMachine(t *testing.T) {
 
 						rawBlk := ktypes.EncodeBlock(blkProp2.blk)
 						bestHeight := blkProp2.height + 10 // TODO: update test when this is used
-						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-							return blkProp2.blkHash, rawBlk, ci, bestHeight, nil
+						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+							if height != blkProp2.height { // nobody has a block past it
+								return zeroHash, nil, nil, 0, nil, types.ErrBlkNotFound
+							}
+							return blkProp2.blkHash, rawBlk, ci, bestHeight, func() {}, nil
+						}
+						val.doCatchup(context.Background())
+					},
+					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
+						return verifyStatus(t, val, Committed, 1, blkProp2.blkHash)
+					},
+				},
+			},
+		},
+		{
+			// A block from a peer that is not the one the validators
+			// committed is asked for again. The block this validator executed
+			// stays as it is: not rolled back for a forged block, and no halt
+			// over votes that do not hold up. The block itself then commits.
+			name: "Catchup mode with a block the validators did not commit",
+			setup: func(t *testing.T) ([]*Config, map[string]ktypes.Validator) {
+				return generateTestCEConfig(t, 2, false)
+			},
+			actions: []action{
+				{
+					name: "blkPropNew",
+					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
+						val.NotifyBlockProposal(blkProp2.blk, leader.pubKey.Bytes(), nil)
+					},
+					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
+						return verifyStatus(t, val, Executed, 0, blkProp2.blkHash)
+					},
+				},
+				{
+					name: "catchup, another block under this one's votes",
+					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
+						hdr := blkProp2.blk.Header
+						forged := ktypes.NewBlock(hdr.Height, hdr.PrevHash, hdr.PrevAppHash, hdr.ValidatorSetHash,
+							hdr.NetworkParamsHash, hdr.Timestamp.Add(time.Second), nil)
+						rawForged := ktypes.EncodeBlock(forged)
+						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+							return forged.Hash(), rawForged, ci, height, func() { rejectedForged.Add(1) }, nil
+						}
+						require.NoError(t, val.doCatchup(context.Background()), "the next tick asks again")
+					},
+					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
+						if rejectedForged.Load() == 0 {
+							return errors.New("the forged block was not rejected")
+						}
+						return verifyStatus(t, val, Executed, 0, blkProp2.blkHash)
+					},
+				},
+				{
+					name: "catchup, votes for another app hash",
+					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
+						ci.AppHash = types.Hash{1}
+						rawBlk := ktypes.EncodeBlock(blkProp2.blk)
+						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+							return blkProp2.blkHash, rawBlk, ci, height, func() { rejectedVotes.Add(1) }, nil
+						}
+						require.NoError(t, val.doCatchup(context.Background()), "the next tick asks again")
+					},
+					verify: func(t *testing.T, leader, val *ConsensusEngine) error {
+						if rejectedVotes.Load() == 0 {
+							return errors.New("the commit info was not rejected")
+						}
+						return verifyStatus(t, val, Executed, 0, blkProp2.blkHash)
+					},
+				},
+				{
+					name: "catchup",
+					trigger: func(t *testing.T, leader, val *ConsensusEngine) {
+						ci := addVotes(t, blkProp2.blkHash, executedAppHash(val), leader, val)
+						rawBlk := ktypes.EncodeBlock(blkProp2.blk)
+						val.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+							if height != blkProp2.height { // nobody has a block past it
+								return zeroHash, nil, nil, 0, nil, types.ErrBlkNotFound
+							}
+							return blkProp2.blkHash, rawBlk, ci, height, func() {}, nil
 						}
 						val.doCatchup(context.Background())
 					},
@@ -1041,8 +1123,8 @@ func TestCELeaderTwoNodesMajorityNacks(t *testing.T) {
 }
 
 // MockBroadcasters
-func mockBlkRequester(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-	return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
+func mockBlkRequester(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+	return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
 }
 
 func mockBlockPropBroadcaster(_ context.Context, blk *ktypes.Block, sender []byte) {}
@@ -1245,8 +1327,8 @@ func TestInitializeStateRepairsWhenAppAheadOfStore(t *testing.T) {
 		AppHash: appHash,
 	}
 
-	ce.blkRequester = func(context.Context, int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-		return blkHash, ktypes.EncodeBlock(blk), commitInfo, 1, nil
+	ce.blkRequester = func(context.Context, int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return blkHash, ktypes.EncodeBlock(blk), commitInfo, 1, func() {}, nil
 	}
 
 	require.NoError(t, ce.commitLog.Record(1, blkHash))

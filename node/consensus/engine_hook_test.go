@@ -88,8 +88,8 @@ func TestCrashRecoveryRepairsMissingBlock(t *testing.T) {
 	restartCfg, _ := buildCrashConsensusConfig(t, root, false)
 	restartCE, err := New(restartCfg)
 	require.NoError(t, err)
-	restartCE.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-		return decodedBlock.Hash(), blockBytes, &decodedCommitInfo, 1, nil
+	restartCE.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return decodedBlock.Hash(), blockBytes, &decodedCommitInfo, 1, func() {}, nil
 	}
 
 	ctx := context.Background()
