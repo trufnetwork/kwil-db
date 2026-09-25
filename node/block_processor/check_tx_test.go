@@ -16,7 +16,7 @@ func TestCheckTxRejectsNilBody(t *testing.T) {
 
 	for _, ntx := range []*types.Tx{
 		nil,
-		&types.Tx{},
+		{},
 		types.NewTx(&ktypes.Transaction{}),
 	} {
 		err := bp.checkTx(context.Background(), nil, ntx, 1, time.Time{}, false)
