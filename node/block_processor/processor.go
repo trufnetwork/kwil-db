@@ -424,6 +424,13 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	// Begin executing transactions. The chain context may be updated during the block execution.
 	txResults := make([]ktypes.TxResult, len(req.Block.Txns))
 
+	// HashCache panics on a nil transaction, so reject those before hashing.
+	for _, tx := range req.Block.Txns {
+		if tx == nil || tx.Signature == nil {
+			return nil, errors.New("transaction signature is required")
+		}
+	}
+
 	txHashes := bp.initBlockExecutionStatus(req.Block)
 	executionProfile := newBlockExecutionProfile()
 
