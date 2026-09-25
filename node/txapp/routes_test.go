@@ -289,6 +289,95 @@ func Test_Routes(t *testing.T) {
 	}
 }
 
+func Test_RouteNegativeFeeRejected(t *testing.T) {
+	account := &mockAccount{}
+	Validators := &mockValidator{
+		getVoterFn: func() (int64, error) { return 1, nil },
+	}
+
+	payload := &types.ValidatorVoteIDs{
+		ResolutionIDs: []*types.UUID{
+			types.NewUUIDV5([]byte("test")),
+		},
+	}
+	tx, err := types.CreateTransaction(payload, "chainid", 1)
+	require.NoError(t, err)
+
+	tx.Body.Fee = big.NewInt(-100)
+	err = tx.Sign(signer1)
+	require.NoError(t, err)
+
+	committed := false
+	rolledBack := false
+	trackingTxObj := &trackingTx{
+		mockDb:     &mockDb{},
+		onCommit:   func() { committed = true },
+		onRollback: func() { rolledBack = true },
+	}
+	trackingDbObj := &trackingDb{tx: trackingTxObj}
+
+	app := &TxApp{
+		Accounts:   account,
+		Validators: Validators,
+		signer:     signer1,
+		service: &common.Service{
+			Logger:   log.DiscardLogger,
+			Identity: signer1.CompactID(),
+		},
+	}
+
+	txCtx := &common.TxContext{
+		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{
+					DisabledGasCosts: false,
+				},
+			},
+			Proposer: privKey1.Public(),
+		},
+	}
+
+	res := app.Execute(txCtx, trackingDbObj, tx)
+	require.Error(t, res.Error)
+	require.ErrorIs(t, res.Error, types.ErrInvalidAmount)
+	assert.Equal(t, types.CodeInvalidAmount, res.ResponseCode)
+	assert.True(t, rolledBack, "database transaction should have rolled back")
+	assert.False(t, committed, "database transaction should NOT have committed")
+	assert.Equal(t, int64(0), res.Spend)
+}
+
+type trackingTx struct {
+	*mockDb
+	onCommit   func()
+	onRollback func()
+}
+
+func (t *trackingTx) Commit(ctx context.Context) error {
+	if t.onCommit != nil {
+		t.onCommit()
+	}
+	return nil
+}
+
+func (t *trackingTx) Rollback(ctx context.Context) error {
+	if t.onRollback != nil {
+		t.onRollback()
+	}
+	return nil
+}
+
+type trackingDb struct {
+	tx *trackingTx
+}
+
+func (t *trackingDb) BeginTx(ctx context.Context) (sql.Tx, error) {
+	return t.tx, nil
+}
+
+func (t *trackingDb) Execute(ctx context.Context, stmt string, args ...any) (*sql.ResultSet, error) {
+	return &sql.ResultSet{}, nil
+}
+
 type mockAccount struct {
 }
 

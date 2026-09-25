@@ -199,6 +199,10 @@ func (a *Accounts) getAccount(ctx context.Context, tx sql.Executor, account *typ
 // return an error if the amount would cause the balance to go negative.
 // It also adds a record to the in-memory cache.
 func (a *Accounts) Credit(ctx context.Context, tx sql.Executor, account *types.AccountID, amt *big.Int) error {
+	if amt == nil {
+		return ErrConvertToBigInt
+	}
+
 	acct, err := a.getAccount(ctx, tx, account, true)
 	if err != nil {
 		if errors.Is(err, ErrAccountNotFound) {
@@ -225,6 +229,10 @@ func (a *Accounts) Credit(ctx context.Context, tx sql.Executor, account *types.A
 // The nonce passed must be exactly one greater than the account's nonce. If the nonce is not valid, the spend will fail.
 // If the account does not have enough funds to spend the amount, an ErrInsufficientFunds error will be returned.
 func (a *Accounts) Spend(ctx context.Context, tx sql.Executor, account *types.AccountID, amount *big.Int, nonce int64) error {
+	if amount == nil || amount.Sign() < 0 {
+		return ErrNegativeSpend
+	}
+
 	acct, err := a.getAccount(ctx, tx, account, true)
 	if err != nil {
 		// If amount is 0 and account does not exist, create the account
@@ -289,6 +297,10 @@ func (a *Accounts) GetBlockSpends() []*Spend {
 // If the account does not have enough funds to spend the amount, spend the entire balance.
 // Nonces on the new network take precedence over the old network, so the nonces are not checked.
 func (a *Accounts) ApplySpend(ctx context.Context, tx sql.Executor, account *types.AccountID, amount *big.Int, nonce int64) error {
+	if amount == nil || amount.Sign() < 0 {
+		return ErrNegativeSpend
+	}
+
 	acct, err := a.getAccount(ctx, tx, account, true)
 	if err != nil {
 		// Spends should not occur on accounts that do not exist during migration as credits are disabled.
@@ -307,7 +319,7 @@ func (a *Accounts) ApplySpend(ctx context.Context, tx sql.Executor, account *typ
 // Transfer transfers an amount from one account to another. If the from account does not have enough funds to transfer the amount,
 // it will fail. If the to account does not exist, it will be created. The amount must be greater than 0.
 func (a *Accounts) Transfer(ctx context.Context, db sql.TxMaker, from, to *types.AccountID, amt *big.Int) error {
-	if amt.Sign() < 0 {
+	if amt == nil || amt.Sign() < 0 {
 		return ErrNegativeTransfer
 	}
 

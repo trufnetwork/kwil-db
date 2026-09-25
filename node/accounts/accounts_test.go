@@ -388,6 +388,32 @@ var acctsTestCases = []acctsTestCase{
 		},
 	},
 	{
+		name: "spend negative amount rejected",
+		fn: func(t *testing.T, db sql.DB, a *Accounts, c counter, skip bool) {
+			ctx := context.Background()
+
+			err := a.Credit(ctx, db, account1, big.NewInt(100))
+			require.NoError(t, err)
+
+			err = a.Spend(ctx, db, account1, big.NewInt(-50), 1)
+			require.ErrorIs(t, err, ErrNegativeSpend)
+
+			acc, err := a.GetAccount(ctx, db, account1)
+			require.NoError(t, err)
+			require.Equal(t, big.NewInt(100), acc.Balance)
+			require.Equal(t, int64(0), acc.Nonce)
+		},
+	},
+	{
+		name: "spend nil amount rejected",
+		fn: func(t *testing.T, db sql.DB, a *Accounts, c counter, skip bool) {
+			ctx := context.Background()
+
+			err := a.Spend(ctx, db, account1, nil, 1)
+			require.ErrorIs(t, err, ErrNegativeSpend)
+		},
+	},
+	{
 		name: "spend 0 on non-existent account",
 		fn: func(t *testing.T, db sql.DB, a *Accounts, c counter, skip bool) {
 			ctx := context.Background()
