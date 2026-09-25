@@ -244,7 +244,8 @@ tasks:
         grep -l -r --include='*_test.go' '^//go:build.*pglive' . \
           | xargs -n1 dirname | sed 's|^\./||' | sort -u \
           | while read -r d; do go list -tags=ext_test,pglive "./$d"; done > "$pglive_list"
-        other=$(go list -tags=ext_test ./... | grep -vxF -f "$pglive_list" || true)
+        # ./core is its own module, so ./... does not include it.
+        other=$( { go list -tags=ext_test ./...; go list -tags=ext_test ./core/...; } | grep -vxF -f "$pglive_list" || true)
         if [ -n "$other" ]; then
           go test -tags=ext_test $other
         fi
