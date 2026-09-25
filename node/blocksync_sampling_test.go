@@ -490,7 +490,7 @@ func waitForIdentify(t *testing.T, client host.Host, peers ...host.Host) {
 // fetchBlock asks the peers of client for block 1, which one of them has.
 func fetchBlock(t *testing.T, client host.Host) {
 	t.Helper()
-	_, rawBlk, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
+	_, rawBlk, _, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, rawBlk)
 }
@@ -622,7 +622,7 @@ func TestGetBlkHeightDoesNotBlameAPeerForOurCancellation(t *testing.T) {
 		cancel()
 		close(cancelled)
 	}()
-	_, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
+	_, _, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled, "a request we gave up on says so")
 
@@ -664,7 +664,7 @@ func TestGetBlkHeightReportsOurCancellationNotTheTip(t *testing.T) {
 		<-asked
 		cancel()
 	}()
-	_, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
+	_, _, _, _, _, err := getBlkHeight(ctx, 1, client, log.DiscardLogger, nil)
 	require.ErrorIs(t, err, context.Canceled)
 	require.NotErrorIs(t, err, ErrBlkNotFound)
 }
@@ -784,7 +784,7 @@ func TestGetBlkHeightAsksAroundWhenNoPeerIsKnownToHaveTheBlock(t *testing.T) {
 	// block on every request, and every request would end in ErrBlkNotFound.
 	// Shuffled, one request in twenty misses all three that have it.
 	for range 20 {
-		_, rawBlk, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
+		_, rawBlk, _, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
 		if err == nil {
 			require.NotEmpty(t, rawBlk)
 			return
@@ -792,4 +792,111 @@ func TestGetBlkHeightAsksAroundWhenNoPeerIsKnownToHaveTheBlock(t *testing.T) {
 		require.ErrorIs(t, err, ErrBlkNotFound)
 	}
 	t.Fatal("twenty requests in a row asked only the peers without the block")
+}
+
+// TestPeerRejected is a peer that sent a block other than the one it was
+// asked for. However quickly it answered, it waits out the longest hold and
+// sorts behind the peers that serve, and it keeps the latency it had.
+func TestPeerRejected(t *testing.T) {
+	now := time.Now()
+	var liar, honest peerInfo
+	liar.served(time.Millisecond, now)
+	honest.served(300*time.Millisecond, now)
+	liar.rejected(now)
+
+	require.Equal(t, maxPeerFailHold, liar.hold)
+	require.Equal(t, now.Add(maxPeerFailHold), liar.dueAt())
+	require.Equal(t, time.Millisecond, liar.latency)
+
+	peers := []peer.ID{"liar", "honest"}
+	orderPeers(peers, map[peer.ID]peerInfo{"liar": liar, "honest": honest}, now.Add(time.Minute))
+	require.Equal(t, []peer.ID{"honest", "liar"}, peers)
+}
+
+// wrongBlockAnswer is a peer's answer to a block request: rawBlk, sent as
+// the one hash names.
+func wrongBlockAnswer(t *testing.T, hash ktypes.Hash, rawBlk []byte) []byte {
+	t.Helper()
+	ci, err := (&ktypes.CommitInfo{}).MarshalBinary()
+	require.NoError(t, err)
+	var resp bytes.Buffer
+	resp.Write(withData)
+	resp.Write(hash[:])
+	ktypes.WriteCompactBytes(&resp, ci)
+	ktypes.WriteCompactBytes(&resp, rawBlk)
+	return resp.Bytes()
+}
+
+// TestGetBlkHeightSkipsAPeerThatSendsTheWrongBlock has three peers answering
+// a request for block 1 with something else: block 1 under block 2's hash,
+// block 2 under its own, and bytes that are no block at all. Each is passed
+// over for the peer that has block 1, and held back as long as any failure.
+func TestGetBlkHeightSkipsAPeerThatSendsTheWrongBlock(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	blk1, _ := createTestBlock(1, 1)
+	blk2, _ := createTestBlock(2, 1)
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	blockPeer(t, mn, serveBlocks(t, 1))
+	var liars []host.Host
+	// Five peers at most, so that every one is in every sample.
+	for _, resp := range [][]byte{
+		wrongBlockAnswer(t, blk2.Hash(), ktypes.EncodeBlock(blk1)),
+		wrongBlockAnswer(t, blk2.Hash(), ktypes.EncodeBlock(blk2)),
+		wrongBlockAnswer(t, blk1.Hash(), []byte("not a block")),
+	} {
+		h, _ := blockPeer(t, mn, reply(resp))
+		liars = append(liars, h)
+	}
+	connectPeers(t, mn)
+
+	// Every request asks a peer not yet asked first, and gets block 1.
+	for range 8 {
+		hash, rawBlk, _, _, _, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
+		require.NoError(t, err)
+		require.Equal(t, blk1.Hash(), hash)
+		require.Equal(t, ktypes.EncodeBlock(blk1), rawBlk)
+	}
+
+	for i, h := range liars {
+		v, ok := peerBest.Load(h.ID())
+		require.True(t, ok, "peer %d was asked", i)
+		require.Equal(t, maxPeerFailHold, v.(peerInfo).hold, "peer %d is held back", i)
+	}
+}
+
+// TestGetBlkHeightRejectHoldsBackThePeerThatServed is a block that arrives
+// intact and turns out, once catch-up checks it, not to be the one the
+// validators committed. The reject it came with holds back the peer that sent
+// it, and no other.
+func TestGetBlkHeightRejectHoldsBackThePeerThatServed(t *testing.T) {
+	resetPeerBest(t)
+	mn := mock.New()
+	t.Cleanup(func() { mn.Close() })
+
+	_, client := newTestHost(t, mn, crypto.KeyTypeSecp256k1)
+	first, _ := blockPeer(t, mn, serveBlocks(t, 1))
+	second, _ := blockPeer(t, mn, serveBlocks(t, 1))
+	connectPeers(t, mn)
+	waitForIdentify(t, client, first, second)
+
+	_, _, _, _, reject, err := getBlkHeight(context.Background(), 1, client, log.DiscardLogger, nil)
+	require.NoError(t, err)
+
+	// Only the peer that served has been asked.
+	var served, other host.Host = first, second
+	if _, ok := peerBest.Load(second.ID()); ok {
+		served, other = second, first
+	}
+	v, _ := peerBest.Load(served.ID())
+	require.Zero(t, v.(peerInfo).hold, "it served")
+
+	reject()
+	v, _ = peerBest.Load(served.ID())
+	require.Equal(t, maxPeerFailHold, v.(peerInfo).hold)
+	_, ok := peerBest.Load(other.ID())
+	require.False(t, ok, "the other peer is not touched")
 }

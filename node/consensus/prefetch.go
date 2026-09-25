@@ -18,10 +18,11 @@ const prefetchWorkers = 8
 // prefetched is a block as the requester returned it: never decoded, since
 // applyBlock decodes it, and a decoded block allocates per transaction.
 type prefetched struct {
-	hash ktypes.Hash
-	raw  []byte
-	ci   *ktypes.CommitInfo
-	best int64
+	hash   ktypes.Hash
+	raw    []byte
+	ci     *ktypes.CommitInfo
+	best   int64
+	reject func()
 }
 
 // prefetcher fetches the blocks after the one catch-up is applying, so that
@@ -30,7 +31,10 @@ type prefetched struct {
 // Its workers only call the requester. They never read consensus state or the
 // block processor, both of which apply holds for the whole of a block, and
 // nothing they fetch reaches the block store or applyBlock except through get,
-// in height order. A block that fails to apply is as fatal as it always was.
+// in height order. A block that is not the one the validators committed is
+// fetched again, and so is everything else the prefetcher holds; see
+// replayBlockFromNetwork. Any other failure to apply is as fatal as it always
+// was.
 //
 // Workers fetch only up to the best height a peer has reported with a block,
 // and nothing until the first block has arrived. So a node that is already in
@@ -141,14 +145,14 @@ func (p *prefetcher) work(ctx context.Context) {
 		p.inflight[h] = true
 		p.mtx.Unlock()
 
-		hash, raw, ci, best, err := p.fetch(ctx, h)
+		hash, raw, ci, best, reject, err := p.fetch(ctx, h)
 
 		p.mtx.Lock()
 		delete(p.inflight, h)
 		switch {
 		case h < p.next || ctx.Err() != nil:
 		case err == nil:
-			p.results[h] = prefetched{hash, raw, ci, best}
+			p.results[h] = prefetched{hash, raw, ci, best, reject}
 			p.bytes += int64(len(raw))
 			p.learn(best)
 		case p.ceiling == 0 || h < p.ceiling:
@@ -165,7 +169,7 @@ func (p *prefetcher) work(ctx context.Context) {
 // one is fetching it. Otherwise it asks for h itself, as catch-up did before
 // there was a prefetcher, so what ends a catch-up is unchanged: a fresh
 // not-found for the height it needs.
-func (p *prefetcher) get(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+func (p *prefetcher) get(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 	p.mtx.Lock()
 	for {
 		if r, ok := p.results[h]; ok {
@@ -174,21 +178,21 @@ func (p *prefetcher) get(ctx context.Context, h int64) (types.Hash, []byte, *kty
 			p.next = h + 1
 			p.notify()
 			p.mtx.Unlock()
-			return r.hash, r.raw, r.ci, r.best, nil
+			return r.hash, r.raw, r.ci, r.best, r.reject, nil
 		}
 		if !p.inflight[h] {
 			break
 		}
 		if err := p.wait(ctx); err != nil {
 			p.mtx.Unlock()
-			return types.Hash{}, nil, nil, 0, err
+			return types.Hash{}, nil, nil, 0, nil, err
 		}
 	}
 	// Nobody has it or is fetching it, and no worker will take it now.
 	p.claimed = max(p.claimed, h+1)
 	p.mtx.Unlock()
 
-	hash, raw, ci, best, err := p.fetch(ctx, h)
+	hash, raw, ci, best, reject, err := p.fetch(ctx, h)
 
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
@@ -203,5 +207,5 @@ func (p *prefetcher) get(ctx context.Context, h int64) (types.Hash, []byte, *kty
 		p.learn(best)
 		p.notify()
 	}
-	return hash, raw, ci, best, err
+	return hash, raw, ci, best, reject, err
 }

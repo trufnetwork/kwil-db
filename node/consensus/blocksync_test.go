@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
@@ -68,8 +70,8 @@ func TestReplayBlockFromNetwork_CallsRecheckTxsOnErrBlkNotFound(t *testing.T) {
 	}
 
 	// Mock block requester to return ErrBlkNotFound
-	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-		return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
+	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
 	}
 
 	// Call replayBlockFromNetwork - this should trigger our fix
@@ -121,8 +123,8 @@ func TestReplayBlockFromNetwork_CallsRecheckTxsOnErrNotFound(t *testing.T) {
 	}
 
 	// Mock block requester to return ErrNotFound
-	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-		return types.Hash{}, nil, nil, 0, types.ErrNotFound
+	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return types.Hash{}, nil, nil, 0, nil, types.ErrNotFound
 	}
 
 	err := ce.replayBlockFromNetwork(ctx)
@@ -180,8 +182,8 @@ func TestReplayBlockFromNetwork_RemovesStaleTransactions(t *testing.T) {
 		height: 1,
 	}
 
-	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-		return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
+	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
 	}
 
 	// Call replayBlockFromNetwork
@@ -304,9 +306,9 @@ func TestReplayBlockFromNetwork_ReportsWhereTheTimeWent(t *testing.T) {
 	// One slow request, which comes back empty and ends the sync. Nothing is
 	// applied, so the whole run is network time and the split has to say so.
 	const requestTook = 40 * time.Millisecond
-	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+	ce.blkRequester = func(ctx context.Context, height int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 		time.Sleep(requestTook)
-		return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
+		return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
 	}
 
 	require.NoError(t, ce.replayBlockFromNetwork(ctx))
@@ -366,9 +368,9 @@ func replayWithin(t *testing.T, ce *ConsensusEngine, limit time.Duration) error 
 func TestReplayBlockFromNetwork_PrefetchAsksOnceWhenInSync(t *testing.T) {
 	var asked atomic.Int32
 	var rechecked bool
-	ce := replayEngine(1<<20, func(context.Context, int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+	ce := replayEngine(1<<20, func(context.Context, int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 		asked.Add(1)
-		return types.Hash{}, nil, nil, 1, types.ErrBlkNotFound
+		return types.Hash{}, nil, nil, 1, nil, types.ErrBlkNotFound
 	}, func() { rechecked = true })
 
 	require.NoError(t, replayWithin(t, ce, 10*time.Second))
@@ -380,19 +382,29 @@ func TestReplayBlockFromNetwork_PrefetchAsksOnceWhenInSync(t *testing.T) {
 // to the replay that started it. applyBlock takes ce.state.mtx before anything
 // else, so holding it keeps block 2 waiting to apply: the workers have to get
 // on without it, which is the spec's rule that they never touch it. Then block
-// 2 fails to decode, and when replay returns every request it had out is over.
+// 2 turns out not to be a block. Every request out is over before the peer
+// that sent it is held back, so no late answer from that peer undoes the hold,
+// and when replay returns, having found nobody with block 2 on asking again,
+// no request outlives it.
 func TestReplayBlockFromNetwork_PrefetchRunsDuringApplyAndStopsWithIt(t *testing.T) {
-	var asked, active atomic.Int32
-	ce := replayEngine(1<<20, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
-		asked.Add(1)
+	var asked, active, rejected atomic.Int32
+	activeAtReject := int32(-1)
+	ce := replayEngine(1<<20, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		n := asked.Add(1)
 		if h == 2 {
+			if n > 1 {
+				return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
+			}
 			// Peers are at 100, so the prefetcher starts on 3 onwards.
-			return types.Hash{2}, []byte("not a block"), &ktypes.CommitInfo{}, 100, nil
+			return types.Hash{2}, []byte("not a block"), &ktypes.CommitInfo{}, 100, func() {
+				rejected.Add(1)
+				activeAtReject = active.Load()
+			}, nil
 		}
 		active.Add(1)
 		defer active.Add(-1)
 		<-ctx.Done() // a peer that never answers
-		return types.Hash{}, nil, nil, 0, ctx.Err()
+		return types.Hash{}, nil, nil, 0, nil, ctx.Err()
 	}, nil)
 
 	ce.state.mtx.Lock()
@@ -407,12 +419,176 @@ func TestReplayBlockFromNetwork_PrefetchRunsDuringApplyAndStopsWithIt(t *testing
 		}
 	}()
 
-	err := replayWithin(t, ce, 10*time.Second)
-	require.ErrorContains(t, err, "failed to apply block at height: 2")
+	require.NoError(t, replayWithin(t, ce, 10*time.Second))
 	require.True(t, sawAll.Load(), "the next blocks were on their way while block 2 waited to apply")
+	require.EqualValues(t, 1, rejected.Load())
+	require.Zero(t, activeAtReject, "the prefetcher had stopped when the peer was held back")
 	require.Zero(t, active.Load(), "no request outlives the replay")
 
 	sent := asked.Load()
 	time.Sleep(20 * time.Millisecond)
 	require.Equal(t, sent, asked.Load(), "and none is sent after it")
+}
+
+// After a bad block, prefetch starts over from it: the block is asked for
+// again, and once it arrives the workers fetch past it as before. Here block 2
+// comes back bad twice, and the second time it has to wait to apply until a
+// worker is asking for a block past it.
+func TestReplayBlockFromNetwork_PrefetchesAgainAfterABadBlock(t *testing.T) {
+	var asked, active, rejected atomic.Int32
+	var sawWorker atomic.Bool
+	var ce *ConsensusEngine
+	ce = replayEngine(1<<20, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		if h > 2 {
+			active.Add(1)
+			defer active.Add(-1)
+			<-ctx.Done()
+			return types.Hash{}, nil, nil, 0, nil, ctx.Err()
+		}
+		if asked.Add(1) > 2 {
+			return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
+		}
+		return types.Hash{2}, []byte("not a block"), &ktypes.CommitInfo{}, 100, func() {
+			if rejected.Add(1) > 1 {
+				return
+			}
+			// Before block 2 is asked for again, hold its apply until a worker
+			// is out past it.
+			ce.state.mtx.Lock()
+			go func() {
+				defer ce.state.mtx.Unlock()
+				for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+					if active.Load() > 0 {
+						sawWorker.Store(true)
+						return
+					}
+				}
+			}()
+		}, nil
+	}, nil)
+
+	require.NoError(t, replayWithin(t, ce, 10*time.Second))
+	require.EqualValues(t, 2, rejected.Load())
+	require.True(t, sawWorker.Load(), "the workers fetched past block 2 again")
+}
+
+// badBlockThenNone answers the first bad requests for block 2 with bytes that
+// are no block, each with a reject that counts in rejected, and then says
+// nobody has it, which ends the replay. It knows of no block past 2.
+func badBlockThenNone(bad int32, asked, rejected *atomic.Int32) BlkRequester {
+	return func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		if h != 2 || asked.Add(1) > bad {
+			return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
+		}
+		return types.Hash{2}, []byte("not a block"), &ktypes.CommitInfo{}, 0, func() { rejected.Add(1) }, nil
+	}
+}
+
+// A block that is not the one the validators committed is the peer's doing.
+// It holds that peer back, and the block is asked for again, with prefetch
+// off and on. None of it runs.
+func TestReplayBlockFromNetwork_AsksAgainForABadBlock(t *testing.T) {
+	for _, prefetch := range []int64{0, 1 << 20} {
+		t.Run(fmt.Sprintf("prefetch %d", prefetch), func(t *testing.T) {
+			var asked, rejected atomic.Int32
+			ce := replayEngine(prefetch, badBlockThenNone(1, &asked, &rejected), nil)
+
+			require.NoError(t, replayWithin(t, ce, 10*time.Second))
+			require.EqualValues(t, 1, rejected.Load())
+			require.EqualValues(t, 2, asked.Load(), "block 2 was asked for again")
+			require.Zero(t, ce.stateInfo.hasBlock.Load(), "no block reached processing")
+		})
+	}
+}
+
+// Asking again backs off, as a failed request does, so a peer that keeps
+// sending bad blocks is not asked in a tight loop.
+func TestReplayBlockFromNetwork_BacksOffBetweenBadBlocks(t *testing.T) {
+	var asked, rejected atomic.Int32
+	ce := replayEngine(0, badBlockThenNone(3, &asked, &rejected), nil)
+
+	t0 := time.Now()
+	require.NoError(t, replayWithin(t, ce, 20*time.Second))
+	require.EqualValues(t, 3, rejected.Load())
+	require.GreaterOrEqual(t, time.Since(t0), 3*250*time.Millisecond, "each of the three waits at least the backoff's minimum")
+}
+
+// A block the validators did commit, which does not follow the chain this
+// node has, fails on this node's side: asking another peer would get the same
+// block. It stays fatal, and no peer is held back for it.
+func TestReplayBlockFromNetwork_ABlockThatDoesNotFollowStaysFatal(t *testing.T) {
+	key := newKey(t)
+	blk := testBlock(2) // PrevHash is not the hash of this node's block 1
+	ci := signedBy(t, blk.Hash(), ktypes.Hash{9}, key)
+	var rejected atomic.Int32
+	ce := replayEngine(0, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return blk.Hash(), ktypes.EncodeBlock(blk), ci, 2, func() { rejected.Add(1) }, nil
+	}, nil)
+	ce.validatorSet = committedEngine(key).validatorSet
+	ce.stateInfo.hasBlock.Store(1)
+
+	err := replayWithin(t, ce, 10*time.Second)
+	require.ErrorContains(t, err, "failed to apply block at height: 2")
+	require.ErrorContains(t, err, "prevBlockHash mismatch")
+	require.NotErrorIs(t, err, errUncommittedBlock)
+	require.Zero(t, rejected.Load())
+}
+
+// followingBlock is block 2 as it follows replayEngine's block 1, signed by
+// key, whose commit info says the block runs to appHash. testBlockProcessor
+// runs every block to the zero app hash with no parameter updates. It also
+// gives ce what running a block needs.
+func followingBlock(t *testing.T, ce *ConsensusEngine, key crypto.PrivateKey, appHash ktypes.Hash) (*ktypes.Block, *ktypes.CommitInfo) {
+	t.Helper()
+	ce.stateInfo.hasBlock.Store(ce.state.lc.height)
+	ce.catchupTimeout = time.Hour
+	ce.catchupTicker = time.NewTicker(ce.catchupTimeout)
+	t.Cleanup(ce.catchupTicker.Stop)
+	ce.validatorSet = committedEngine(key).validatorSet
+	blk := ktypes.NewBlock(2, ce.state.lc.blkHash, ce.state.lc.appHash, ce.validatorSetHash(),
+		ce.blockProcessor.ConsensusParams().Hash(), time.Unix(1729723555, 0), nil)
+	return blk, signedBy(t, blk.Hash(), appHash, key)
+}
+
+// The votes in a commit info are for the app hash, which covers the block's
+// parameter updates, but not for the commit info's own list of them. Only
+// running the block can check that list. When the app hash comes out right
+// and the list does not match, the block is rolled back and asked for again.
+func TestReplayBlockFromNetwork_AsksAgainForChangedParameterUpdates(t *testing.T) {
+	var asked, rejected atomic.Int32
+	var blk *ktypes.Block
+	var ci *ktypes.CommitInfo
+	ce := replayEngine(0, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		if h != 2 || asked.Add(1) > 1 {
+			return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
+		}
+		return blk.Hash(), ktypes.EncodeBlock(blk), ci, 2, func() { rejected.Add(1) }, nil
+	}, nil)
+	blk, ci = followingBlock(t, ce, newKey(t), ktypes.Hash{})
+	ci.ParamUpdates = ktypes.ParamUpdates{ktypes.ParamNameMaxBlockSize: int64(5)}
+
+	require.NoError(t, replayWithin(t, ce, 10*time.Second))
+	require.EqualValues(t, 1, rejected.Load())
+	require.EqualValues(t, 2, asked.Load(), "block 2 was asked for again")
+	require.EqualValues(t, 1, ce.stateInfo.hasBlock.Load(), "block 2 was rolled back")
+	require.Nil(t, ce.state.blockRes)
+}
+
+// A block the validators committed that runs to another app hash is this
+// node's divergence, not the peer's doing, and stays fatal, whatever the
+// commit info's parameter updates say.
+func TestReplayBlockFromNetwork_AnotherAppHashStaysFatal(t *testing.T) {
+	var rejected atomic.Int32
+	var blk *ktypes.Block
+	var ci *ktypes.CommitInfo
+	ce := replayEngine(0, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return blk.Hash(), ktypes.EncodeBlock(blk), ci, 2, func() { rejected.Add(1) }, nil
+	}, nil)
+	blk, ci = followingBlock(t, ce, newKey(t), ktypes.Hash{7})
+	ci.ParamUpdates = ktypes.ParamUpdates{ktypes.ParamNameMaxBlockSize: int64(5)}
+
+	err := replayWithin(t, ce, 10*time.Second)
+	require.ErrorContains(t, err, "AppHash mismatch")
+	require.NotErrorIs(t, err, errUncommittedBlock)
+	require.Zero(t, rejected.Load())
 }

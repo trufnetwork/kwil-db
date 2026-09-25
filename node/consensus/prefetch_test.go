@@ -35,17 +35,18 @@ type fakeNetwork struct {
 	hang  func(h int64) bool               // never answer, until the request is cancelled
 	fail  func(h int64, attempt int) error // fail this attempt at h
 
-	mtx    sync.Mutex
-	asked  map[int64]int
-	active int
-	direct int // blocks the applier had to fetch itself
+	mtx      sync.Mutex
+	asked    map[int64]int
+	active   int
+	direct   int     // blocks the applier had to fetch itself
+	rejected []int64 // the blocks whose reject was called, in order
 }
 
 func newFakeNetwork(tip int64, size int) *fakeNetwork {
 	return &fakeNetwork{tip: tip, size: size, asked: make(map[int64]int)}
 }
 
-func (f *fakeNetwork) request(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, error) {
+func (f *fakeNetwork) request(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
 	f.mtx.Lock()
 	f.asked[h]++
 	attempt := f.asked[h]
@@ -69,15 +70,15 @@ func (f *fakeNetwork) request(ctx context.Context, h int64) (types.Hash, []byte,
 	select {
 	case <-wait:
 	case <-ctx.Done():
-		return types.Hash{}, nil, nil, 0, ctx.Err()
+		return types.Hash{}, nil, nil, 0, nil, ctx.Err()
 	}
 
 	if h > f.tip {
-		return types.Hash{}, nil, nil, 0, types.ErrBlkNotFound
+		return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
 	}
 	if f.fail != nil {
 		if err := f.fail(h, attempt); err != nil {
-			return types.Hash{}, nil, nil, 0, err
+			return types.Hash{}, nil, nil, 0, nil, err
 		}
 	}
 	best := f.tip
@@ -87,7 +88,12 @@ func (f *fakeNetwork) request(ctx context.Context, h int64) (types.Hash, []byte,
 	if applier, _ := ctx.Value(applierKey{}).(*int); applier != nil {
 		f.direct++
 	}
-	return blockID(h), make([]byte, f.size), &ktypes.CommitInfo{}, best, nil
+	reject := func() {
+		f.mtx.Lock()
+		defer f.mtx.Unlock()
+		f.rejected = append(f.rejected, h)
+	}
+	return blockID(h), make([]byte, f.size), &ktypes.CommitInfo{}, best, reject, nil
 }
 
 // applierKey marks the context catch-up itself fetches with, as opposed to
@@ -114,7 +120,7 @@ func (f *fakeNetwork) requests() (total, active int) {
 func take(t *testing.T, ctx context.Context, p *prefetcher, h int64) {
 	t.Helper()
 	for range 5 {
-		hash, _, _, _, err := p.get(ctx, h)
+		hash, _, _, _, _, err := p.get(ctx, h)
 		if err == nil {
 			require.Equal(t, blockID(h), hash, "block %d", h)
 			return
@@ -136,13 +142,41 @@ func TestPrefetcherHandsBlocksOverInOrder(t *testing.T) {
 	for h := int64(1); h <= 50; h++ {
 		take(t, ctx, p, h)
 	}
-	_, _, _, _, err := p.get(ctx, 51)
+	_, _, _, _, _, err := p.get(ctx, 51)
 	require.ErrorIs(t, err, types.ErrBlkNotFound, "the tip ends it, as it always did")
 
 	for h := int64(1); h <= 51; h++ {
 		require.Equal(t, 1, net.timesAsked(h), "block %d is asked for once", h)
 	}
 	require.Zero(t, net.timesAsked(52), "nothing is asked for past the height peers report")
+}
+
+// TestPrefetcherHandsOverEachBlocksReject checks that each block comes with the
+// reject its request returned, so that the peer held back for a bad block is
+// the one that sent it, whether a worker fetched the block or get did.
+func TestPrefetcherHandsOverEachBlocksReject(t *testing.T) {
+	ctx := context.WithValue(context.Background(), applierKey{}, new(int))
+	net := newFakeNetwork(10, 10)
+	p := newPrefetcher(context.Background(), net.request, 1, 1<<20)
+	defer p.stop()
+
+	var want []int64
+	for h := int64(1); h <= 10; h++ {
+		_, _, _, _, reject, err := p.get(ctx, h)
+		require.NoError(t, err)
+		reject()
+		want = append(want, h)
+		if h == 1 {
+			// The first block tells the workers where the tip is. Let them
+			// fetch the rest before get asks for any.
+			require.Eventually(t, func() bool { return net.timesAsked(10) == 1 }, 5*time.Second, time.Millisecond)
+		}
+	}
+
+	net.mtx.Lock()
+	defer net.mtx.Unlock()
+	require.Equal(t, want, net.rejected)
+	require.Equal(t, 1, net.direct, "get fetched the first itself, and the workers the rest")
 }
 
 // TestPrefetcherAsksOnceWhenInSync is a node already at the tip, running
@@ -152,7 +186,7 @@ func TestPrefetcherAsksOnceWhenInSync(t *testing.T) {
 	net := newFakeNetwork(0, 10)
 
 	p := newPrefetcher(ctx, net.request, 1, 1<<20)
-	_, _, _, _, err := p.get(ctx, 1)
+	_, _, _, _, _, err := p.get(ctx, 1)
 	require.ErrorIs(t, err, types.ErrBlkNotFound)
 	p.stop()
 
@@ -280,7 +314,7 @@ func TestPrefetcherGetGivesUpWhenCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, _, _, _, err := p.get(ctx, 2)
+	_, _, _, _, _, err := p.get(ctx, 2)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
@@ -301,7 +335,7 @@ func TestPrefetcherFollowsTheTipAsPeersReportIt(t *testing.T) {
 		take(t, ctx, p, h)
 		time.Sleep(5 * time.Millisecond) // applying it
 	}
-	_, _, _, _, err := p.get(ctx, 51)
+	_, _, _, _, _, err := p.get(ctx, 51)
 	require.ErrorIs(t, err, types.ErrBlkNotFound)
 
 	// A worker woken late can lose a block to the applier now and then.
