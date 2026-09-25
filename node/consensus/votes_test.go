@@ -93,6 +93,84 @@ func TestAddVoteRejectsRepeatedSigner(t *testing.T) {
 	require.Nil(t, ce.state.commitInfo)
 }
 
+func TestProcessVotesSkipsSignatureRecheck(t *testing.T) {
+	ce, keys := testEngineWithValidators(t, 4)
+	ce.haltChan = make(chan string, 1)
+	blkID := types.Hash{1}
+	appHash := types.Hash{2}
+	ce.state.blkProp = &blockProposal{height: 1, blkHash: blkID}
+	ce.state.blockRes = &blockResult{appHash: appHash}
+	ce.state.lc = &lastCommit{}
+
+	stranger, _, err := crypto.GenerateSecp256k1Key(nil)
+	require.NoError(t, err)
+	strangerPub := stranger.Public()
+	ce.state.votes["stranger"] = &ktypes.VoteInfo{
+		AckStatus: ktypes.AckReject,
+		Signature: ktypes.Signature{
+			PubKey:     strangerPub.Bytes(),
+			PubKeyType: strangerPub.Type(),
+			Data:       []byte("not-a-signature"),
+		},
+	}
+	pub0 := keys[0].Public()
+	ce.state.votes["wrong-key-type"] = &ktypes.VoteInfo{
+		AckStatus: ktypes.AckReject,
+		Signature: ktypes.Signature{
+			PubKey:     pub0.Bytes(),
+			PubKeyType: crypto.KeyTypeEd25519,
+			Data:       []byte("not-a-signature"),
+		},
+	}
+	ce.state.votes[hex.EncodeToString(pub0.Bytes())] = &ktypes.VoteInfo{
+		AckStatus: ktypes.AckReject,
+		Signature: ktypes.Signature{
+			PubKey:     pub0.Bytes(),
+			PubKeyType: pub0.Type(),
+			Data:       []byte("not-a-signature"),
+		},
+	}
+	ce.state.votes["duplicate"] = ce.state.votes[hex.EncodeToString(pub0.Bytes())]
+	ce.processVotes(context.Background())
+	require.Empty(t, ce.haltChan)
+
+	pub1 := keys[1].Public()
+	ce.state.votes[hex.EncodeToString(pub1.Bytes())] = &ktypes.VoteInfo{
+		AckStatus: ktypes.AckReject,
+		Signature: ktypes.Signature{
+			PubKey:     pub1.Bytes(),
+			PubKeyType: pub1.Type(),
+			Data:       []byte("not-a-signature"),
+		},
+	}
+
+	ce.processVotes(context.Background())
+	select {
+	case reason := <-ce.haltChan:
+		require.Contains(t, reason, "nacks")
+	default:
+		t.Fatal("expected halt from votes already accepted by addVote")
+	}
+}
+
+func TestVerifyVotesStillChecksSignature(t *testing.T) {
+	ce, keys := testEngineWithValidators(t, 1)
+	pub := keys[0].Public()
+	err := ce.verifyVotes(&ktypes.CommitInfo{
+		AppHash: types.Hash{2},
+		Votes: []*ktypes.VoteInfo{{
+			AckStatus: ktypes.AckAgree,
+			Signature: ktypes.Signature{
+				PubKey:     pub.Bytes(),
+				PubKeyType: pub.Type(),
+				Data:       []byte("not-a-signature"),
+			},
+		}},
+	}, types.Hash{1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "verifying vote")
+}
+
 func testEngineWithValidators(t *testing.T, n int) (*ConsensusEngine, []crypto.PrivateKey) {
 	t.Helper()
 	keys := make([]crypto.PrivateKey, n)

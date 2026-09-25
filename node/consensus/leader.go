@@ -383,7 +383,7 @@ func (ce *ConsensusEngine) addVote(ctx context.Context, voteMsg *vote, sender st
 			}
 			seen[voteSignerID(&existing.Signature)] = struct{}{}
 		}
-		if err := ce.validateVote(voteInfo, vote.BlkHash, ce.state.blockRes.appHash, seen); err != nil {
+		if err := ce.validateVote(voteInfo, vote.BlkHash, ce.state.blockRes.appHash, seen, true); err != nil {
 			ce.log.Errorf("Error verifying the vote signature: %v", err)
 			return fmt.Errorf("error verifying the vote signature: %w", err)
 		}
@@ -422,7 +422,8 @@ func (ce *ConsensusEngine) processVotes(ctx context.Context) {
 	votes := make([]*ktypes.VoteInfo, 0, len(ce.state.votes))
 	var acks, nacks int
 	for _, vote := range ce.state.votes {
-		if err := ce.validateVote(vote, blkProp.blkHash, blkRes.appHash, seen); err != nil {
+		// Signatures were checked in addVote. Re-check membership, key type, and duplicates only.
+		if err := ce.validateVote(vote, blkProp.blkHash, blkRes.appHash, seen, false); err != nil {
 			ce.log.Warn("ignoring vote that cannot be included in the commit proof", "error", err)
 			continue
 		}

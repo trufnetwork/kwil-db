@@ -468,7 +468,7 @@ func (ce *ConsensusEngine) verifyVotes(ci *ktypes.CommitInfo, blkID ktypes.Hash)
 	seen := make(map[string]struct{}, len(ci.Votes))
 	var acks int
 	for _, vote := range ci.Votes {
-		if err := ce.validateVote(vote, blkID, ci.AppHash, seen); err != nil {
+		if err := ce.validateVote(vote, blkID, ci.AppHash, seen, true); err != nil {
 			return err
 		}
 		if vote.AckStatus == ktypes.AckAgree {
@@ -488,10 +488,11 @@ func voteSignerID(sig *ktypes.Signature) string {
 	return string(sig.PubKeyType) + "#" + hex.EncodeToString(sig.PubKey)
 }
 
-// validateVote checks that vote is from a current validator, the signature is
-// valid for blkID and appHash, and this (PubKeyType, PubKey) has not already
-// been accepted. seen is updated only when the vote is accepted.
-func (ce *ConsensusEngine) validateVote(vote *ktypes.VoteInfo, blkID, appHash ktypes.Hash, seen map[string]struct{}) error {
+// validateVote checks that vote is from a current validator and that this
+// (PubKeyType, PubKey) has not already been accepted. When verifySig is true,
+// the signature must also be valid for blkID and appHash. seen is updated only
+// when the vote is accepted.
+func (ce *ConsensusEngine) validateVote(vote *ktypes.VoteInfo, blkID, appHash ktypes.Hash, seen map[string]struct{}, verifySig bool) error {
 	if vote == nil {
 		return errors.New("nil vote")
 	}
@@ -504,8 +505,10 @@ func (ce *ConsensusEngine) validateVote(vote *ktypes.VoteInfo, blkID, appHash kt
 	if val.KeyType != vote.Signature.PubKeyType {
 		return fmt.Errorf("vote key type %s does not match validator %s", vote.Signature.PubKeyType, val.KeyType)
 	}
-	if err := vote.Verify(blkID, appHash); err != nil {
-		return fmt.Errorf("error verifying vote: %w", err)
+	if verifySig {
+		if err := vote.Verify(blkID, appHash); err != nil {
+			return fmt.Errorf("error verifying vote: %w", err)
+		}
 	}
 
 	id := voteSignerID(&vote.Signature)
