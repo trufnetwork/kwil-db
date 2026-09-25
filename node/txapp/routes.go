@@ -147,9 +147,18 @@ func (d *baseRoute) Execute(ctx *common.TxContext, router *TxApp, db sql.DB, tx 
 	if err != nil {
 		return txRes(nil, types.CodeUnknownError, "", err)
 	}
+	// Roll back if we panic before the commit defer below is installed.
+	// Cleared once spending is finished and that path owns the transaction.
+	pending := true
+	defer func() {
+		if pending {
+			logErr(router.service.Logger, dbTx.Rollback(ctx.Ctx))
+		}
+	}()
 
 	var code types.TxCode
 	spend, code, err = router.checkAndSpend(ctx, tx, d, dbTx)
+	pending = false
 	if err != nil {
 		switch code {
 		case types.CodeOk, types.CodeInsufficientBalance, types.CodeInsufficientFee:
