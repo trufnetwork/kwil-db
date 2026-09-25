@@ -162,9 +162,10 @@ SYNC:
 		tApply := time.Now()
 		err := ce.applyBlock(ctx, rawBlk, ci, blkID)
 		if errors.Is(err, errUncommittedBlock) {
-			// Nothing of it ran. What else was fetched may be from the same
-			// peer, so it goes too, and it goes before the peer is held back,
-			// so that no answer still on its way puts the peer first again.
+			// Nothing of it was kept. What else was fetched may be from the
+			// same peer, so it goes too, and it goes before the peer is held
+			// back, so that no answer still on its way puts the peer first
+			// again.
 			ce.log.Warn("Fetching a block again", "height", height, "error", err)
 			if pf != nil {
 				pf.stop()
@@ -236,8 +237,8 @@ func (ce *ConsensusEngine) syncBlockWithRetry(ctx context.Context, height int64)
 }*/
 
 // applyBlock executes and commits a fetched block. A block that is not the one
-// the validators committed fails with errUncommittedBlock, before any of it
-// runs.
+// the validators committed fails with errUncommittedBlock, and nothing of it
+// is kept.
 func (ce *ConsensusEngine) applyBlock(ctx context.Context, rawBlk []byte, ci *ktypes.CommitInfo, blkID types.Hash) error {
 	ce.state.mtx.Lock()
 	defer ce.state.mtx.Unlock()
@@ -254,19 +255,20 @@ func (ce *ConsensusEngine) applyBlock(ctx context.Context, rawBlk []byte, ci *kt
 	return nil
 }
 
-// errUncommittedBlock is a fetched block that is not the one the validators
-// committed at the height it was fetched for. That is the peer's doing, not
-// ours, so the block is fetched again, from another peer.
+// errUncommittedBlock is a fetched block, or commit info, that is not what the
+// validators committed at the height it was fetched for. That is the peer's
+// doing, not ours, so the block is fetched again, from another peer.
 var errUncommittedBlock = errors.New("not the block the validators committed")
 
 // decodeCommitted decodes a fetched block and checks, before any of it runs,
 // that it is the block the validators committed at the next height: the block
 // blkID names, at that height, holding the transactions its header lists, with
 // enough of the current validators' votes for it in ci. DecodeBlock reads as
-// many transactions as the header counts, so the merkle root settles which. What processAndCommit
-// checks beyond that is how the block fits our own chain, so a block that
-// passes here and fails there fails on our side, and stays fatal. Call it with
-// ce.state.mtx held.
+// many transactions as the header counts, so the merkle root settles which.
+// What processAndCommit checks beyond that is how the block fits our own chain,
+// so a block that passes here and fails there fails on our side, and stays
+// fatal. The one exception is ci's parameter updates, which only running the
+// block can check; see processAndCommit. Call it with ce.state.mtx held.
 func (ce *ConsensusEngine) decodeCommitted(rawBlk []byte, ci *ktypes.CommitInfo, blkID types.Hash) (*ktypes.Block, error) {
 	blk, err := ktypes.DecodeBlock(rawBlk)
 	if err != nil {

@@ -417,12 +417,6 @@ func (ce *ConsensusEngine) processAndCommit(ctx context.Context, blk *ktypes.Blo
 		return fmt.Errorf("error executing block: %w", err)
 	}
 
-	if !ce.state.blockRes.paramUpdates.Equals(ci.ParamUpdates) { // this is absorbed in apphash anyway, but helps diagnostics
-		haltR := fmt.Sprintf("processAndCommit: Incorrect ParamUpdates, halting the node. received: %s, computed: %s", ci.ParamUpdates, ce.state.blockRes.paramUpdates)
-		ce.sendHalt(haltR)
-		return errors.New(haltR)
-	}
-
 	// Commit the block if the appHash and commitInfo is valid
 	if ce.state.blockRes.appHash != ci.AppHash {
 		// dump the statehashes from the block processor for debugging
@@ -435,6 +429,22 @@ func (ce *ConsensusEngine) processAndCommit(ctx context.Context, blk *ktypes.Blo
 		}
 
 		haltR := fmt.Sprintf("processAndCommit: AppHash mismatch, halting the node. expected: %s, received: %s", ce.state.blockRes.appHash, ci.AppHash)
+		ce.sendHalt(haltR)
+		return errors.New(haltR)
+	}
+
+	// The votes are for the app hash, which covers the parameter updates, but
+	// not for ci.ParamUpdates itself. With the app hash right, updates that
+	// differ are the commit info's, so a block fetched while syncing is rolled
+	// back and fetched again.
+	if computed := ce.state.blockRes.paramUpdates; !computed.Equals(ci.ParamUpdates) {
+		if syncing {
+			if err := ce.rollbackState(ctx); err != nil {
+				return fmt.Errorf("error rolling back block %d: %w", blk.Header.Height, err)
+			}
+			return fmt.Errorf("%w: parameter updates %s, computed %s", errUncommittedBlock, ci.ParamUpdates, computed)
+		}
+		haltR := fmt.Sprintf("processAndCommit: Incorrect ParamUpdates, halting the node. received: %s, computed: %s", ci.ParamUpdates, computed)
 		ce.sendHalt(haltR)
 		return errors.New(haltR)
 	}

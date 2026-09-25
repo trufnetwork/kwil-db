@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/trufnetwork/kwil-db/core/crypto"
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
@@ -529,6 +530,65 @@ func TestReplayBlockFromNetwork_ABlockThatDoesNotFollowStaysFatal(t *testing.T) 
 	err := replayWithin(t, ce, 10*time.Second)
 	require.ErrorContains(t, err, "failed to apply block at height: 2")
 	require.ErrorContains(t, err, "prevBlockHash mismatch")
+	require.NotErrorIs(t, err, errUncommittedBlock)
+	require.Zero(t, rejected.Load())
+}
+
+// followingBlock is block 2 as it follows replayEngine's block 1, signed by
+// key, whose commit info says the block runs to appHash. testBlockProcessor
+// runs every block to the zero app hash with no parameter updates. It also
+// gives ce what running a block needs.
+func followingBlock(t *testing.T, ce *ConsensusEngine, key crypto.PrivateKey, appHash ktypes.Hash) (*ktypes.Block, *ktypes.CommitInfo) {
+	t.Helper()
+	ce.stateInfo.hasBlock.Store(ce.state.lc.height)
+	ce.catchupTimeout = time.Hour
+	ce.catchupTicker = time.NewTicker(ce.catchupTimeout)
+	t.Cleanup(ce.catchupTicker.Stop)
+	ce.validatorSet = committedEngine(key).validatorSet
+	blk := ktypes.NewBlock(2, ce.state.lc.blkHash, ce.state.lc.appHash, ce.validatorSetHash(),
+		ce.blockProcessor.ConsensusParams().Hash(), time.Unix(1729723555, 0), nil)
+	return blk, signedBy(t, blk.Hash(), appHash, key)
+}
+
+// The votes in a commit info are for the app hash, which covers the block's
+// parameter updates, but not for the commit info's own list of them. Only
+// running the block can check that list. When the app hash comes out right
+// and the list does not match, the block is rolled back and asked for again.
+func TestReplayBlockFromNetwork_AsksAgainForChangedParameterUpdates(t *testing.T) {
+	var asked, rejected atomic.Int32
+	var blk *ktypes.Block
+	var ci *ktypes.CommitInfo
+	ce := replayEngine(0, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		if h != 2 || asked.Add(1) > 1 {
+			return types.Hash{}, nil, nil, 0, nil, types.ErrBlkNotFound
+		}
+		return blk.Hash(), ktypes.EncodeBlock(blk), ci, 2, func() { rejected.Add(1) }, nil
+	}, nil)
+	blk, ci = followingBlock(t, ce, newKey(t), ktypes.Hash{})
+	ci.ParamUpdates = ktypes.ParamUpdates{ktypes.ParamNameMaxBlockSize: int64(5)}
+
+	require.NoError(t, replayWithin(t, ce, 10*time.Second))
+	require.EqualValues(t, 1, rejected.Load())
+	require.EqualValues(t, 2, asked.Load(), "block 2 was asked for again")
+	require.EqualValues(t, 1, ce.stateInfo.hasBlock.Load(), "block 2 was rolled back")
+	require.Nil(t, ce.state.blockRes)
+}
+
+// A block the validators committed that runs to another app hash is this
+// node's divergence, not the peer's doing, and stays fatal, whatever the
+// commit info's parameter updates say.
+func TestReplayBlockFromNetwork_AnotherAppHashStaysFatal(t *testing.T) {
+	var rejected atomic.Int32
+	var blk *ktypes.Block
+	var ci *ktypes.CommitInfo
+	ce := replayEngine(0, func(ctx context.Context, h int64) (types.Hash, []byte, *ktypes.CommitInfo, int64, func(), error) {
+		return blk.Hash(), ktypes.EncodeBlock(blk), ci, 2, func() { rejected.Add(1) }, nil
+	}, nil)
+	blk, ci = followingBlock(t, ce, newKey(t), ktypes.Hash{7})
+	ci.ParamUpdates = ktypes.ParamUpdates{ktypes.ParamNameMaxBlockSize: int64(5)}
+
+	err := replayWithin(t, ce, 10*time.Second)
+	require.ErrorContains(t, err, "AppHash mismatch")
 	require.NotErrorIs(t, err, errUncommittedBlock)
 	require.Zero(t, rejected.Load())
 }
