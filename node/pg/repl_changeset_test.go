@@ -2,13 +2,16 @@ package pg
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/core/types"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 func TestChangesetEntry_Serialize(t *testing.T) {
@@ -654,4 +657,71 @@ func TestRelation_BinaryRoundTrip(t *testing.T) {
 			assert.Equal(t, tt.rel, newRel)
 		})
 	}
+}
+
+type recordExec struct {
+	stmt  string
+	args  []any
+	calls int
+}
+
+func (r *recordExec) Execute(_ context.Context, stmt string, args ...any) (*sql.ResultSet, error) {
+	r.calls++
+	r.stmt = stmt
+	r.args = append([]any(nil), args...)
+	return &sql.ResultSet{}, nil
+}
+
+func (r *recordExec) BeginTx(context.Context) (sql.Tx, error) {
+	return nil, errors.New("BeginTx not used")
+}
+
+func TestApplyUpdatesNoopAndToast(t *testing.T) {
+	rel := &Relation{
+		Schema: "ds_x",
+		Table:  "user_attributes",
+		Columns: []*Column{
+			{Name: "id", Type: types.TextType},
+			{Name: "value", Type: types.TextType},
+			{Name: "blob", Type: types.TextType},
+		},
+	}
+
+	t.Run("unchanged update is a no-op", func(t *testing.T) {
+		ce := &ChangesetEntry{
+			OldTuple: []*TupleColumn{
+				{ValueType: SerializedValue, Data: []byte("a")},
+				{ValueType: SerializedValue, Data: []byte("b")},
+				{ValueType: SerializedValue, Data: []byte("c")},
+			},
+			NewTuple: []*TupleColumn{
+				{ValueType: UnchangedUpdate},
+				{ValueType: UnchangedUpdate},
+				{ValueType: UnchangedUpdate},
+			},
+		}
+		db := &recordExec{}
+		require.NoError(t, ce.applyUpdates(context.Background(), db, rel))
+		assert.Equal(t, 0, db.calls)
+	})
+
+	t.Run("toast is not sql null", func(t *testing.T) {
+		ce := &ChangesetEntry{
+			OldTuple: []*TupleColumn{
+				{ValueType: SerializedValue, Data: []byte("id-1")},
+				{ValueType: NullValue},
+				{ValueType: ToastValue},
+			},
+			NewTuple: []*TupleColumn{
+				{ValueType: UnchangedUpdate},
+				{ValueType: SerializedValue, Data: []byte("next")},
+				{ValueType: ToastValue},
+			},
+		}
+		db := &recordExec{}
+		require.NoError(t, ce.applyUpdates(context.Background(), db, rel))
+		assert.Equal(t, 1, db.calls)
+		assert.Equal(t, "UPDATE ds_x.user_attributes SET value = $1 WHERE id = $2 AND value IS NULL", db.stmt)
+		assert.Equal(t, []any{"next", "id-1"}, db.args)
+	})
 }

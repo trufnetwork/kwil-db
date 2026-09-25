@@ -185,6 +185,7 @@ func (a *accessController) newPerm() *perms {
 	p := &perms{
 		namespacePrivileges: make(map[string]map[privilege]struct{}),
 		globalPrivileges:    make(map[privilege]struct{}),
+		namespaceDenials:    make(map[string]map[privilege]struct{}),
 	}
 
 	for ns := range a.knownNamespaces {
@@ -243,6 +244,9 @@ func (a *accessController) registerNamespace(namespace string) {
 func (a *accessController) unregisterNamespace(namespace string) {
 	for _, role := range a.roles {
 		delete(role.namespacePrivileges, namespace)
+		// The namespace row is removed in the database (ON DELETE CASCADE),
+		// so a recreated namespace must not keep the old denial.
+		delete(role.namespaceDenials, namespace)
 	}
 	delete(a.knownNamespaces, namespace)
 }
@@ -592,26 +596,33 @@ const (
 
 // perms is a struct that holds the permissions for a role.
 type perms struct {
-	// namespacePrivileges is a map of namespace names to the privileges that are allowed on that namespace.
-	// It does NOT include inherited privileges.
+	// namespacePrivileges is the effective privilege set canDo consults.
+	// It includes privileges inherited from globalPrivileges, except where
+	// namespaceDenials has an explicit denial.
 	namespacePrivileges map[string]map[privilege]struct{}
 	// globalPrivileges is a set of privileges that are allowed globally.
-	// it does NOT include inherited privileges.
-	// This map should NOT be used to check if a user has a privilege.
-	// Instead, it is used when a new namespace is created, so that
-	// the new namespace (within namespacePrivileges) can inherit the global privileges.
-	// This is because a global privilege can later be revoked for a certain namespace.
+	// It is not consulted by canDo for a namespace. It is copied onto a
+	// namespace when that namespace is created, and a later global grant
+	// copies it onto existing namespaces that are not explicitly denied.
 	globalPrivileges map[privilege]struct{}
+	// namespaceDenials records an explicit granted=false row.
+	// A global grant must not overwrite these. A global revoke clears them,
+	// because that statement deletes every role_privileges row for the privilege.
+	namespaceDenials map[string]map[privilege]struct{}
 }
 
 func (p *perms) copy() *perms {
 	p2 := &perms{
 		namespacePrivileges: make(map[string]map[privilege]struct{}),
 		globalPrivileges:    maps.Clone(p.globalPrivileges),
+		namespaceDenials:    make(map[string]map[privilege]struct{}),
 	}
 
 	for k, v := range p.namespacePrivileges {
 		p2.namespacePrivileges[k] = maps.Clone(v)
+	}
+	for k, v := range p.namespaceDenials {
+		p2.namespaceDenials[k] = maps.Clone(v)
 	}
 
 	return p2
@@ -638,32 +649,43 @@ func (p *perms) canDo(priv privilege, namespace *string) bool {
 }
 
 // grant adds the privileges to the set.
+// A nil namespace is a global grant: it updates globalPrivileges and every
+// namespace that does not have an explicit denial. The denial row stays in
+// role_privileges, and a reload applies it after the global row.
 func (p *perms) grant(namespace *string, privs ...privilege) {
 	if namespace == nil {
 		for _, priv := range privs {
 			p.globalPrivileges[priv] = struct{}{}
 		}
 
-		for _, np := range p.namespacePrivileges {
+		for ns, np := range p.namespacePrivileges {
+			denied := p.namespaceDenials[ns]
 			for _, priv := range privs {
+				if _, skip := denied[priv]; skip {
+					continue
+				}
 				np[priv] = struct{}{}
 			}
 		}
-	} else {
-		np, ok := p.namespacePrivileges[*namespace]
-		if !ok {
-			panic("unexpected error: namespace does not exist: " + *namespace)
-		}
+		return
+	}
 
-		for _, priv := range privs {
-			np[priv] = struct{}{}
-		}
+	np, ok := p.namespacePrivileges[*namespace]
+	if !ok {
+		panic("unexpected error: namespace does not exist: " + *namespace)
+	}
 
-		p.namespacePrivileges[*namespace] = np
+	for _, priv := range privs {
+		np[priv] = struct{}{}
+		p.clearDenial(*namespace, priv)
 	}
 }
 
 // revoke removes the privileges from the set.
+// A nil namespace matches the global REVOKE statement, which deletes every
+// role_privileges row for that privilege, including namespace grants and denials.
+// A namespace revoke records an explicit denial so a later global grant
+// does not hand the privilege back.
 func (p *perms) revoke(namespace *string, privs ...privilege) {
 	if namespace == nil {
 		for _, priv := range privs {
@@ -675,17 +697,45 @@ func (p *perms) revoke(namespace *string, privs ...privilege) {
 				delete(np, priv)
 			}
 		}
-	} else {
-		np, ok := p.namespacePrivileges[*namespace]
-		if !ok {
-			panic("unexpected error: namespace does not exist")
+		for ns, denied := range p.namespaceDenials {
+			for _, priv := range privs {
+				delete(denied, priv)
+			}
+			if len(denied) == 0 {
+				delete(p.namespaceDenials, ns)
+			}
 		}
+		return
+	}
 
-		for _, priv := range privs {
-			delete(np, priv)
-		}
+	np, ok := p.namespacePrivileges[*namespace]
+	if !ok {
+		panic("unexpected error: namespace does not exist")
+	}
 
-		p.namespacePrivileges[*namespace] = np
+	for _, priv := range privs {
+		delete(np, priv)
+		p.deny(*namespace, priv)
+	}
+}
+
+func (p *perms) deny(namespace string, priv privilege) {
+	denied, ok := p.namespaceDenials[namespace]
+	if !ok {
+		denied = make(map[privilege]struct{})
+		p.namespaceDenials[namespace] = denied
+	}
+	denied[priv] = struct{}{}
+}
+
+func (p *perms) clearDenial(namespace string, priv privilege) {
+	denied, ok := p.namespaceDenials[namespace]
+	if !ok {
+		return
+	}
+	delete(denied, priv)
+	if len(denied) == 0 {
+		delete(p.namespaceDenials, namespace)
 	}
 }
 

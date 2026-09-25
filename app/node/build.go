@@ -351,7 +351,7 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 	}
 
 	// Restore DB from the snapshot if snapshot matches.
-	err = node.RestoreDB(ctx, reader, appCfg.DB, genCfg.StateHash, d.logger)
+	err = node.RestoreDB(ctx, reader, appCfg.DB, genCfg.StateHash, d.rootDir, d.logger)
 	if err != nil {
 		failBuild(err, "failed to restore DB from snapshot")
 	}
@@ -359,6 +359,11 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 	d.logger.Info("DB restored from snapshot", "snapshot", d.cfg.GenesisState)
 	return true
 }
+
+// requiredInitSchemas must all exist before a DB is treated as initialized.
+// kwild_voting alone is created early in a snapshot dump, so a failed restore
+// can leave it behind and skip statesync/genesis recovery on the next start.
+var requiredInitSchemas = []string{"kwild_voting", "kwild_internal", "kwild_accts"}
 
 // isDbInitialized checks if the database is already initialized.
 func isDbInitialized(ctx context.Context, d *coreDependencies) bool {
@@ -368,21 +373,40 @@ func isDbInitialized(ctx context.Context, d *coreDependencies) bool {
 	}
 	defer db.Close()
 
-	// Check if the kwild_voting schema exists
-	exists, err := schemaExists(ctx, db, "kwild_voting")
+	complete, leftover, err := inspectInitSchemas(ctx, db)
 	if err != nil {
 		failBuild(err, "failed to check if schema exists")
 	}
+	if complete {
+		return true
+	}
 
-	// If the schema exists, the database is already initialized
-	// If the schema does not exist, the database is not initialized
-	return exists
+	// Incomplete leftovers from a failed restore must not survive to consensus.
+	if leftover {
+		if err := node.DropRestoreSchemas(ctx, db); err != nil {
+			failBuild(err, "failed to drop leftover restore schemas")
+		}
+	}
+	return false
+}
+
+func inspectInitSchemas(ctx context.Context, db sql.Executor) (complete, leftover bool, err error) {
+	found := 0
+	for _, schema := range requiredInitSchemas {
+		exists, err := schemaExists(ctx, db, schema)
+		if err != nil {
+			return false, false, err
+		}
+		if exists {
+			found++
+		}
+	}
+	return found == len(requiredInitSchemas), found > 0 && found < len(requiredInitSchemas), nil
 }
 
 // schemaExists checks if the schema with the given name exists in the database
 func schemaExists(ctx context.Context, db sql.Executor, schema string) (bool, error) {
-	query := fmt.Sprintf("SELECT 1 FROM information_schema.schemata WHERE schema_name = '%s'", schema)
-	res, err := db.Execute(ctx, query)
+	res, err := db.Execute(ctx, "SELECT 1 FROM information_schema.schemata WHERE schema_name = $1", schema)
 	if err != nil {
 		return false, err
 	}
@@ -735,7 +759,7 @@ func buildJRPCAdminServer(d *coreDependencies) *rpcserver.Server {
 // verifyDependencies checks if the required dependencies are installed on the system, such as:
 //   - pg_dump: required for snapshotting during migrations and when snapshots are enabled.
 //     All nodes in the network must have 16.x version to produce consistent and deterministic snapshots.
-//   - psql: required for state-sync to restore the state from a snapshot. Required version is 16.x.
+//   - psql: required for state-sync to restore the state from a snapshot. Required version is 16.15+.
 func verifyDependencies(d *coreDependencies) {
 	if d.cfg.SkipDependencyVerification {
 		d.logger.Warn("Skipping runtime dependency verification of pg_dump and psql binaries")
@@ -749,9 +773,9 @@ func verifyDependencies(d *coreDependencies) {
 	}
 
 	if d.cfg.StateSync.Enable {
-		// Check if psql is installed and is on version 16.x, which is required for state-sync
-		if err := checkVersion(d.cfg.StateSync.PsqlPath, 16); err != nil {
-			failBuild(err, "psql version check failure. Please ensure that 16.x version is installed")
+		// 16.15 fixes CVE-2026-18408 in the restricted mode used for untrusted snapshots.
+		if err := checkVersionAtLeast(d.cfg.StateSync.PsqlPath, 16, 15); err != nil {
+			failBuild(err, "psql version check failure. Please ensure that version 16.15 or later 16.x is installed")
 		}
 	}
 }

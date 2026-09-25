@@ -41,18 +41,9 @@ jobs:
     if: ${{ needs.changes.outputs.run == 'true' && !github.event.pull_request.draft}}
     runs-on: ubuntu-latest
 
-    services: # for unit test
-      postgres:
-        image: kwildb/postgres:16.8-1
-        env:
-          POSTGRES_HOST_AUTH_METHOD: trust
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
+    # NOTE: postgres cannot be a job "service" because its image is not
+    # published to any registry; it is built from contrib/docker in a step
+    # below, before the tests that need it.
 
     steps:
       # shared setup for all tests
@@ -101,6 +92,30 @@ jobs:
           install-mode: "binary"
           version: "latest"
           args: ./... ./core/... --timeout=10m --config=.golangci.yml
+
+      # postgres for the unit and acceptance tests, built locally since the
+      # image is not published to a registry
+      - name: Build postgres image
+        run: |
+          task pg:image
+
+      - name: Start postgres
+        run: |
+          docker run -d --name kwil-ci-postgres -p 5432:5432 --shm-size 512m \
+            -e POSTGRES_HOST_AUTH_METHOD=trust kwil-postgres:16.15-1
+          # pg_isready alone is not enough: it reports ready while the init
+          # scripts that create kwild/kwil_test_db are still running, and
+          # before the server accepts TCP connections.
+          for _ in $(seq 60); do
+            if docker exec kwil-ci-postgres psql -U kwild -d kwil_test_db -c 'select 1' >/dev/null 2>&1 \
+              && timeout 1 bash -c '> /dev/tcp/127.0.0.1/5432' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "postgres did not become ready" >&2
+          docker logs kwil-ci-postgres >&2
+          exit 1
 
       # unit test
       - name: Run unit test

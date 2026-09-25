@@ -11,8 +11,12 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trufnetwork/kwil-db/common"
+	kwilcrypto "github.com/trufnetwork/kwil-db/core/crypto"
+	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 // TestVoteEpochAction tests the vote_epoch action directly
@@ -735,4 +739,193 @@ func TestValidatorSignerNoBroadcastTxFn(t *testing.T) {
 	// The actual error check for nil BroadcastTxFn happens in signAndVote method
 	// which we've verified in the implementation at validator_signer.go:201-202
 	t.Log("Verified that BroadcastTxFn nil check is in place in the code")
+}
+
+type staticValidators struct {
+	vals []*types.Validator
+}
+
+func (s *staticValidators) GetValidators() []*types.Validator { return s.vals }
+func (s *staticValidators) GetValidatorPower(context.Context, []byte, kwilcrypto.KeyType) (int64, error) {
+	return 0, nil
+}
+func (s *staticValidators) SetValidatorPower(context.Context, sql.Executor, []byte, kwilcrypto.KeyType, int64) error {
+	return nil
+}
+
+func voteEpochEngineCtx(ctx context.Context, caller string) *common.EngineContext {
+	return &common.EngineContext{
+		TxContext: &common.TxContext{
+			Ctx: ctx,
+			BlockContext: &common.BlockContext{
+				Height: 1,
+				ChainContext: &common.ChainContext{
+					NetworkParameters: &common.NetworkParameters{},
+					MigrationParams:   &common.MigrationContext{},
+				},
+			},
+			Caller: caller,
+			Signer: []byte(caller),
+		},
+	}
+}
+
+func callVoteEpoch(t *testing.T, ctx context.Context, app *common.App, caller string, instanceID, epochID *types.UUID, nonce int64, signature []byte) {
+	t.Helper()
+	res, err := app.Engine.Call(voteEpochEngineCtx(ctx, caller), app.DB, RewardMetaExtensionName, "vote_epoch",
+		[]any{instanceID, epochID, nonce, signature}, nil)
+	require.NoError(t, err)
+	if res != nil {
+		require.NoError(t, res.Error)
+	}
+}
+
+func epochConfirmed(t *testing.T, ctx context.Context, app *common.App, epochID *types.UUID) bool {
+	t.Helper()
+	result, err := app.DB.Execute(ctx, `SELECT confirmed FROM kwil_erc20_meta.epochs WHERE id = $1`, epochID)
+	require.NoError(t, err)
+	require.Len(t, result.Rows, 1)
+	return result.Rows[0][0].(bool)
+}
+
+// TestVoteEpochSpoofedGnosisVoteDoesNotBlockConfirmation covers the public vote_epoch
+// path where any caller can store a 65-byte V=31/32 blob. That must not prevent a later
+// verified non-custodial validator vote from reaching confirmEpoch.
+func TestVoteEpochSpoofedGnosisVoteDoesNotBlockConfirmation(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available - this test requires database connection")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	validatorKey, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	validatorAddr := crypto.PubkeyToAddress(validatorKey.PublicKey)
+	app.Validators = &staticValidators{vals: []*types.Validator{{
+		AccountID: types.AccountID{
+			Identifier: crypto.FromECDSAPub(&validatorKey.PublicKey),
+			KeyType:    kwilcrypto.KeyTypeSecp256k1,
+		},
+		Power: 1,
+	}}}
+
+	instanceID := newUUID()
+	chainInfo, ok := chains.GetChainInfoByID("1")
+	require.True(t, ok)
+
+	require.NoError(t, createNewRewardInstance(ctx, app, &userProvidedData{
+		ID:                 instanceID,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc"),
+		DistributionPeriod: 3600,
+	}))
+
+	epochID := newUUID()
+	require.NoError(t, createEpoch(ctx, app, &PendingEpoch{ID: epochID, StartHeight: 10, StartTime: 100}, instanceID))
+
+	merkleRoot := crypto.Keccak256([]byte("spoofed gnosis vote merkle root"))
+	blockHash := crypto.Keccak256([]byte("spoofed gnosis vote block hash"))
+	amount, err := erc20ValueFromBigInt(big.NewInt(1000))
+	require.NoError(t, err)
+	require.NoError(t, finalizeEpoch(ctx, app, epochID, 20, blockHash, merkleRoot, amount))
+
+	poison := make([]byte, 65)
+	poison[64] = 31
+	attacker := ethcommon.HexToAddress("0x00000000000000000000000000000000000000aa")
+	callVoteEpoch(t, ctx, app, attacker.Hex(), instanceID, epochID, 0, poison)
+	require.False(t, epochConfirmed(t, ctx, app, epochID), "gnosis-style spoof must not confirm the epoch")
+
+	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
+	require.NoError(t, err)
+	signature, err := signMessage(messageHash, validatorKey)
+	require.NoError(t, err)
+
+	callVoteEpoch(t, ctx, app, validatorAddr.Hex(), instanceID, epochID, 0, signature)
+	require.True(t, epochConfirmed(t, ctx, app, epochID), "verified validator vote must still confirm the epoch")
+
+	proofSigs, err := getEpochSignatures(ctx, app, epochID)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{signature}, proofSigs)
+}
+
+func TestVoteEpochGnosisStyleVoteDoesNotCountTowardThreshold(t *testing.T) {
+	ctx := context.Background()
+	db, err := newTestDB()
+	if err != nil {
+		t.Skip("PostgreSQL not available - this test requires database connection")
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+
+	orderedsync.ForTestingReset()
+	defer orderedsync.ForTestingReset()
+	ForTestingResetSingleton()
+	defer ForTestingResetSingleton()
+
+	app := setup(t, tx)
+
+	keyA, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	keyB, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	keyC, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	addrA := crypto.PubkeyToAddress(keyA.PublicKey)
+	addrB := crypto.PubkeyToAddress(keyB.PublicKey)
+	addrC := crypto.PubkeyToAddress(keyC.PublicKey)
+
+	app.Validators = &staticValidators{vals: []*types.Validator{
+		{AccountID: types.AccountID{Identifier: crypto.FromECDSAPub(&keyA.PublicKey), KeyType: kwilcrypto.KeyTypeSecp256k1}, Power: 1},
+		{AccountID: types.AccountID{Identifier: crypto.FromECDSAPub(&keyB.PublicKey), KeyType: kwilcrypto.KeyTypeSecp256k1}, Power: 1},
+		{AccountID: types.AccountID{Identifier: crypto.FromECDSAPub(&keyC.PublicKey), KeyType: kwilcrypto.KeyTypeSecp256k1}, Power: 1},
+	}}
+
+	instanceID := newUUID()
+	chainInfo, ok := chains.GetChainInfoByID("1")
+	require.True(t, ok)
+	require.NoError(t, createNewRewardInstance(ctx, app, &userProvidedData{
+		ID:                 instanceID,
+		ChainInfo:          &chainInfo,
+		EscrowAddress:      ethcommon.HexToAddress("0x00000000000000000000000000000000000000cc"),
+		DistributionPeriod: 3600,
+	}))
+
+	epochID := newUUID()
+	require.NoError(t, createEpoch(ctx, app, &PendingEpoch{ID: epochID, StartHeight: 10, StartTime: 100}, instanceID))
+	merkleRoot := crypto.Keccak256([]byte("gnosis power merkle root"))
+	blockHash := crypto.Keccak256([]byte("gnosis power block hash"))
+	amount, err := erc20ValueFromBigInt(big.NewInt(1000))
+	require.NoError(t, err)
+	require.NoError(t, finalizeEpoch(ctx, app, epochID, 20, blockHash, merkleRoot, amount))
+
+	poison := make([]byte, 65)
+	poison[64] = 31
+	callVoteEpoch(t, ctx, app, addrA.Hex(), instanceID, epochID, 0, poison)
+
+	messageHash, err := computeEpochMessageHash(merkleRoot, blockHash)
+	require.NoError(t, err)
+	sigB, err := signMessage(messageHash, keyB)
+	require.NoError(t, err)
+	callVoteEpoch(t, ctx, app, addrB.Hex(), instanceID, epochID, 0, sigB)
+	require.False(t, epochConfirmed(t, ctx, app, epochID), "one verified vote plus a gnosis-style validator vote must not meet 2/3")
+
+	sigC, err := signMessage(messageHash, keyC)
+	require.NoError(t, err)
+	callVoteEpoch(t, ctx, app, addrC.Hex(), instanceID, epochID, 0, sigC)
+	require.True(t, epochConfirmed(t, ctx, app, epochID), "two verified validator votes must confirm")
 }

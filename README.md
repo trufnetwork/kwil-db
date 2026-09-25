@@ -71,17 +71,20 @@ configuration of most PostgreSQL packages requires changes for `kwild`, the
 easiest is to run our pre-configured Docker image:
 
 ```shell
+docker build -f contrib/docker/postgres.dockerfile -t kwil-postgres:16.15-1 contrib/docker
 docker run -p 5432:5432 -v kwil-pg-demo:/var/lib/postgresql/data \
     --shm-size 512m -e "POSTGRES_HOST_AUTH_METHOD=trust" \
-    --name kwil-pg-demo kwildb/postgres:latest
+    --name kwil-pg-demo kwil-postgres:16.15-1
 ```
 
-The first time this is run, it will pull the `kwildb/postgres` image from Docker
-Hub and create a new persistent Docker volume named `kwil-pg-demo`. NOTE: This
-command requires no authentication with `postgres`, and should not be used in
+The image is built locally from `contrib/docker/postgres.dockerfile` (it is not
+published to a registry), and the first run creates a new persistent Docker
+volume named `kwil-pg-demo`. PostgreSQL 16.15 or later is required: state-sync
+restores untrusted snapshots with `psql` in restricted mode. NOTE: This command
+requires no authentication with `postgres`, and should not be used in
 production.
 
-`task pg` may be used to run the above command.
+`task pg` may be used to run both commands.
 
 You can then start a single node network using the `kwild` binary built in the previous section:
 
