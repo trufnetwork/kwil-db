@@ -19,7 +19,7 @@ func TestStageSnapshotDumpRejectsHashMismatchBeforeImport(t *testing.T) {
 	dump := []byte("CREATE SCHEMA kwild_voting;\n")
 	wrong := sha256.Sum256([]byte("not-the-dump"))
 
-	f, err := stageSnapshotDump(context.Background(), bytes.NewReader(dump), wrong[:])
+	f, err := stageSnapshotDump(context.Background(), t.TempDir(), bytes.NewReader(dump), wrong[:])
 	require.Error(t, err)
 	require.Nil(t, f)
 	require.Contains(t, err.Error(), "invalid snapshot hash")
@@ -29,12 +29,14 @@ func TestStageSnapshotDumpReturnsVerifiedDump(t *testing.T) {
 	dump := []byte("CREATE SCHEMA kwild_voting;\n")
 	sum := sha256.Sum256(dump)
 
-	f, err := stageSnapshotDump(context.Background(), bytes.NewReader(dump), sum[:])
+	dir := t.TempDir()
+	f, err := stageSnapshotDump(context.Background(), dir, bytes.NewReader(dump), sum[:])
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		f.Close()
 		os.Remove(f.Name())
 	})
+	require.Equal(t, dir, filepath.Dir(f.Name()))
 
 	got, err := io.ReadAll(f)
 	require.NoError(t, err)
@@ -47,7 +49,7 @@ func TestStageSnapshotDumpHonorsCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	f, err := stageSnapshotDump(ctx, bytes.NewReader(dump), sum[:])
+	f, err := stageSnapshotDump(ctx, t.TempDir(), bytes.NewReader(dump), sum[:])
 	require.Nil(t, f)
 	require.ErrorIs(t, err, context.Canceled)
 }
@@ -65,7 +67,7 @@ func TestRestoreDBHashMismatchDoesNotStartPsql(t *testing.T) {
 		Port:   "5432",
 		User:   "kwild",
 		DBName: "kwild",
-	}, []byte("bad-hash-bytes-not-32-but-checked"), log.DiscardLogger)
+	}, []byte("bad-hash-bytes-not-32-but-checked"), t.TempDir(), log.DiscardLogger)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid snapshot hash")
 	_, statErr := os.Stat(started)
@@ -97,7 +99,7 @@ exit 1
 		Port:   "5432",
 		User:   "kwild",
 		DBName: "kwild",
-	}, sum[:], log.DiscardLogger)
+	}, sum[:], t.TempDir(), log.DiscardLogger)
 	require.Error(t, err)
 
 	logged, err := os.ReadFile(logPath)

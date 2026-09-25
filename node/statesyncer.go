@@ -682,7 +682,7 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	}
 	defer reader.Close()
 
-	return restoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.cfg.PsqlPath, true, s.log)
+	return restoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.cfg.PsqlPath, true, s.snapshotDir, s.log)
 }
 
 // RestoreDB restores a genesis or migration dump, which is trusted and already
@@ -693,12 +693,12 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 // The dump hash is verified before psql starts. On import failure it waits for
 // psql and drops leftover kwild_/ds_* schemas so a partial restore cannot be
 // treated as initialized state on restart.
-func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
-	return restoreDB(ctx, reader, db, snapshotHash, "psql", false, logger)
+func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, stagingDir string, logger log.Logger) error {
+	return restoreDB(ctx, reader, db, snapshotHash, "psql", false, stagingDir, logger)
 }
 
-func restoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, psqlPath string, restrictInput bool, logger log.Logger) error {
-	dump, err := stageSnapshotDump(ctx, reader, snapshotHash)
+func restoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, psqlPath string, restrictInput bool, stagingDir string, logger log.Logger) error {
+	dump, err := stageSnapshotDump(ctx, stagingDir, reader, snapshotHash)
 	if err != nil {
 		return err
 	}
@@ -776,14 +776,18 @@ func (r ctxReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
-// stageSnapshotDump buffers the dump and verifies the whole-dump hash before
-// any bytes are sent to psql. The caller must close and remove the returned file.
-func stageSnapshotDump(ctx context.Context, reader io.Reader, snapshotHash []byte) (*os.File, error) {
+// stageSnapshotDump buffers the dump in stagingDir and verifies the whole-dump
+// hash before any bytes are sent to psql. The caller must close and remove the
+// returned file.
+func stageSnapshotDump(ctx context.Context, stagingDir string, reader io.Reader, snapshotHash []byte) (*os.File, error) {
 	if len(snapshotHash) == 0 {
 		return nil, fmt.Errorf("missing snapshot hash")
 	}
+	if stagingDir == "" {
+		return nil, fmt.Errorf("missing snapshot staging directory")
+	}
 
-	dump, err := os.CreateTemp("", "kwild-restore-*.sql")
+	dump, err := os.CreateTemp(stagingDir, "kwild-restore-*.sql")
 	if err != nil {
 		return nil, err
 	}
