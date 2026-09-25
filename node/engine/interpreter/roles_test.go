@@ -121,6 +121,118 @@ func Test_Roles(t *testing.T) {
 			done()
 		}
 	})
+
+	t.Run("global grant keeps an explicit namespace denial", func(t *testing.T) {
+		ac, db, done := setup(t)
+
+		const role = "analyst"
+		const user = "alice"
+		err = ac.CreateRole(ctx, db, role)
+		handleErr(t, err, done)
+		err = ac.AssignRole(ctx, db, role, user, false)
+		handleErr(t, err, done)
+
+		// Namespace grant then revoke leaves granted=false and no global row.
+		err = ac.GrantPrivileges(ctx, db, role, []privilege{_INSERT_PRIVILEGE}, &mainNamespace, false)
+		handleErr(t, err, done)
+		err = ac.RevokePrivileges(ctx, db, role, []privilege{_INSERT_PRIVILEGE}, &mainNamespace, false)
+		handleErr(t, err, done)
+		err = ac.GrantPrivileges(ctx, db, role, []privilege{_INSERT_PRIVILEGE}, nil, false)
+		handleErr(t, err, done)
+
+		info := "info"
+		assertLiveMatchesReload := func() {
+			t.Helper()
+			ac2, err := newAccessController(ctx, db)
+			handleErr(t, err, done)
+			for _, ns := range []*string{&mainNamespace, &info} {
+				live := ac.HasPrivilege(user, ns, _INSERT_PRIVILEGE)
+				reloaded := ac2.HasPrivilege(user, ns, _INSERT_PRIVILEGE)
+				if live != reloaded {
+					done()
+					t.Fatalf("live HasPrivilege(%s) = %v, reload = %v", *ns, live, reloaded)
+				}
+			}
+		}
+
+		if ac.HasPrivilege(user, &mainNamespace, _INSERT_PRIVILEGE) {
+			done()
+			t.Fatal("live cache allowed INSERT on a namespace with an explicit denial")
+		}
+		if !ac.HasPrivilege(user, &info, _INSERT_PRIVILEGE) {
+			done()
+			t.Fatal("live cache dropped the global INSERT grant on a namespace without a denial")
+		}
+		assertLiveMatchesReload()
+
+		// Global revoke deletes the denial row. A later global grant applies to every namespace.
+		err = ac.RevokePrivileges(ctx, db, role, []privilege{_INSERT_PRIVILEGE}, nil, false)
+		handleErr(t, err, done)
+		err = ac.GrantPrivileges(ctx, db, role, []privilege{_INSERT_PRIVILEGE}, nil, false)
+		handleErr(t, err, done)
+		if !ac.HasPrivilege(user, &mainNamespace, _INSERT_PRIVILEGE) {
+			done()
+			t.Fatal("global revoke should clear the namespace denial")
+		}
+		assertLiveMatchesReload()
+		done()
+	})
+}
+
+func Test_globalGrantPreservesNamespaceDenial(t *testing.T) {
+	const (
+		victim = "victim"
+		other  = "other"
+	)
+	ac := &accessController{
+		roles:           map[string]*perms{},
+		knownNamespaces: map[string]struct{}{victim: {}, other: {}},
+	}
+	role := ac.newPerm()
+	ac.roles["r"] = role
+
+	victimNS := victim
+	otherNS := other
+
+	role.grant(&victimNS, _SELECT_PRIVILEGE)
+	role.revoke(&victimNS, _SELECT_PRIVILEGE)
+	role.grant(nil, _SELECT_PRIVILEGE)
+
+	if role.canDo(_SELECT_PRIVILEGE, &victimNS) {
+		t.Fatal("global grant overwrote an explicit denial")
+	}
+	if !role.canDo(_SELECT_PRIVILEGE, &otherNS) {
+		t.Fatal("global grant should apply to a namespace without a denial")
+	}
+	if !role.canDo(_SELECT_PRIVILEGE, nil) {
+		t.Fatal("global grant should set the global privilege")
+	}
+
+	copied := role.copy()
+	copied.grant(nil, _SELECT_PRIVILEGE)
+	if copied.canDo(_SELECT_PRIVILEGE, &victimNS) {
+		t.Fatal("copied role lost the namespace denial")
+	}
+
+	// An explicit grant on the namespace clears the denial.
+	role.grant(&victimNS, _SELECT_PRIVILEGE)
+	if _, stillDenied := role.namespaceDenials[victim][_SELECT_PRIVILEGE]; stillDenied {
+		t.Fatal("namespace grant should clear an explicit denial")
+	}
+
+	role.revoke(&victimNS, _SELECT_PRIVILEGE)
+	role.revoke(nil, _SELECT_PRIVILEGE)
+	role.grant(nil, _SELECT_PRIVILEGE)
+	if !role.canDo(_SELECT_PRIVILEGE, &victimNS) {
+		t.Fatal("global revoke should clear namespace denials")
+	}
+
+	role.revoke(&victimNS, _SELECT_PRIVILEGE)
+	ac.unregisterNamespace(victim)
+	ac.registerNamespace(victim)
+	if !ac.roles["r"].canDo(_SELECT_PRIVILEGE, &victimNS) {
+		t.Fatal("recreated namespace should inherit the global privilege")
+	}
 }
 
 var mainNamespace = "main"
