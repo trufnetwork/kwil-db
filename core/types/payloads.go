@@ -1245,7 +1245,7 @@ func (v *ValidatorVoteIDs) UnmarshalBinary(bts []byte) error {
 	if err := binary.Read(buf, SerializationByteOrder, &length); err != nil {
 		return err
 	}
-	v.ResolutionIDs = make([]*UUID, 0, length) // to match MArshalBinary
+	v.ResolutionIDs = make([]*UUID, 0)
 	for range length {
 		idBts, err := ReadBytes(buf)
 		if err != nil {
