@@ -493,9 +493,12 @@ func (svc *Service) Broadcast(ctx context.Context, req *userjson.BroadcastReques
 	// NOTE: it's mostly pointless to have the structured transaction in the
 	// request rather than the serialized transaction, except that a client only
 	// has to serialize the *body* to sign.
-
-	if req.Tx == nil || req.Tx.Body == nil {
+	if req == nil || req.Tx == nil || req.Tx.Body == nil {
 		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "transaction body is required", nil)
+	}
+
+	if req.Tx.Signature == nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorBroadcastRejected, "transaction signature is required", nil)
 	}
 
 	var sync = userjson.BroadcastSyncAccept // default to accept, not commit

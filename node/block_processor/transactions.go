@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -103,6 +104,14 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 
 	// Enforce nonce ordering and remove transactions from the unfunded accounts
 	for _, tx := range okTxns {
+		if tx.Transaction == nil || tx.Signature == nil {
+			if tx.Transaction != nil {
+				invalidTxs = append(invalidTxs, tx.Transaction)
+			}
+			bp.log.Warn("Dropping tx: transaction signature is required")
+			continue
+		}
+
 		if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
 			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)
 			bp.log.Warn("Dropping tx with invalid fee while preparing the block", "tx", tx)
@@ -453,6 +462,10 @@ func (bp *BlockProcessor) PrepareValidatorVoteIDTx(ctx context.Context, db sql.D
 }
 
 func verifyTransactionWithContext(verifyCtx authExt.VerifyContext, tx *types.Transaction) error {
+	if tx == nil || tx.Signature == nil {
+		return errors.New("transaction signature is required")
+	}
+
 	msg, err := tx.SerializeMsg()
 	if err != nil {
 		return err

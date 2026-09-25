@@ -176,6 +176,10 @@ func (r *TxApp) Execute(ctx *common.TxContext, db sql.DB, tx *types.Transaction)
 		}
 	}()
 
+	if tx == nil || tx.Signature == nil {
+		return txRes(nil, types.CodeInvalidTxType, "", errors.New("transaction signature is required"))
+	}
+
 	if err := types.ValidatePayloadEncoding(tx.Body.PayloadType, tx.Body.Payload); err != nil {
 		return txRes(nil, types.CodeEncodingError, "", err)
 	}
@@ -711,6 +715,9 @@ func logErr(l log.Logger, err error) {
 
 // TxSenderAcctID returns the transaction sender's account ID information.
 func TxSenderAcctID(t *types.Transaction) (*types.AccountID, error) {
+	if t == nil || t.Signature == nil {
+		return nil, errors.New("transaction signature is required")
+	}
 	if t.Sender == nil {
 		return nil, errors.New("transaction sender is nil")
 	}

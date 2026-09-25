@@ -16,6 +16,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/crypto/auth"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/core/types"
+	authExt "github.com/trufnetwork/kwil-db/extensions/auth"
 	"github.com/trufnetwork/kwil-db/node/txapp"
 	nodetypes "github.com/trufnetwork/kwil-db/node/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
@@ -909,6 +910,94 @@ func (v *mockValidatorStore) ValidatorUpdates() map[string]*types.Validator {
 
 func (v *mockValidatorStore) LoadValidatorSet(ctx context.Context, db sql.Executor) error {
 	return nil
+}
+
+func TestMissingSignatureRejected(t *testing.T) {
+	prevGetEvents := getEvents
+	getEvents = func(context.Context, sql.Executor) ([]*types.VotableEvent, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() { getEvents = prevGetEvents })
+
+	err := verifyTransactionWithContext(authExtVerifyCtx(), nil)
+	require.EqualError(t, err, "transaction signature is required")
+
+	err = verifyTransactionWithContext(authExtVerifyCtx(), &types.Transaction{})
+	require.EqualError(t, err, "transaction signature is required")
+
+	chainCtx := &common.ChainContext{
+		ChainID: "test",
+		NetworkParameters: &types.NetworkParameters{
+			MaxBlockSize:     6 * 1024 * 1024,
+			MaxVotesPerTx:    100,
+			DisabledGasCosts: true,
+		},
+	}
+	_, signer := genNodeKeyAndSigner(t)
+	bp := &BlockProcessor{
+		db:       &mockDB{},
+		log:      log.DiscardLogger,
+		signer:   signer,
+		chainCtx: chainCtx,
+		txapp:    &mockTxApp{},
+	}
+	unsigned := &types.Transaction{
+		Body: &types.TransactionBody{
+			Description: "t",
+			Payload:     []byte(`x`),
+			Fee:         big.NewInt(0),
+			Nonce:       1,
+		},
+		Sender: edPubKey([]byte(`guy`)),
+	}
+	finalTxs, invalidTxs, err := bp.prepareBlockTransactions(context.Background(), nil, []*nodetypes.Tx{nodetypes.NewTx(unsigned)})
+	require.NoError(t, err)
+	require.Empty(t, finalTxs)
+	require.Len(t, invalidTxs, 1)
+	require.Nil(t, invalidTxs[0].Signature)
+
+	signed := &types.Transaction{
+		Signature: &auth.Signature{Data: []byte{1}, Type: auth.Ed25519Auth},
+		Body: &types.TransactionBody{
+			Description: "t",
+			Payload:     []byte(`x`),
+			Fee:         big.NewInt(0),
+			Nonce:       1,
+		},
+		Sender: unsigned.Sender,
+	}
+	// A second accepted sender sits after the unsigned tx, so a duplicate of
+	// that sender is not adjacent to it in okTxns. Comparing with okTxns[i-1]
+	// would see the unsigned tx and keep the duplicate.
+	distinct := &types.Transaction{
+		Signature: &auth.Signature{Data: []byte{2}, Type: auth.Ed25519Auth},
+		Body: &types.TransactionBody{
+			Description: "other",
+			Payload:     []byte(`y`),
+			Fee:         big.NewInt(0),
+			Nonce:       1,
+		},
+		Sender: edPubKey([]byte(`other`)),
+	}
+	duplicate := cloneTx(distinct)
+	duplicate.Body.Description = "dup"
+	finalTxs, invalidTxs, err = bp.prepareBlockTransactions(context.Background(), nil, []*nodetypes.Tx{
+		nodetypes.NewTx(signed),
+		nodetypes.NewTx(unsigned),
+		nodetypes.NewTx(distinct),
+		nodetypes.NewTx(duplicate),
+	})
+	require.NoError(t, err)
+	require.Len(t, finalTxs, 2)
+	require.Equal(t, signed.Hash(), finalTxs[0].Hash())
+	require.Equal(t, distinct.Hash(), finalTxs[1].Hash())
+	require.Len(t, invalidTxs, 2)
+	require.Nil(t, invalidTxs[0].Signature)
+	require.Equal(t, duplicate.Hash(), invalidTxs[1].Hash())
+}
+
+func authExtVerifyCtx() authExt.VerifyContext {
+	return authExt.VerifyContext{}
 }
 
 func TestCheckTx_RejectsNegativeAndNilFee(t *testing.T) {

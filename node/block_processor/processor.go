@@ -260,6 +260,10 @@ func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types
 		return fmt.Errorf("%w: fee cannot be negative or nil", ktypes.ErrInvalidAmount)
 	}
 
+	if tx.Signature == nil {
+		return errors.New("transaction signature is required")
+	}
+
 	bp.log.Debug("Check transaction", "Recheck", recheck, "Hash", txHash, "Sender", log.LazyHex(tx.Sender),
 		"PayloadType", tx.Body.PayloadType, "Nonce", tx.Body.Nonce, "TxFee", tx.Body.Fee)
 
@@ -420,10 +424,21 @@ func (bp *BlockProcessor) ExecuteBlock(ctx context.Context, req *ktypes.BlockExe
 	// Begin executing transactions. The chain context may be updated during the block execution.
 	txResults := make([]ktypes.TxResult, len(req.Block.Txns))
 
+	// HashCache panics on a nil transaction, so reject those before hashing.
+	for _, tx := range req.Block.Txns {
+		if tx == nil || tx.Signature == nil {
+			return nil, errors.New("transaction signature is required")
+		}
+	}
+
 	txHashes := bp.initBlockExecutionStatus(req.Block)
 	executionProfile := newBlockExecutionProfile()
 
 	for i, tx := range req.Block.Txns {
+		if tx == nil || tx.Signature == nil {
+			return nil, errors.New("transaction signature is required")
+		}
+
 		requiresContext, err := authExt.RequiresContext(tx.Signature.Type)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect block tx authenticator: %w", err)

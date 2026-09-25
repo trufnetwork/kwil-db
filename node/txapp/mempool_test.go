@@ -234,3 +234,15 @@ type mockRebroadcast struct{}
 func (m *mockRebroadcast) MarkRebroadcast(ctx context.Context, ids []*types.UUID) error {
 	return nil
 }
+
+func TestMissingSignatureRejectedBeforeApply(t *testing.T) {
+	_, err := TxSenderAcctID(nil)
+	require.EqualError(t, err, "transaction signature is required")
+
+	_, err = TxSenderAcctID(&types.Transaction{})
+	require.EqualError(t, err, "transaction signature is required")
+
+	m := &mempool{log: log.DiscardLogger}
+	err = m.applyTransaction(nil, &types.Transaction{}, nil, nil)
+	require.EqualError(t, err, "transaction signature is required")
+}
