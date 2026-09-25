@@ -115,9 +115,8 @@ func TestDropRestoreSchemasAfterFailure(t *testing.T) {
 	logPath := filepath.Join(dir, "psql.log")
 	script := filepath.Join(dir, "psql")
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho CLEANUP >> \""+logPath+"\"\n"), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	err := dropRestoreSchemasAfterFailure(config.DBConfig{
+	err := dropRestoreSchemasAfterFailure(script, config.DBConfig{
 		Host:   "127.0.0.1",
 		Port:   "5432",
 		User:   "kwild",
