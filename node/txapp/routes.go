@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -133,13 +134,22 @@ func (d *baseRoute) Price(ctx context.Context, router *TxApp, db sql.DB, tx *typ
 	}, tx)
 }
 
-func (d *baseRoute) Execute(ctx *common.TxContext, router *TxApp, db sql.DB, tx *types.Transaction) *TxResponse {
+func (d *baseRoute) Execute(ctx *common.TxContext, router *TxApp, db sql.DB, tx *types.Transaction) (res *TxResponse) {
+	var spend *big.Int
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			router.service.Logger.Error("panic executing transaction", "panic", recovered, "stack", string(debug.Stack()))
+			res = txRes(spend, types.CodeUnknownError, "", fmt.Errorf("panic executing transaction: %v", recovered))
+		}
+	}()
+
 	dbTx, err := db.BeginTx(ctx.Ctx)
 	if err != nil {
 		return txRes(nil, types.CodeUnknownError, "", err)
 	}
 
-	spend, code, err := router.checkAndSpend(ctx, tx, d, dbTx)
+	var code types.TxCode
+	spend, code, err = router.checkAndSpend(ctx, tx, d, dbTx)
 	if err != nil {
 		switch code {
 		case types.CodeOk, types.CodeInsufficientBalance, types.CodeInsufficientFee:

@@ -346,6 +346,60 @@ func Test_RouteNegativeFeeRejected(t *testing.T) {
 	assert.Equal(t, int64(0), res.Spend)
 }
 
+func Test_RoutePanicKeepsSpend(t *testing.T) {
+	const price int64 = 5
+	route := &baseRoute{Route: panicAfterSpendRoute{price: big.NewInt(price)}}
+
+	payload := &types.ValidatorVoteIDs{ResolutionIDs: []*types.UUID{}}
+	tx, err := types.CreateTransaction(payload, "chainid", 1)
+	require.NoError(t, err)
+	tx.Body.Fee = big.NewInt(price)
+	require.NoError(t, tx.Sign(signer1))
+
+	committed := false
+	db := &trackingDb{tx: &trackingTx{
+		mockDb:   &mockDb{},
+		onCommit: func() { committed = true },
+	}}
+	app := &TxApp{
+		Accounts: &mockAccount{},
+		service:  &common.Service{Logger: log.DiscardLogger},
+	}
+	txCtx := &common.TxContext{
+		Ctx: context.Background(),
+		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{},
+			},
+		},
+	}
+
+	res := route.Execute(txCtx, app, db, tx)
+	require.Error(t, res.Error)
+	assert.Contains(t, res.Error.Error(), "panic executing transaction")
+	assert.Equal(t, types.CodeUnknownError, res.ResponseCode)
+	assert.Equal(t, price, res.Spend)
+	assert.True(t, committed)
+}
+
+type panicAfterSpendRoute struct {
+	price *big.Int
+}
+
+func (panicAfterSpendRoute) Name() string { return "panic-after-spend" }
+
+func (r panicAfterSpendRoute) Price(context.Context, *common.App, *types.Transaction) (*big.Int, error) {
+	return r.price, nil
+}
+
+func (panicAfterSpendRoute) PreTx(*common.TxContext, *common.Service, *types.Transaction) (types.TxCode, error) {
+	panic("boom")
+}
+
+func (panicAfterSpendRoute) InTx(*common.TxContext, *common.App, *types.Transaction) (types.TxCode, string, error) {
+	return types.CodeOk, "", nil
+}
+
 type trackingTx struct {
 	*mockDb
 	onCommit   func()
