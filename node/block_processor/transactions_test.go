@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -124,6 +125,9 @@ func TestPrepareMempoolTxns(t *testing.T) {
 	tOtherSenderA.Sender = edPubKey([]byte(`otherguy`))
 	// tOtherSenderAb := marshalTx(t, tOtherSenderA)
 
+	tADup := cloneTx(tA)
+	tADup.Body.Description = "dup"
+
 	// Same nonce tx, different body (diff bytes)
 	tOtherSenderAbDup := cloneTx(tOtherSenderA)
 	tOtherSenderAbDup.Body.Description = "dup" // not "t"
@@ -144,6 +148,15 @@ func TestPrepareMempoolTxns(t *testing.T) {
 	zeroFeeTx := cloneTx(tA)
 	zeroFeeTx.Body.Fee = &big.Int{}
 
+	negativeFeeTx := cloneTx(tA)
+	negativeFeeTx.Body.Fee = big.NewInt(-100)
+
+	nilFeeTx := cloneTx(tA)
+	nilFeeTx.Body.Fee = nil
+
+	nilBodyTx := cloneTx(tA)
+	nilBodyTx.Body = nil
+
 	tests := []struct {
 		name string
 		txs  []*types.Transaction
@@ -154,6 +167,36 @@ func TestPrepareMempoolTxns(t *testing.T) {
 			"empty",
 			[]*types.Transaction{},
 			[]*types.Transaction{},
+			false,
+		},
+		{
+			"negative fee dropped",
+			[]*types.Transaction{negativeFeeTx, tA},
+			[]*types.Transaction{tA},
+			false,
+		},
+		{
+			"nil fee dropped",
+			[]*types.Transaction{nilFeeTx, tA},
+			[]*types.Transaction{tA},
+			false,
+		},
+		{
+			"nil body dropped before nonce sort",
+			[]*types.Transaction{tB, nilBodyTx, tA},
+			[]*types.Transaction{tA, tB},
+			false,
+		},
+		{
+			"dup nonce after invalid fee dropped",
+			[]*types.Transaction{tA, negativeFeeTx, tADup},
+			[]*types.Transaction{tA},
+			false,
+		},
+		{
+			"dup nonce with other sender in between",
+			[]*types.Transaction{tA, tOtherSenderA, tADup, tB},
+			[]*types.Transaction{tA, tOtherSenderA, tB},
 			false,
 		},
 		{
@@ -955,4 +998,39 @@ func TestMissingSignatureRejected(t *testing.T) {
 
 func authExtVerifyCtx() authExt.VerifyContext {
 	return authExt.VerifyContext{}
+}
+
+func TestCheckTx_RejectsNegativeAndNilFee(t *testing.T) {
+	chainCtx := &common.ChainContext{
+		ChainID: "test",
+		NetworkParameters: &types.NetworkParameters{
+			DisabledGasCosts: true,
+		},
+	}
+	_, signer := genNodeKeyAndSigner(t)
+	bp := &BlockProcessor{
+		db:       &mockDB{},
+		log:      log.DiscardLogger,
+		signer:   signer,
+		chainCtx: chainCtx,
+		txapp:    &mockTxApp{},
+	}
+
+	tx := &types.Transaction{
+		Body: &types.TransactionBody{
+			Fee: big.NewInt(-10),
+		},
+	}
+	ntx := nodetypes.NewTx(tx)
+	ctx := context.Background()
+
+	err := bp.checkTx(ctx, &mockTx{}, ntx, 0, time.Now(), false)
+	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
+
+	tx.Body.Fee = nil
+	ntx = nodetypes.NewTx(tx)
+	err = bp.checkTx(ctx, &mockTx{}, ntx, 0, time.Now(), false)
+	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
 }

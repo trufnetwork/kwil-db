@@ -132,6 +132,65 @@ func Test_MempoolWithGas(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func Test_MempoolNegativeFee(t *testing.T) {
+	privkey, pubkey, _ := crypto.GenerateSecp256k1Key(nil)
+	nodeIdent := auth.GetNodeSigner(privkey)
+	m := &mempool{
+		accounts:   make(map[string]*types.Account),
+		accountMgr: &mockAccount{},
+		log:        log.DiscardLogger,
+		nodeIdent:  nodeIdent,
+	}
+
+	ctx := context.Background()
+	db := &mockDb{}
+	rebroadcast := &mockRebroadcast{}
+
+	txCtx := &common.TxContext{
+		Ctx:    ctx,
+		Caller: "A",
+		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{
+					Leader:           types.PublicKey{PublicKey: pubkey},
+					DisabledGasCosts: false,
+				},
+			},
+		},
+	}
+
+	tx := newTx(t, 1, "A")
+	senderAcct, err := TxSenderAcctID(tx)
+	require.NoError(t, err)
+	id, err := senderAcct.MarshalBinary()
+	require.NoError(t, err)
+
+	m.accounts[string(id)] = &types.Account{
+		ID:      senderAcct,
+		Balance: big.NewInt(100),
+		Nonce:   0,
+	}
+
+	// Negative fee must be rejected and must not alter balance
+	tx.Body.Fee = big.NewInt(-50)
+	err = m.applyTransaction(txCtx, tx, db, rebroadcast)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
+	assert.Equal(t, big.NewInt(100), m.accounts[string(id)].Balance)
+	assert.EqualValues(t, 0, m.accounts[string(id)].Nonce)
+
+	// Nil fee must also be rejected
+	tx.Body.Fee = nil
+	err = m.applyTransaction(txCtx, tx, db, rebroadcast)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
+
+	// Nil body must also be rejected before any Body access
+	tx.Body = nil
+	err = m.applyTransaction(txCtx, tx, db, rebroadcast)
+	require.ErrorIs(t, err, types.ErrInvalidAmount)
+	assert.Equal(t, big.NewInt(100), m.accounts[string(id)].Balance)
+	assert.EqualValues(t, 0, m.accounts[string(id)].Nonce)
+}
+
 func newTx(_ *testing.T, nonce uint64, sender string) *types.Transaction {
 	return &types.Transaction{
 		Signature: &auth.Signature{

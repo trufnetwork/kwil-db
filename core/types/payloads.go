@@ -97,6 +97,43 @@ func UnmarshalPayload(payloadType PayloadType, payload []byte) (Payload, error) 
 	return payloadIface, nil
 }
 
+// ValidatePayloadEncoding checks that a transaction payload unmarshals and that
+// every encoded scalar has a complete value. Unknown payload types are left to
+// the route registry.
+func ValidatePayloadEncoding(payloadType PayloadType, payload []byte) error {
+	decoded, err := UnmarshalPayload(payloadType, payload)
+	if err != nil {
+		if errors.Is(err, ErrUnknownPayloadType) {
+			return nil
+		}
+		return err
+	}
+
+	switch body := decoded.(type) {
+	case *ActionExecution:
+		for _, call := range body.Arguments {
+			for _, arg := range call {
+				if arg == nil {
+					return errors.New("nil action argument")
+				}
+				if _, err := arg.Decode(); err != nil {
+					return err
+				}
+			}
+		}
+	case *RawStatement:
+		for _, param := range body.Parameters {
+			if param == nil || param.Value == nil {
+				return errors.New("nil statement parameter")
+			}
+			if _, err := param.Value.Decode(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // payloadTypes includes native types and types registered from extensions.
 var payloadTypes = map[PayloadType]bool{
 	PayloadTypeRawStatement:        true,
@@ -827,7 +864,7 @@ func encodeNotNull(v []byte) []byte {
 
 func decodeNullable(v []byte) (val []byte, null bool, err error) {
 	if len(v) == 0 {
-		panic("empty byte slice")
+		return nil, false, errors.New("encoded value is empty")
 	}
 
 	if v[0] == 0 {
@@ -898,6 +935,9 @@ func decodeScalar(data []byte, typename string, metadata [2]uint16) (any, error)
 		copy(uuid[:], data)
 		return &uuid, nil
 	case BoolType.Name:
+		if len(data) != 1 {
+			return nil, fmt.Errorf("bool must be 1 byte")
+		}
 		bb := data[0] == 1
 		return &bb, nil
 	case NullType.Name:
@@ -1205,7 +1245,7 @@ func (v *ValidatorVoteIDs) UnmarshalBinary(bts []byte) error {
 	if err := binary.Read(buf, SerializationByteOrder, &length); err != nil {
 		return err
 	}
-	v.ResolutionIDs = make([]*UUID, 0, length) // to match MArshalBinary
+	v.ResolutionIDs = make([]*UUID, 0)
 	for range length {
 		idBts, err := ReadBytes(buf)
 		if err != nil {

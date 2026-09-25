@@ -6,6 +6,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +31,7 @@ import (
 	"github.com/trufnetwork/kwil-db/node/meta"
 	"github.com/trufnetwork/kwil-db/node/peers"
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
 var (
@@ -97,6 +99,9 @@ func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error)
 				err := s.verifyState(ctx, snap)
 				if err != nil {
 					s.log.Warn("failed to verify state after DB restore", "error", err)
+					if cleanErr := dropRestoreSchemasAfterFailure(s.cfg.PsqlPath, s.dbConfig); cleanErr != nil {
+						return -1, errors.Join(err, cleanErr)
+					}
 					return -1, err
 				}
 
@@ -636,8 +641,6 @@ func (s *StateSyncService) verifyState(ctx context.Context, snapshot *snapshotMe
 	return nil
 }
 
-// RestoreDB restores the database from the logical sql dump using psql command
-// It also validates the snapshot hash, before restoring the database
 func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMetadata) error {
 	// Log detailed information about the restoration process
 	sysInfo := utils.GetSystemInfo()
@@ -655,6 +658,21 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	stopMonitoring := utils.MonitorRestoreProgress(ctx, estimatedMinutes, s.log)
 	defer stopMonitoring()
 
+	// Validate all provider-supplied bytes before passing any of them to psql.
+	validationStreamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
+	validationReader, err := gzip.NewReader(validationStreamer)
+	if err != nil {
+		validationStreamer.Close()
+		return err
+	}
+	if err := decompressAndValidateSnapshotHash(io.Discard, validationReader, snapshot.Hash); err != nil {
+		validationReader.Close()
+		validationStreamer.Close()
+		return err
+	}
+	validationReader.Close()
+	validationStreamer.Close()
+
 	streamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
 	defer streamer.Close()
 
@@ -662,45 +680,69 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	if err != nil {
 		return err
 	}
+	defer reader.Close()
 
-	return RestoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.log)
+	return restoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.cfg.PsqlPath, true, s.snapshotDir, s.log)
 }
 
-func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
+// RestoreDB restores a genesis or migration dump, which is trusted and already
+// carries its own \restrict pair when produced by pg_dump 16.15+. Adding a
+// second restriction would nest the keys and fail the import, so only the
+// state-sync path, whose bytes come from a remote provider, restricts.
+//
+// The dump hash is verified before psql starts. On import failure it waits for
+// psql and drops leftover kwild_/ds_* schemas so a partial restore cannot be
+// treated as initialized state on restart.
+func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, stagingDir string, logger log.Logger) error {
+	return restoreDB(ctx, reader, db, snapshotHash, "psql", false, stagingDir, logger)
+}
 
-	// unzip and stream the sql dump to psql
-	cmd := exec.CommandContext(ctx,
-		"psql",
-		"--username", db.User,
-		"--host", db.Host,
-		"--port", db.Port,
-		"--dbname", db.DBName,
-		"--no-password",
-	)
-	if db.Pass != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
-	}
-
-	// cmd.Stdout = &stderr
-	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
+func restoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, psqlPath string, restrictInput bool, stagingDir string, logger log.Logger) error {
+	dump, err := stageSnapshotDump(ctx, stagingDir, reader, snapshotHash)
 	if err != nil {
 		return err
 	}
-	defer stdinPipe.Close()
+	defer func() {
+		dump.Close()
+		os.Remove(dump.Name())
+	}()
+
+	cmd := psqlCommand(ctx, psqlPath, db, "--set", "ON_ERROR_STOP=1")
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
 
 	logger.Info("Restore DB: ", "command", cmd.String())
 
 	if err := cmd.Start(); err != nil {
+		stdinPipe.Close()
 		return err
 	}
 
-	// decompress the chunk streams and stream the sql dump to psql stdinPipe
-	if err := decompressAndValidateSnapshotHash(stdinPipe, reader, snapshotHash); err != nil {
+	copyErr := func() error {
+		defer stdinPipe.Close()
+		if restrictInput {
+			restrictKey := make([]byte, 32)
+			if _, err := rand.Read(restrictKey); err != nil {
+				return fmt.Errorf("failed to generate psql restriction key: %w", err)
+			}
+			// Restricted mode preserves COPY terminators while blocking every psql
+			// meta-command, including shell escapes and file includes.
+			if _, err := fmt.Fprintf(stdinPipe, "\\restrict %x\n", restrictKey); err != nil {
+				return fmt.Errorf("failed to restrict psql input: %w", err)
+			}
+		}
+		_, err := io.Copy(stdinPipe, dump)
 		return err
-	}
-	stdinPipe.Close() // signifies the end of the input stream to the psql command
+	}()
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	if copyErr != nil || waitErr != nil {
+		err := errors.Join(copyErr, waitErr)
+		if cleanErr := dropRestoreSchemasAfterFailure(psqlPath, db); cleanErr != nil {
+			err = errors.Join(err, cleanErr)
+		}
 		return err
 	}
 
@@ -708,20 +750,126 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	return nil
 }
 
-// decompressAndValidateSnapshotHash decompresses the chunk streams and validates the snapshot hash
+// decompressAndValidateSnapshotHash hashes reader and writes it to output.
+// State sync uses this to reject a bad snapshot before psql is started.
 func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snapshotHash []byte) error {
 	hasher := sha256.New()
-	_, err := io.Copy(io.MultiWriter(output, hasher), reader)
-	if err != nil {
+	if _, err := io.Copy(io.MultiWriter(output, hasher), reader); err != nil {
 		return fmt.Errorf("failed to decompress chunk streams: %w", err)
 	}
 	hash := hasher.Sum(nil)
-
-	// Validate the hash of the decompressed chunks
 	if !bytes.Equal(hash, snapshotHash) {
 		return fmt.Errorf("invalid snapshot hash %x, expected %x", hash, snapshotHash)
 	}
 	return nil
+}
+
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r ctxReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+// stageSnapshotDump buffers the dump in stagingDir and verifies the whole-dump
+// hash before any bytes are sent to psql. The caller must close and remove the
+// returned file.
+func stageSnapshotDump(ctx context.Context, stagingDir string, reader io.Reader, snapshotHash []byte) (*os.File, error) {
+	if len(snapshotHash) == 0 {
+		return nil, fmt.Errorf("missing snapshot hash")
+	}
+	if stagingDir == "" {
+		return nil, fmt.Errorf("missing snapshot staging directory")
+	}
+
+	dump, err := os.CreateTemp(stagingDir, "kwild-restore-*.sql")
+	if err != nil {
+		return nil, err
+	}
+
+	cleanup := func() {
+		dump.Close()
+		os.Remove(dump.Name())
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(dump, hasher), ctxReader{ctx: ctx, r: reader}); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("failed to buffer snapshot dump: %w", err)
+	}
+
+	hash := hasher.Sum(nil)
+	if !bytes.Equal(hash, snapshotHash) {
+		cleanup()
+		return nil, fmt.Errorf("invalid snapshot hash %x, expected %x", hash, snapshotHash)
+	}
+
+	if _, err := dump.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return dump, nil
+}
+
+const dropRestoreSchemasSQL = `
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT nspname FROM pg_namespace
+    WHERE nspname LIKE 'kwild\_%' ESCAPE '\'
+       OR nspname LIKE 'ds\_%' ESCAPE '\'
+  LOOP
+    EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', r.nspname);
+  END LOOP;
+END
+$$;`
+
+func psqlCommand(ctx context.Context, psqlPath string, db config.DBConfig, extraArgs ...string) *exec.Cmd {
+	args := []string{
+		"--username", db.User,
+		"--host", db.Host,
+		"--port", db.Port,
+		"--dbname", db.DBName,
+		"--no-password",
+		"--no-psqlrc",
+	}
+	args = append(args, extraArgs...)
+	cmd := exec.CommandContext(ctx, psqlPath, args...)
+	if db.Pass != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
+	}
+	return cmd
+}
+
+const restoreCleanupTimeout = 30 * time.Second
+
+func dropRestoreSchemasAfterFailure(psqlPath string, db config.DBConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), restoreCleanupTimeout)
+	defer cancel()
+	return dropRestoreSchemasWithPsql(ctx, psqlPath, db)
+}
+
+func dropRestoreSchemasWithPsql(ctx context.Context, psqlPath string, db config.DBConfig) error {
+	cmd := psqlCommand(ctx, psqlPath, db, "--set", "ON_ERROR_STOP=1", "-c", dropRestoreSchemasSQL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("drop restore schemas: %w: %s", err, out)
+	}
+	return nil
+}
+
+// DropRestoreSchemas removes leftover kwild_/ds_* schemas from a failed restore
+// so a subsequent statesync or genesis recovery can run against an empty DB.
+func DropRestoreSchemas(ctx context.Context, exec sql.Executor) error {
+	_, err := exec.Execute(ctx, dropRestoreSchemasSQL)
+	return err
 }
 
 // Utility to stream chunks of a snapshot

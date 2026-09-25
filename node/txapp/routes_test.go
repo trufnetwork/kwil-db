@@ -289,6 +289,202 @@ func Test_Routes(t *testing.T) {
 	}
 }
 
+func Test_RouteNegativeFeeRejected(t *testing.T) {
+	account := &mockAccount{}
+	Validators := &mockValidator{
+		getVoterFn: func() (int64, error) { return 1, nil },
+	}
+
+	payload := &types.ValidatorVoteIDs{
+		ResolutionIDs: []*types.UUID{
+			types.NewUUIDV5([]byte("test")),
+		},
+	}
+	tx, err := types.CreateTransaction(payload, "chainid", 1)
+	require.NoError(t, err)
+
+	tx.Body.Fee = big.NewInt(-100)
+	err = tx.Sign(signer1)
+	require.NoError(t, err)
+
+	committed := false
+	rolledBack := false
+	trackingTxObj := &trackingTx{
+		mockDb:     &mockDb{},
+		onCommit:   func() { committed = true },
+		onRollback: func() { rolledBack = true },
+	}
+	trackingDbObj := &trackingDb{tx: trackingTxObj}
+
+	app := &TxApp{
+		Accounts:   account,
+		Validators: Validators,
+		signer:     signer1,
+		service: &common.Service{
+			Logger:   log.DiscardLogger,
+			Identity: signer1.CompactID(),
+		},
+	}
+
+	txCtx := &common.TxContext{
+		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{
+					DisabledGasCosts: false,
+				},
+			},
+			Proposer: privKey1.Public(),
+		},
+	}
+
+	res := app.Execute(txCtx, trackingDbObj, tx)
+	require.Error(t, res.Error)
+	require.ErrorIs(t, res.Error, types.ErrInvalidAmount)
+	assert.Equal(t, types.CodeInvalidAmount, res.ResponseCode)
+	assert.True(t, rolledBack, "database transaction should have rolled back")
+	assert.False(t, committed, "database transaction should NOT have committed")
+	assert.Equal(t, int64(0), res.Spend)
+}
+
+func Test_RoutePanicKeepsSpend(t *testing.T) {
+	const price int64 = 5
+	route := &baseRoute{Route: panicAfterSpendRoute{price: big.NewInt(price)}}
+
+	payload := &types.ValidatorVoteIDs{ResolutionIDs: []*types.UUID{}}
+	tx, err := types.CreateTransaction(payload, "chainid", 1)
+	require.NoError(t, err)
+	tx.Body.Fee = big.NewInt(price)
+	require.NoError(t, tx.Sign(signer1))
+
+	committed := false
+	db := &trackingDb{tx: &trackingTx{
+		mockDb:   &mockDb{},
+		onCommit: func() { committed = true },
+	}}
+	app := &TxApp{
+		Accounts: &mockAccount{},
+		service:  &common.Service{Logger: log.DiscardLogger},
+	}
+	txCtx := &common.TxContext{
+		Ctx: context.Background(),
+		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{},
+			},
+		},
+	}
+
+	res := route.Execute(txCtx, app, db, tx)
+	require.Error(t, res.Error)
+	assert.Contains(t, res.Error.Error(), "panic executing transaction")
+	assert.Equal(t, types.CodeUnknownError, res.ResponseCode)
+	assert.Equal(t, price, res.Spend)
+	assert.True(t, committed)
+}
+
+func Test_RoutePanicBeforeSpendRollsBack(t *testing.T) {
+	route := &baseRoute{Route: panicInPriceRoute{}}
+
+	payload := &types.ValidatorVoteIDs{ResolutionIDs: []*types.UUID{}}
+	tx, err := types.CreateTransaction(payload, "chainid", 1)
+	require.NoError(t, err)
+	tx.Body.Fee = big.NewInt(1)
+	require.NoError(t, tx.Sign(signer1))
+
+	committed := false
+	rolledBack := false
+	db := &trackingDb{tx: &trackingTx{
+		mockDb:     &mockDb{},
+		onCommit:   func() { committed = true },
+		onRollback: func() { rolledBack = true },
+	}}
+	app := &TxApp{
+		Accounts: &mockAccount{},
+		service:  &common.Service{Logger: log.DiscardLogger},
+	}
+	txCtx := &common.TxContext{
+		Ctx: context.Background(),
+		BlockContext: &common.BlockContext{
+			ChainContext: &common.ChainContext{
+				NetworkParameters: &types.NetworkParameters{},
+			},
+		},
+	}
+
+	res := route.Execute(txCtx, app, db, tx)
+	require.Error(t, res.Error)
+	assert.Contains(t, res.Error.Error(), "panic executing transaction")
+	assert.Equal(t, types.CodeUnknownError, res.ResponseCode)
+	assert.False(t, committed)
+	assert.True(t, rolledBack)
+}
+
+type panicInPriceRoute struct{}
+
+func (panicInPriceRoute) Name() string { return "panic-in-price" }
+
+func (panicInPriceRoute) Price(context.Context, *common.App, *types.Transaction) (*big.Int, error) {
+	panic("boom")
+}
+
+func (panicInPriceRoute) PreTx(*common.TxContext, *common.Service, *types.Transaction) (types.TxCode, error) {
+	return types.CodeOk, nil
+}
+
+func (panicInPriceRoute) InTx(*common.TxContext, *common.App, *types.Transaction) (types.TxCode, string, error) {
+	return types.CodeOk, "", nil
+}
+
+type panicAfterSpendRoute struct {
+	price *big.Int
+}
+
+func (panicAfterSpendRoute) Name() string { return "panic-after-spend" }
+
+func (r panicAfterSpendRoute) Price(context.Context, *common.App, *types.Transaction) (*big.Int, error) {
+	return r.price, nil
+}
+
+func (panicAfterSpendRoute) PreTx(*common.TxContext, *common.Service, *types.Transaction) (types.TxCode, error) {
+	panic("boom")
+}
+
+func (panicAfterSpendRoute) InTx(*common.TxContext, *common.App, *types.Transaction) (types.TxCode, string, error) {
+	return types.CodeOk, "", nil
+}
+
+type trackingTx struct {
+	*mockDb
+	onCommit   func()
+	onRollback func()
+}
+
+func (t *trackingTx) Commit(ctx context.Context) error {
+	if t.onCommit != nil {
+		t.onCommit()
+	}
+	return nil
+}
+
+func (t *trackingTx) Rollback(ctx context.Context) error {
+	if t.onRollback != nil {
+		t.onRollback()
+	}
+	return nil
+}
+
+type trackingDb struct {
+	tx *trackingTx
+}
+
+func (t *trackingDb) BeginTx(ctx context.Context) (sql.Tx, error) {
+	return t.tx, nil
+}
+
+func (t *trackingDb) Execute(ctx context.Context, stmt string, args ...any) (*sql.ResultSet, error) {
+	return &sql.ResultSet{}, nil
+}
+
 type mockAccount struct {
 }
 

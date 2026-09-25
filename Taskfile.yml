@@ -134,8 +134,20 @@ tasks:
     requires:
       vars: [TAG]
 
+  # The postgres image is built locally from contrib/docker/postgres.dockerfile.
+  # It is not published to a registry, so every task that needs it depends on
+  # pg:image, which is a no-op once the image exists.
+  pg:image:
+    desc: Build the local kwil-postgres image used by tests and compose
+    cmds:
+      - docker build -f contrib/docker/postgres.dockerfile -t kwil-postgres:16.15-1 contrib/docker
+    status:
+      - docker image inspect kwil-postgres:16.15-1 >/dev/null 2>&1
+
   pg:
     desc: Start the postgres docker image
+    deps:
+      - task: pg:image
     vars:
       PORT: '{{ .PORT | default 5432 }}'
       NAME: '{{ .NAME | default "kwil-pg-demo" }}'
@@ -144,7 +156,7 @@ tasks:
       - |
         docker run -p {{ .PORT }}:5432 -v {{ .NAME }}:/var/lib/postgresql/data \
             --shm-size 512m -e "POSTGRES_HOST_AUTH_METHOD=trust" \
-            --name {{ .NAME }} kwildb/postgres:16.8-1
+            --name {{ .NAME }} kwil-postgres:16.15-1
 
   pg:clean:
     desc: Wipe data from the pg task
@@ -201,6 +213,7 @@ tasks:
     deps:
       - task: build:cli
       - task: build:docker
+      - task: pg:image
     cmds:
       - task: test:act:nb
 
@@ -248,6 +261,7 @@ tasks:
       - task: build:cli
       - task: build:kwild
       - task: build:docker
+      - task: pg:image
     cmds:
       - task: test:it:nb
 

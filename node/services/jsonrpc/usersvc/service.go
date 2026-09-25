@@ -497,6 +497,10 @@ func (svc *Service) Broadcast(ctx context.Context, req *userjson.BroadcastReques
 		return nil, jsonrpc.NewError(jsonrpc.ErrorBroadcastRejected, "transaction signature is required", nil)
 	}
 
+	if req.Tx == nil || req.Tx.Body == nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "transaction body is required", nil)
+	}
+
 	var sync = userjson.BroadcastSyncAccept // default to accept, not commit
 	if req.Sync != nil {
 		sync = *req.Sync
@@ -570,6 +574,10 @@ func (svc *Service) BroadcastRaw(ctx context.Context, req *BroadcastRawRequest) 
 */
 
 func (svc *Service) EstimatePrice(ctx context.Context, req *userjson.EstimatePriceRequest) (*userjson.EstimatePriceResponse, *jsonrpc.Error) {
+	if req.Tx == nil || req.Tx.Body == nil {
+		return nil, jsonrpc.NewError(jsonrpc.ErrorInvalidParams, "transaction body is required", nil)
+	}
+
 	svc.log.Debug("Estimating price", "payload_type", req.Tx.Body.PayloadType)
 	readTx := svc.db.BeginDelayedReadTx()
 	defer readTx.Rollback(ctx)

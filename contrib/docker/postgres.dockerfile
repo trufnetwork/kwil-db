@@ -1,4 +1,7 @@
-FROM postgres:16.8
+# Bookworm (glibc 2.36) rather than the default trixie base: the glibc version
+# determines the collation version recorded in a data directory, and changing it
+# forces a REINDEX of every text index.
+FROM postgres:16.15-bookworm
 
 # Install pg_repack so tn_vacuum can create the extension inside the server.
 RUN apt-get update \

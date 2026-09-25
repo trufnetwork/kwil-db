@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -167,9 +168,20 @@ func (r *TxApp) Begin(ctx context.Context, height int64) error {
 // appropriate module(s) for execution and return the response.
 // This method must only be called from the consensus engine,
 // sequentially, when executing transactions in a block.
-func (r *TxApp) Execute(ctx *common.TxContext, db sql.DB, tx *types.Transaction) *TxResponse {
+func (r *TxApp) Execute(ctx *common.TxContext, db sql.DB, tx *types.Transaction) (res *TxResponse) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.service.Logger.Error("panic executing transaction", "panic", recovered, "stack", string(debug.Stack()))
+			res = txRes(nil, types.CodeUnknownError, "", fmt.Errorf("panic executing transaction: %v", recovered))
+		}
+	}()
+
 	if tx == nil || tx.Signature == nil {
 		return txRes(nil, types.CodeInvalidTxType, "", errors.New("transaction signature is required"))
+	}
+
+	if err := types.ValidatePayloadEncoding(tx.Body.PayloadType, tx.Body.Payload); err != nil {
+		return txRes(nil, types.CodeEncodingError, "", err)
 	}
 
 	// RegisterRoute call is not concurrent
@@ -543,6 +555,10 @@ func (r *TxApp) Price(ctx context.Context, dbTx sql.DB, tx *types.Transaction, c
 // if we allow users to implement their own routes, this function will need to
 // be exported.
 func (r *TxApp) checkAndSpend(ctx *common.TxContext, tx *types.Transaction, pricer Pricer, dbTx sql.DB) (*big.Int, types.TxCode, error) {
+	if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
+		return nil, types.CodeInvalidAmount, fmt.Errorf("%w: fee cannot be negative or nil", types.ErrInvalidAmount)
+	}
+
 	amt := big.NewInt(0)
 	var err error
 

@@ -244,8 +244,8 @@ func (bp *BlockProcessor) CheckTx(ctx context.Context, ntx *types.Tx, height int
 }
 
 func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types.Tx, height int64, blockTime time.Time, recheck bool) error {
-	if ntx == nil || ntx.Transaction == nil || ntx.Signature == nil {
-		return errors.New("transaction signature is required")
+	if ntx == nil || ntx.Transaction == nil || ntx.Transaction.Body == nil {
+		return errors.New("transaction body is required")
 	}
 
 	tx := ntx.Transaction
@@ -254,6 +254,14 @@ func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types
 	// If the network is halted for migration, we reject all transactions.
 	if bp.chainCtx.NetworkParameters.MigrationStatus == ktypes.MigrationCompleted {
 		return ktypes.ErrMigrationComplete
+	}
+
+	if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
+		return fmt.Errorf("%w: fee cannot be negative or nil", ktypes.ErrInvalidAmount)
+	}
+
+	if tx.Signature == nil {
+		return errors.New("transaction signature is required")
 	}
 
 	bp.log.Debug("Check transaction", "Recheck", recheck, "Hash", txHash, "Sender", log.LazyHex(tx.Sender),
