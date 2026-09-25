@@ -244,6 +244,10 @@ func (bp *BlockProcessor) CheckTx(ctx context.Context, ntx *types.Tx, height int
 }
 
 func (bp *BlockProcessor) checkTx(ctx context.Context, readTx sql.Tx, ntx *types.Tx, height int64, blockTime time.Time, recheck bool) error {
+	if ntx == nil || ntx.Transaction == nil || ntx.Transaction.Body == nil {
+		return errors.New("transaction body is required")
+	}
+
 	tx := ntx.Transaction
 	txHash := ntx.Hash()
 
