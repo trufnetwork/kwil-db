@@ -351,7 +351,7 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 	}
 
 	// Restore DB from the snapshot if snapshot matches.
-	err = node.RestoreDB(ctx, reader, appCfg.DB, genCfg.StateHash, filepath.Dir(appCfg.GenesisState), d.logger)
+	err = node.RestoreDB(ctx, reader, appCfg.DB, genCfg.StateHash, d.rootDir, d.logger)
 	if err != nil {
 		failBuild(err, "failed to restore DB from snapshot")
 	}
