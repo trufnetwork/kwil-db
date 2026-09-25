@@ -255,6 +255,7 @@ func (s *Snapshotter) sanitizeDumpStream(ctx context.Context, height uint64, for
 	bufWriter := bufio.NewWriter(io.MultiWriter(w, rowHasher))
 
 	var inCopyBlock, schemaStarted bool
+	var psqlRestrictionKey string
 	sorter := newCopyBlockSorter(tempDir, defaultCopySorterBuffer)
 	defer sorter.Reset()
 
@@ -292,6 +293,18 @@ func (s *Snapshotter) sanitizeDumpStream(ctx context.Context, height uint64, for
 			if line == "" || trimLine == "" {
 				continue
 			} else if strings.HasPrefix(trimLine, "--") {
+				continue
+			} else if !schemaStarted && strings.HasPrefix(trimLine, `\restrict `) {
+				// pg_dump 16.15+ wraps its output in a \restrict/\unrestrict pair
+				// keyed by a random value. Dropping both keeps snapshots byte
+				// identical to those from an older pg_dump, so providers on
+				// different patch releases still agree on the snapshot hash.
+				fields := strings.Fields(trimLine)
+				if len(fields) == 2 {
+					psqlRestrictionKey = fields[1]
+					continue
+				}
+			} else if psqlRestrictionKey != "" && trimLine == `\unrestrict `+psqlRestrictionKey {
 				continue
 			} else if !schemaStarted && (strings.HasPrefix(trimLine, CreateSchema) ||
 				strings.HasPrefix(trimLine, CreateTable) || strings.HasPrefix(trimLine, CreateFunction)) {

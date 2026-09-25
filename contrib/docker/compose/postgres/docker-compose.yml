@@ -1,7 +1,10 @@
 services:
   pg:
     container_name: postgres
-    image: kwildb/postgres:16.8-1
+    image: kwil-postgres:16.15-1
+    build:
+      context: ../..
+      dockerfile: postgres.dockerfile
     ports:
       - "5432:5432"
     shm_size: "512m"

@@ -735,7 +735,7 @@ func buildJRPCAdminServer(d *coreDependencies) *rpcserver.Server {
 // verifyDependencies checks if the required dependencies are installed on the system, such as:
 //   - pg_dump: required for snapshotting during migrations and when snapshots are enabled.
 //     All nodes in the network must have 16.x version to produce consistent and deterministic snapshots.
-//   - psql: required for state-sync to restore the state from a snapshot. Required version is 16.x.
+//   - psql: required for state-sync to restore the state from a snapshot. Required version is 16.15+.
 func verifyDependencies(d *coreDependencies) {
 	if d.cfg.SkipDependencyVerification {
 		d.logger.Warn("Skipping runtime dependency verification of pg_dump and psql binaries")
@@ -749,9 +749,9 @@ func verifyDependencies(d *coreDependencies) {
 	}
 
 	if d.cfg.StateSync.Enable {
-		// Check if psql is installed and is on version 16.x, which is required for state-sync
-		if err := checkVersion(d.cfg.StateSync.PsqlPath, 16); err != nil {
-			failBuild(err, "psql version check failure. Please ensure that 16.x version is installed")
+		// 16.15 fixes CVE-2026-18408 in the restricted mode used for untrusted snapshots.
+		if err := checkVersionAtLeast(d.cfg.StateSync.PsqlPath, 16, 15); err != nil {
+			failBuild(err, "psql version check failure. Please ensure that version 16.15 or later 16.x is installed")
 		}
 	}
 }

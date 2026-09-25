@@ -71,6 +71,20 @@ func TestSanitizeLogicalDump(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestSanitizeLogicalDumpRemovesPsqlRestrictionCommands(t *testing.T) {
+	const dump = `\restrict RandomKey123
+CREATE SCHEMA test;
+CREATE TABLE test.values (value integer);
+\unrestrict RandomKey123
+`
+
+	var sanitized bytes.Buffer
+	snapshotter := NewSnapshotter(nil, t.TempDir(), &MockNamespaceManager{}, log.DiscardLogger)
+	_, err := snapshotter.sanitizeDumpStream(context.Background(), 1, 0, t.TempDir(), strings.NewReader(dump), &sanitized)
+	require.NoError(t, err)
+	require.Equal(t, "CREATE SCHEMA test;\nCREATE TABLE test.values (value integer);\n", sanitized.String())
+}
+
 func TestCompressStreamDeterministic(t *testing.T) {
 	data := []byte("deterministic data\n")
 
