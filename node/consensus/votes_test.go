@@ -89,7 +89,11 @@ func TestAddVoteRejectsRepeatedSigner(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ce.state.votes, 2)
 
+	// Same signer under another map key must not become the third ack.
+	ce.state.votes["duplicate"] = ce.state.votes[hex.EncodeToString(otherPub)]
+
 	ce.processVotes(context.Background())
+	require.Len(t, ce.state.votes, 3)
 	require.Nil(t, ce.state.commitInfo)
 }
 
