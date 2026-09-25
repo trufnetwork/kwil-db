@@ -229,25 +229,28 @@ tasks:
     cmds:
       - go test ./acceptance -count=1 -v {{.CLI_ARGS}}
 
-  # NOTE: for now the unit tests require postgres running to support the tests
-  # with the "pglive" build tag. In CI, a postgres service is started by the
-  # github actions workflow. In dev machines, you can either use a system
-  # installation with a "kwild" (super)user and "kwil_test_db" database, or you
-  # can use the postgresql Docker compose at deployments/compose/postgres/docker-compose.yml
-  # or the custom Dockerfile at deployments/compose/postgres/Dockerfile.
-  #
-  # This should be TEMPORARY. The unit tests should work without postgres, or
-  # ideally any database engine. The various "stores" like account store can
-  # use a stubbed out Datastore interface to test the application logic, although
-  # the SQL queries in those packages should still be tested with a live DB.
-  # A mock interface should also be good for the engine. However, for the
-  # internal/sql/pg package, it is very tightly coupled to the pgx package and
-  # and the workings of an actual postgres host.
+  # Packages with a pglive test file share one Postgres database (kwil_test_db
+  # on port 5432) and must run one at a time. Everything else runs in parallel.
+  # -count=1 is only on the pglive run: those tests depend on postgres, which
+  # the Go test cache cannot see. The other run keeps the cache so unchanged
+  # packages are skipped when GOCACHE is restored (as setup-go does in CI).
   test:unit:
     desc: Run unit tests
     cmds:
-      - go test ./core/... -tags=ext_test -count=1
-      - CGO_ENABLED=1 go test ./... -tags=ext_test,pglive -count=1 -p=1 # no parallel for now because several try to use one pg database
+      - |
+        set -eu
+        pglive_list=$(mktemp)
+        trap 'rm -f "$pglive_list"' EXIT
+        grep -l -r --include='*_test.go' '^//go:build.*pglive' . \
+          | xargs -n1 dirname | sed 's|^\./||' | sort -u \
+          | while read -r d; do go list -tags=ext_test,pglive "./$d"; done > "$pglive_list"
+        other=$(go list -tags=ext_test ./... | grep -vxF -f "$pglive_list" || true)
+        if [ -n "$other" ]; then
+          go test -tags=ext_test $other
+        fi
+        # -p=1: these packages all connect to kwil_test_db.
+        go test -tags=ext_test,pglive -count=1 -p=1 $(cat "$pglive_list")
+        rm -f "$pglive_list"
 
   test:unit:race:
     desc: Run unit tests with the race detector
