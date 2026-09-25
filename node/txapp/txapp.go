@@ -539,6 +539,10 @@ func (r *TxApp) Price(ctx context.Context, dbTx sql.DB, tx *types.Transaction, c
 // if we allow users to implement their own routes, this function will need to
 // be exported.
 func (r *TxApp) checkAndSpend(ctx *common.TxContext, tx *types.Transaction, pricer Pricer, dbTx sql.DB) (*big.Int, types.TxCode, error) {
+	if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
+		return nil, types.CodeInvalidAmount, fmt.Errorf("%w: fee cannot be negative or nil", types.ErrInvalidAmount)
+	}
+
 	amt := big.NewInt(0)
 	var err error
 

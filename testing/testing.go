@@ -676,10 +676,15 @@ func waitForLogs(ctx context.Context, containerName string, logs ...string) erro
 // ContainerName is the name of the test container
 const ContainerName = "kwil-testing-postgres"
 
+// PostgresImage is the postgres image used by the test container. It is built
+// locally from contrib/docker/postgres.dockerfile ("task pg:image") rather than
+// pulled from a registry, so it must exist on the host before running tests.
+const PostgresImage = "kwil-postgres:16.15-1"
+
 // dockerStartArgs returns the docker start command args
 func dockerStartArgs(port string) (args []string) {
 	return []string{"run", "-d", "-p", port + ":5432", "--name", ContainerName,
-		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "kwildb/postgres:16.8-1"}
+		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", PostgresImage}
 }
 
 // connectWithRetry tries to connect to Postgres, and will retry n times at

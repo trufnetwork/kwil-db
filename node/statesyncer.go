@@ -6,6 +6,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -657,6 +658,21 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	stopMonitoring := utils.MonitorRestoreProgress(ctx, estimatedMinutes, s.log)
 	defer stopMonitoring()
 
+	// Validate all provider-supplied bytes before passing any of them to psql.
+	validationStreamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
+	validationReader, err := gzip.NewReader(validationStreamer)
+	if err != nil {
+		validationStreamer.Close()
+		return err
+	}
+	if err := decompressAndValidateSnapshotHash(io.Discard, validationReader, snapshot.Hash); err != nil {
+		validationReader.Close()
+		validationStreamer.Close()
+		return err
+	}
+	validationReader.Close()
+	validationStreamer.Close()
+
 	streamer := NewStreamer(snapshot.Chunks, s.snapshotDir, s.log)
 	defer streamer.Close()
 
@@ -664,14 +680,24 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	if err != nil {
 		return err
 	}
+	defer reader.Close()
 
-	return RestoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.log)
+	return restoreDB(ctx, reader, s.dbConfig, snapshot.Hash, s.cfg.PsqlPath, true, s.log)
 }
 
-// RestoreDB verifies the whole-dump hash, then imports via psql. On hash or
-// import failure it waits for psql and drops leftover kwild_/ds_* schemas so a
-// partial restore cannot be treated as initialized state on restart.
+// RestoreDB restores a genesis or migration dump, which is trusted and already
+// carries its own \restrict pair when produced by pg_dump 16.15+. Adding a
+// second restriction would nest the keys and fail the import, so only the
+// state-sync path, whose bytes come from a remote provider, restricts.
+//
+// The dump hash is verified before psql starts. On import failure it waits for
+// psql and drops leftover kwild_/ds_* schemas so a partial restore cannot be
+// treated as initialized state on restart.
 func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
+	return restoreDB(ctx, reader, db, snapshotHash, "psql", false, logger)
+}
+
+func restoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, psqlPath string, restrictInput bool, logger log.Logger) error {
 	dump, err := stageSnapshotDump(ctx, reader, snapshotHash)
 	if err != nil {
 		return err
@@ -681,7 +707,7 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 		os.Remove(dump.Name())
 	}()
 
-	cmd := psqlCommand(ctx, db, "--set", "ON_ERROR_STOP=1")
+	cmd := psqlCommand(ctx, psqlPath, db, "--set", "ON_ERROR_STOP=1")
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -696,6 +722,17 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 
 	copyErr := func() error {
 		defer stdinPipe.Close()
+		if restrictInput {
+			restrictKey := make([]byte, 32)
+			if _, err := rand.Read(restrictKey); err != nil {
+				return fmt.Errorf("failed to generate psql restriction key: %w", err)
+			}
+			// Restricted mode preserves COPY terminators while blocking every psql
+			// meta-command, including shell escapes and file includes.
+			if _, err := fmt.Fprintf(stdinPipe, "\\restrict %x\n", restrictKey); err != nil {
+				return fmt.Errorf("failed to restrict psql input: %w", err)
+			}
+		}
 		_, err := io.Copy(stdinPipe, dump)
 		return err
 	}()
@@ -710,6 +747,20 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	}
 
 	logger.Info("Database restoration completed successfully")
+	return nil
+}
+
+// decompressAndValidateSnapshotHash hashes reader and writes it to output.
+// State sync uses this to reject a bad snapshot before psql is started.
+func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snapshotHash []byte) error {
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(output, hasher), reader); err != nil {
+		return fmt.Errorf("failed to decompress chunk streams: %w", err)
+	}
+	hash := hasher.Sum(nil)
+	if !bytes.Equal(hash, snapshotHash) {
+		return fmt.Errorf("invalid snapshot hash %x, expected %x", hash, snapshotHash)
+	}
 	return nil
 }
 
@@ -776,7 +827,7 @@ BEGIN
 END
 $$;`
 
-func psqlCommand(ctx context.Context, db config.DBConfig, extraArgs ...string) *exec.Cmd {
+func psqlCommand(ctx context.Context, psqlPath string, db config.DBConfig, extraArgs ...string) *exec.Cmd {
 	args := []string{
 		"--username", db.User,
 		"--host", db.Host,
@@ -786,7 +837,7 @@ func psqlCommand(ctx context.Context, db config.DBConfig, extraArgs ...string) *
 		"--no-psqlrc",
 	}
 	args = append(args, extraArgs...)
-	cmd := exec.CommandContext(ctx, "psql", args...)
+	cmd := exec.CommandContext(ctx, psqlPath, args...)
 	if db.Pass != "" {
 		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
 	}
@@ -802,7 +853,7 @@ func dropRestoreSchemasAfterFailure(db config.DBConfig) error {
 }
 
 func dropRestoreSchemasWithPsql(ctx context.Context, db config.DBConfig) error {
-	cmd := psqlCommand(ctx, db, "--set", "ON_ERROR_STOP=1", "-c", dropRestoreSchemasSQL)
+	cmd := psqlCommand(ctx, "psql", db, "--set", "ON_ERROR_STOP=1", "-c", dropRestoreSchemasSQL)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("drop restore schemas: %w: %s", err, out)

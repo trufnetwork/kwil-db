@@ -15,6 +15,7 @@ var (
 	ErrAccountNotFound   = errors.New("account not found")
 	ErrNegativeBalance   = errors.New("negative balance not permitted")
 	ErrNegativeTransfer  = errors.New("negative transfer not permitted")
+	ErrNegativeSpend     = errors.New("negative spend not permitted")
 )
 
 // errInsufficientFunds formats an error message for insufficient funds

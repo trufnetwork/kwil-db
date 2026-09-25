@@ -123,20 +123,25 @@ func (pe panicErr) Unwrap() error {
 
 // getPostgresMajorVersion retrieve the major version number of postgres client tools (e.g., psql or pg_dump)
 func getPostgresMajorVersion(command string) (int, error) {
+	major, _, err := getPostgresVersion(command)
+	return major, err
+}
+
+func getPostgresVersion(command string) (int, int, error) {
 	cmd := exec.Command(command, "--version")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
 	if err != nil {
-		return -1, fmt.Errorf("failed to execute %s: %w", command, err)
+		return -1, -1, fmt.Errorf("failed to execute %s: %w", command, err)
 	}
 
-	major, _, err := getPGVersion(out.String())
+	major, minor, err := getPGVersion(out.String())
 	if err != nil {
-		return -1, fmt.Errorf("failed to get version: %w", err)
+		return -1, -1, fmt.Errorf("failed to get version: %w", err)
 	}
 
-	return major, nil
+	return major, minor, nil
 }
 
 // getPGVersion extracts the major and minor version numbers from the version output of a PostgreSQL client tool.
@@ -179,6 +184,20 @@ func checkVersion(command string, version int) error {
 
 	if major != version {
 		return fmt.Errorf("expected %s version %d.x, got %d.x", command, version, major)
+	}
+
+	return nil
+}
+
+func checkVersionAtLeast(command string, majorVersion, minorVersion int) error {
+	major, minor, err := getPostgresVersion(command)
+	if err != nil {
+		return err
+	}
+
+	if major != majorVersion || minor < minorVersion {
+		return fmt.Errorf("expected %s version %d.%d or later %d.x, got %d.%d", command,
+			majorVersion, minorVersion, majorVersion, major, minor)
 	}
 
 	return nil

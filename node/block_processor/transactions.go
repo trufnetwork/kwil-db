@@ -74,6 +74,12 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 	var i int
 
 	for is, tx := range txs {
+		if tx.Transaction == nil || tx.Transaction.Body == nil {
+			invalidTxs = append(invalidTxs, tx.Transaction)
+			bp.log.Warn("Dropping tx with nil body while preparing the block", "tx", tx)
+			continue
+		}
+
 		rawTx := tx.Bytes()
 		okTxns = append(okTxns, &indexedTxn{i, tx.Transaction, len(rawTx), tx.Hash(), is})
 		i++
@@ -90,14 +96,21 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 		sort.Stable(txSubList{group, okTxns})
 	}
 
-	nonces := make([]uint64, 0, len(okTxns))
+	lastNonce := make(map[string]uint64, len(grouped))
+	seenSender := make(map[string]bool, len(grouped))
 	var propTxs, otherTxns []*indexedTxn
-	i = 0
 	proposerNonce := uint64(0)
 
 	// Enforce nonce ordering and remove transactions from the unfunded accounts
 	for _, tx := range okTxns {
-		if i > 0 && tx.Body.Nonce == nonces[i-1] && bytes.Equal(tx.Sender, okTxns[i-1].Sender) {
+		if tx.Body == nil || tx.Body.Fee == nil || tx.Body.Fee.Sign() < 0 {
+			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)
+			bp.log.Warn("Dropping tx with invalid fee while preparing the block", "tx", tx)
+			continue
+		}
+
+		senderKey := string(tx.Sender)
+		if seenSender[senderKey] && tx.Body.Nonce == lastNonce[senderKey] {
 			invalidTxs = append(invalidTxs, txs[tx.is].Transaction)
 			bp.log.Warn("Transaction has a duplicate nonce", "tx", tx)
 			continue
@@ -147,8 +160,8 @@ func (bp *BlockProcessor) prepareBlockTransactions(ctx context.Context, readTx s
 		} else {
 			otherTxns = append(otherTxns, tx)
 		}
-		nonces = append(nonces, tx.Body.Nonce)
-		i++
+		lastNonce[senderKey] = tx.Body.Nonce
+		seenSender[senderKey] = true
 	}
 
 	// Enforce block size limits
