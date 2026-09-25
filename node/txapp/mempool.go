@@ -66,6 +66,10 @@ func (m *mempool) applyTransaction(ctx *common.TxContext, tx *types.Transaction,
 		return fmt.Errorf("%w: fee cannot be negative or nil", types.ErrInvalidAmount)
 	}
 
+	if err := types.ValidatePayloadEncoding(tx.Body.PayloadType, tx.Body.Payload); err != nil {
+		return err
+	}
+
 	// if the network is in a migration, there are numerous
 	// transaction types we must disallow.
 	// see [internal/migrations/migrations.go] for more info

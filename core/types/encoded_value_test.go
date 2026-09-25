@@ -117,6 +117,32 @@ func TestEncodedValue_EdgeCases(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	t.Run("decode empty element", func(t *testing.T) {
+		ev := &EncodedValue{
+			Type: *TextType,
+			Data: [][]byte{{}},
+		}
+		_, err := ev.Decode()
+		require.Error(t, err)
+
+		payload, err := ActionExecution{
+			Namespace: "main",
+			Action:    "act",
+			Arguments: [][]*EncodedValue{{ev}},
+		}.MarshalBinary()
+		require.NoError(t, err)
+		require.Error(t, ValidatePayloadEncoding(PayloadTypeExecute, payload))
+	})
+
+	t.Run("decode short bool", func(t *testing.T) {
+		ev := &EncodedValue{
+			Type: *BoolType,
+			Data: [][]byte{{1}},
+		}
+		_, err := ev.Decode()
+		require.Error(t, err)
+	})
+
 	t.Run("decode invalid uuid length", func(t *testing.T) {
 		ev := &EncodedValue{
 			Type: DataType{Name: UUIDType.Name},

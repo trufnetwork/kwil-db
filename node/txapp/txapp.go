@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -167,7 +168,18 @@ func (r *TxApp) Begin(ctx context.Context, height int64) error {
 // appropriate module(s) for execution and return the response.
 // This method must only be called from the consensus engine,
 // sequentially, when executing transactions in a block.
-func (r *TxApp) Execute(ctx *common.TxContext, db sql.DB, tx *types.Transaction) *TxResponse {
+func (r *TxApp) Execute(ctx *common.TxContext, db sql.DB, tx *types.Transaction) (res *TxResponse) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.service.Logger.Error("panic executing transaction", "panic", recovered, "stack", string(debug.Stack()))
+			res = txRes(nil, types.CodeUnknownError, "", fmt.Errorf("panic executing transaction: %v", recovered))
+		}
+	}()
+
+	if err := types.ValidatePayloadEncoding(tx.Body.PayloadType, tx.Body.Payload); err != nil {
+		return txRes(nil, types.CodeEncodingError, "", err)
+	}
+
 	// RegisterRoute call is not concurrent
 	route, ok := routes[tx.Body.PayloadType.String()]
 	if !ok {
