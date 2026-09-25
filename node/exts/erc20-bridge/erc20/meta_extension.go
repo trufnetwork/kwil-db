@@ -1407,23 +1407,16 @@ func init() {
 								}
 							}
 
-							// Store the vote (only reached if signature verification passed for nonce=0)
+							// Store the vote. Gnosis-style (V=31/32) votes skip verification on purpose:
+							// they are Safe signatures over an on-chain tx hash, not (reward_root, block_hash).
 							err = voteEpoch(ctx.TxContext.Ctx, app, epochID, from, nonce, signature)
 							if err != nil {
 								return err
 							}
 
-							// For non-custodial only: check threshold and confirm. Never confirm custodial (Safe) epochs here;
-							// those are confirmed by the listener when the on-chain event is seen.
+							// Confirm from this vote's type only. A stored Gnosis-style vote is not proof
+							// the epoch is custodial: vote_epoch is public and those signatures are unverified.
 							if nonce == nonCustodialNonce && !utils.IsGnosisStyleSignature(signature) {
-								hasSafeVote, err := epochHasGnosisStyleVote(ctx.TxContext.Ctx, app, epochID)
-								if err != nil {
-									return fmt.Errorf("check custodial votes for epoch %s: %w", epochID, err)
-								}
-								if hasSafeVote {
-									// Custodial epoch (Safe owners voted); listener will confirm on on-chain event
-									return nil
-								}
 								// Calculate BFT threshold (2/3 of total validator voting power)
 								totalPower, thresholdPower, err := calculateBFTThreshold(app)
 								if err != nil {
@@ -3244,7 +3237,8 @@ func calculateBFTThreshold(app *common.App) (int64, int64, error) {
 }
 
 // sumEpochVotingPower calculates the total voting power of validators who voted for an epoch.
-// Only counts non-custodial validator signatures (nonce=0).
+// Only counts nonce=0 votes that are not Gnosis-style (V=31/32). Those signatures are
+// unverified Safe votes and must not count toward the non-custodial BFT threshold.
 //
 // IMPORTANT: This function only counts voting power for validators using secp256k1 keys.
 // Non-custodial validator voting requires EthPersonalSigner (Ethereum addresses), which
@@ -3257,9 +3251,8 @@ func calculateBFTThreshold(app *common.App) (int64, int64, error) {
 func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UUID) (int64, error) {
 	const nonCustodialNonce = 0
 
-	// Get all votes for this epoch (stores Ethereum addresses as voters)
 	result, err := app.DB.Execute(ctx, `
-		SELECT voter
+		SELECT voter, signature
 		FROM kwil_erc20_meta.epoch_votes
 		WHERE epoch_id = $1 AND nonce = $2
 	`, epochID, nonCustodialNonce)
@@ -3304,21 +3297,21 @@ func sumEpochVotingPower(ctx context.Context, app *common.App, epochID *types.UU
 		app.Service.Logger.Debugf("validator power map has %d entries", len(validatorPowerMap))
 	}
 
-	// Sum voting power for all voters
 	var votingPower int64
 	for _, row := range result.Rows {
 		voterBytes, ok := row[0].([]byte)
 		if !ok {
 			continue
 		}
-
-		// Convert voter bytes to Ethereum address
 		if len(voterBytes) != 20 {
 			continue
 		}
-		voter := ethcommon.BytesToAddress(voterBytes)
+		sig, ok := row[1].([]byte)
+		if !ok || utils.IsGnosisStyleSignature(sig) {
+			continue
+		}
 
-		// Look up voting power
+		voter := ethcommon.BytesToAddress(voterBytes)
 		if power, ok := validatorPowerMap[voter.Hex()]; ok {
 			votingPower += power
 		}
@@ -3349,9 +3342,9 @@ func ethAddressFromPubKey(pubKey []byte) (ethcommon.Address, error) {
 	return address, nil
 }
 
-// getEpochSignatures retrieves all validator signatures for an epoch.
+// getEpochSignatures retrieves validator signatures for an epoch.
 // Returns array of signatures (65 bytes each: r||s||v format).
-// Only returns signatures with nonce=0 (validator-verified signatures).
+// Only nonce=0 non-Gnosis (V=27/28) signatures are returned for withdrawal proofs.
 func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUID) ([][]byte, error) {
 	query := `{kwil_erc20_meta}SELECT signature FROM epoch_votes
 	          WHERE epoch_id = $epoch_id AND nonce = 0
@@ -3368,6 +3361,9 @@ func getEpochSignatures(ctx context.Context, app *common.App, epochID *types.UUI
 		sig, ok := row.Values[0].([]byte)
 		if !ok {
 			return fmt.Errorf("signature should be []byte, got %T", row.Values[0])
+		}
+		if utils.IsGnosisStyleSignature(sig) {
+			return nil
 		}
 		signatures = append(signatures, sig)
 		return nil

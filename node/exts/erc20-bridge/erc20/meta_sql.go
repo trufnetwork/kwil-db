@@ -14,7 +14,6 @@ import (
 	"github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/engine"
-	"github.com/trufnetwork/kwil-db/node/exts/erc20-bridge/utils"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
 )
 
@@ -825,34 +824,6 @@ func voteEpoch(ctx context.Context, app *common.App, epochID *types.UUID,
 		"signature": signature,
 		"nonce":     nonce,
 	}, nil)
-}
-
-// epochHasGnosisStyleVote returns true if the epoch has at least one vote with Gnosis Safe V (31 or 32).
-// Such epochs are custodial (Safe-based); confirmation must be done by the listener on on-chain event, not by vote_epoch threshold.
-func epochHasGnosisStyleVote(ctx context.Context, app *common.App, epochID *types.UUID) (bool, error) {
-	var found bool
-	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
-	{kwil_erc20_meta}SELECT signature FROM epoch_votes WHERE epoch_id = $epoch_id
-	`, map[string]any{"epoch_id": epochID}, func(r *common.Row) error {
-		if found {
-			return nil // already found, skip remaining rows
-		}
-		sig, ok := r.Values[0].([]byte)
-		if !ok {
-			return fmt.Errorf("epoch_votes signature column invalid type for epoch %s", epochID)
-		}
-		if len(sig) != utils.GnosisSafeSigLength {
-			return fmt.Errorf("epoch_votes signature wrong length %d for epoch %s (expected %d)", len(sig), epochID, utils.GnosisSafeSigLength)
-		}
-		if utils.IsGnosisStyleSignature(sig) {
-			found = true
-		}
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-	return found, nil
 }
 
 // getWalletEpochs returns all confirmed epochs that the given wallet has reward in.

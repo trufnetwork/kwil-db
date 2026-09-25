@@ -29,7 +29,7 @@ func TestRestoreDBRestrictsPsqlMetaCommands(t *testing.T) {
 	hash := sha256.Sum256(dump)
 	err := restoreDB(context.Background(), bytes.NewReader(dump), config.DBConfig{
 		Host: "localhost", Port: "5432", User: "kwild", DBName: "kwild",
-	}, hash[:], psqlPath, true, log.DiscardLogger)
+	}, hash[:], psqlPath, true, tempDir, log.DiscardLogger)
 	require.NoError(t, err)
 
 	stdin, err := os.ReadFile(stdinFile)
@@ -55,7 +55,7 @@ func TestRestoreDBDoesNotNestRestrictionForTrustedSnapshot(t *testing.T) {
 	dump := []byte("\\restrict DumpKey\nSELECT 1;\n\\unrestrict DumpKey\n")
 	hash := sha256.Sum256(dump)
 	require.NoError(t, restoreDB(context.Background(), bytes.NewReader(dump), config.DBConfig{},
-		hash[:], psqlPath, false, log.DiscardLogger))
+		hash[:], psqlPath, false, tempDir, log.DiscardLogger))
 
 	stdin, err := os.ReadFile(stdinFile)
 	require.NoError(t, err)
