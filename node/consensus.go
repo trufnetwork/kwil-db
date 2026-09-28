@@ -31,10 +31,14 @@ const FAR_AHEAD_THRESHOLD = int64(100)
 
 // maxBlkPropReads caps how many proposal bodies are read at once. Each read
 // may buffer up to blkReadLimit. NOTE: a peer that passes AcceptProposal can
-// hold a slot until that read's idle or overall deadline. Two leaves room for
-// one slow read without excluding every other delivery; raise it if honest
-// proposals are dropped while several bodies are already in flight.
+// hold one slot until that read's idle or overall deadline. Two leaves room
+// for one slow read without excluding every other delivery.
 const maxBlkPropReads = 2
+
+// blkPropReadWait is how long a handler waits for a body-read slot before
+// rejecting. Long enough to pick up a slot freed by an idle timeout, short
+// enough that a full cap still fails the request.
+const blkPropReadWait = time.Second
 
 type (
 	ConsensusReset = types.ConsensusReset
@@ -229,6 +233,42 @@ func (n *Node) announceBlkProp(ctx context.Context, blk *ktypes.Block, senderPub
 	}
 }
 
+// acquireBlkPropRead reserves a body-read slot for from.
+// The same peer cannot hold a second slot. If every slot is busy, this waits
+// up to blkPropReadWait for one to free, then rejects.
+func (n *Node) acquireBlkPropRead(from peer.ID) bool {
+	n.blkPropReadMu.Lock()
+	if _, ok := n.blkPropReadPeers[from]; ok {
+		n.blkPropReadMu.Unlock()
+		return false
+	}
+	n.blkPropReadMu.Unlock()
+
+	timer := time.NewTimer(blkPropReadWait)
+	defer timer.Stop()
+	select {
+	case n.blkPropReads <- struct{}{}:
+	case <-timer.C:
+		return false
+	}
+
+	n.blkPropReadMu.Lock()
+	defer n.blkPropReadMu.Unlock()
+	if _, ok := n.blkPropReadPeers[from]; ok {
+		<-n.blkPropReads
+		return false
+	}
+	n.blkPropReadPeers[from] = struct{}{}
+	return true
+}
+
+func (n *Node) releaseBlkPropRead(from peer.ID) {
+	n.blkPropReadMu.Lock()
+	delete(n.blkPropReadPeers, from)
+	n.blkPropReadMu.Unlock()
+	<-n.blkPropReads
+}
+
 // blkPropStreamHandler is the stream handler for the ProtocolIDBlockPropose
 // protocol i.e. proposed block announcements, which originate from the leader,
 // but may be re-announced by other validators.
@@ -308,16 +348,16 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		idleTimeout = time.Duration(n.blockSyncCfg.IdleTimeout)
 	}
 
-	// Take a body-read slot only for the transfer. blkPropHandling stays free.
-	select {
-	case n.blkPropReads <- struct{}{}:
-	default:
+	// One peer can hold only one body-read slot, and only for the transfer.
+	// blkPropHandling stays free. A full cap is retried until blkPropReadWait,
+	// then rejected.
+	if !n.acquireBlkPropRead(from) {
 		n.log.Debug("proposal body read limit reached", "height", height,
 			"from", peers.PeerIDStringer(from))
 		return
 	}
 	blkProp, err := func() ([]byte, error) {
-		defer func() { <-n.blkPropReads }()
+		defer n.releaseBlkPropRead(from)
 
 		s.SetWriteDeadline(time.Now().Add(reqTimeout))
 		if _, err := s.Write([]byte(getMsg)); err != nil {

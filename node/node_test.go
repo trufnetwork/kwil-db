@@ -774,14 +774,14 @@ func TestBlockProposalReadLimit(t *testing.T) {
 	if _, err := s.Write(ann); err != nil {
 		t.Fatal(err)
 	}
-	s.SetReadDeadline(time.Now().Add(2 * time.Second))
+	s.SetReadDeadline(time.Now().Add(blkPropReadWait + time.Second))
 	start := time.Now()
 	buf := make([]byte, len(getMsg))
 	_, err = io.ReadFull(s, buf)
 	if err == nil && string(buf) == getMsg {
 		t.Fatal("body read started while the proposal read limit was full")
 	}
-	if time.Since(start) > time.Second {
+	if time.Since(start) > blkPropReadWait+time.Second {
 		t.Fatal("handler blocked on a full proposal read limit")
 	}
 	select {
@@ -789,4 +789,120 @@ func TestBlockProposalReadLimit(t *testing.T) {
 		t.Fatal("proposal handed to consensus while the read limit was full")
 	default:
 	}
+}
+
+func TestBlockProposalOnePeerCannotTakeEveryReadSlot(t *testing.T) {
+	nodes, extraHosts, _, mn := makeTestHosts(t, 1, 1, time.Hour, crypto.KeyTypeSecp256k1)
+	linkAll(t, mn)
+
+	n := nodes[0]
+	blk, _ := createTestBlock(1, 1)
+	ann := testBlockPropAnn(t, blk)
+	ctx := context.Background()
+
+	first, err := extraHosts[0].NewStream(ctx, n.host.ID(), ProtocolIDBlockPropose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := first.Write(ann); err != nil {
+		t.Fatal(err)
+	}
+	first.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gotMsg := make([]byte, len(getMsg))
+	if _, err := io.ReadFull(first, gotMsg); err != nil {
+		t.Fatal(err)
+	}
+	if string(gotMsg) != getMsg {
+		t.Fatalf("first read request = %q", gotMsg)
+	}
+
+	second, err := extraHosts[0].NewStream(ctx, n.host.ID(), ProtocolIDBlockPropose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if _, err := second.Write(ann); err != nil {
+		t.Fatal(err)
+	}
+	second.SetReadDeadline(time.Now().Add(time.Second))
+	start := time.Now()
+	buf := make([]byte, len(getMsg))
+	_, err = io.ReadFull(second, buf)
+	if err == nil && string(buf) == getMsg {
+		t.Fatal("same peer started a second proposal body read")
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("second stream from the same peer waited for a read slot")
+	}
+}
+
+func TestBlockProposalReadRetriesWhenSlotFrees(t *testing.T) {
+	nodes, extraHosts, _, mn := makeTestHosts(t, 1, 1, time.Hour, crypto.KeyTypeSecp256k1)
+	linkAll(t, mn)
+
+	n := nodes[0]
+	for range maxBlkPropReads {
+		n.blkPropReads <- struct{}{}
+	}
+	blk, _ := createTestBlock(1, 1)
+	ann := testBlockPropAnn(t, blk)
+
+	ctx := context.Background()
+	gotReq := make(chan error, 1)
+	go func() {
+		s, err := extraHosts[0].NewStream(ctx, n.host.ID(), ProtocolIDBlockPropose)
+		if err != nil {
+			gotReq <- err
+			return
+		}
+		defer s.Close()
+		if _, err := s.Write(ann); err != nil {
+			gotReq <- err
+			return
+		}
+		s.SetReadDeadline(time.Now().Add(blkPropReadWait + time.Second))
+		buf := make([]byte, len(getMsg))
+		if _, err := io.ReadFull(s, buf); err != nil {
+			gotReq <- err
+			return
+		}
+		if string(buf) != getMsg {
+			gotReq <- fmt.Errorf("block request = %q", buf)
+			return
+		}
+		gotReq <- nil
+	}()
+
+	select {
+	case err := <-gotReq:
+		t.Fatalf("body requested or failed before a slot freed: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	<-n.blkPropReads // one slot is free during the bounded wait
+	select {
+	case err := <-gotReq:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(blkPropReadWait):
+		t.Fatal("body was not requested after a read slot freed")
+	}
+}
+
+func testBlockPropAnn(t *testing.T, blk *ktypes.Block) []byte {
+	t.Helper()
+	ann, err := blockProp{
+		Height:       blk.Header.Height,
+		Hash:         blk.Hash(),
+		PrevHash:     blk.Header.PrevHash,
+		Stamp:        blk.Header.Timestamp.UnixMilli(),
+		LeaderSig:    []byte{1, 2, 3},
+		SenderPubKey: []byte{4, 5, 6},
+	}.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ann
 }

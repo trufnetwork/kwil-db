@@ -209,7 +209,9 @@ type Node struct {
 	blkPropHandling chan struct{}
 	// blkPropReads limits concurrent proposal body reads. Separate from
 	// blkPropHandling so a slow body cannot hold the accept/handoff slot.
-	blkPropReads chan struct{}
+	blkPropReads     chan struct{}
+	blkPropReadMu    sync.Mutex
+	blkPropReadPeers map[peer.ID]struct{} // peers with an in-flight body read
 
 	txQueue chan orderedTxn // enforces ordering in the tx broadcasts to the network.
 
@@ -254,11 +256,12 @@ func NewNode(cfg *Config, opts ...Option) (*Node, error) {
 		ss:           cfg.Snapshotter,
 		bp:           cfg.BlockProc,
 
-		ackChan:         make(chan AckRes, 1),
-		resetMsg:        make(chan ConsensusReset, 1),
-		txQueue:         make(chan orderedTxn, txQueueSize),
-		blkPropHandling: make(chan struct{}, 1),
-		blkPropReads:    make(chan struct{}, maxBlkPropReads),
+		ackChan:          make(chan AckRes, 1),
+		resetMsg:         make(chan ConsensusReset, 1),
+		txQueue:          make(chan orderedTxn, txQueueSize),
+		blkPropHandling:  make(chan struct{}, 1),
+		blkPropReads:     make(chan struct{}, maxBlkPropReads),
+		blkPropReadPeers: make(map[peer.ID]struct{}),
 
 		P2PService: *cfg.P2PService,
 	}
