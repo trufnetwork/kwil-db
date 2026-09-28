@@ -2,6 +2,7 @@ package node
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -126,6 +127,16 @@ func TestBlockProp_UnmarshalInvalidData(t *testing.T) {
 			data:    bytes.Repeat([]byte{1}, 8+2*types.HashLen+8+3),
 			wantErr: true,
 		},
+		{
+			name:    "public key length too large",
+			data:    blockPropHeaderWithLens(0, 1001),
+			wantErr: true,
+		},
+		{
+			name:    "negative public key length",
+			data:    blockPropHeaderWithLens(0, -1),
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -137,4 +148,13 @@ func TestBlockProp_UnmarshalInvalidData(t *testing.T) {
 			}
 		})
 	}
+}
+
+func blockPropHeaderWithLens(sigLen, pubkeyLen int64) []byte {
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, int64(1))
+	buf.Write(make([]byte, 2*types.HashLen+8))
+	binary.Write(&buf, binary.LittleEndian, sigLen)
+	binary.Write(&buf, binary.LittleEndian, pubkeyLen)
+	return buf.Bytes()
 }

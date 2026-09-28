@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding"
@@ -118,7 +117,7 @@ func (bp *blockProp) ReadFrom(r io.Reader) (int64, error) {
 		return n, err
 	}
 	n += 8
-	if sigLen > 1000 { // TODO: smarter sanity check
+	if sigLen < 0 || sigLen > 1000 { // TODO: smarter sanity check
 		return n, errors.New("invalid signature length")
 	}
 	bp.LeaderSig = make([]byte, sigLen)
@@ -132,6 +131,9 @@ func (bp *blockProp) ReadFrom(r io.Reader) (int64, error) {
 		return n, err
 	}
 	n += 8
+	if pubkeyLen < 0 || pubkeyLen > 1000 {
+		return n, errors.New("invalid public key length")
+	}
 	bp.SenderPubKey = make([]byte, pubkeyLen)
 	nr, err = io.ReadFull(r, bp.SenderPubKey)
 	n += int64(nr)
@@ -242,12 +244,16 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		return
 	}
 
+	// Header is a few hundred bytes. Deadline it so a peer that never finishes
+	// the announcement cannot park this handler.
+	s.SetReadDeadline(time.Now().Add(reqRWTimeout))
 	var prop blockProp
 	_, err := prop.ReadFrom(s)
 	if err != nil {
 		n.log.Warnf("invalid block proposal message: %v", err)
 		return
 	}
+	s.SetReadDeadline(time.Time{})
 
 	height := prop.Height
 	currentHeight := n.BlockHeight()
@@ -262,23 +268,18 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 	n.log.Info("got block proposal", "height", prop.Height, "hash", prop.Hash, "prevHash", prop.PrevHash,
 		"stamp", prop.Stamp, "leaderSig", prop.LeaderSig, "senderPubKey", hex.EncodeToString(prop.SenderPubKey))
 
-	// This requires atomicity of AcceptProposal -> download -> NotifyBlockProposal.
-	// We also must not ignore any proposal messages since they may be real
-	// (signed by leader) leader while others may be spam.
-	n.blkPropHandling <- struct{}{} // block until it's our turn
-	done := func() { <-n.blkPropHandling }
-	var ceProcessing bool // true once we've handed off to CE to handle it and call when done
-	defer func() {
-		if !ceProcessing {
-			done()
-		}
-	}()
-
 	from := s.Conn().RemotePeer()
 	n.log.Debug("Accept proposal?", "height", height, "blockID", prop.Hash, "prevHash", prop.PrevHash,
 		"from_peer", peers.PeerIDStringer(from))
 
-	if !n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp) {
+	// blkPropHandling is the only proposal slot. Hold it across the accept
+	// decision and the later handoff to consensus, not across the body read.
+	// A peer that has the leader's signature can otherwise withhold the block
+	// and stall every other proposal for as long as the stream stays open.
+	n.blkPropHandling <- struct{}{}
+	accept := n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp)
+	<-n.blkPropHandling
+	if !accept {
 		// NOTE: if this is ahead of our last commit height, we have to try to catch up
 		gap := height - currentHeight
 		if gap > 1 {
@@ -291,16 +292,25 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		return
 	}
 
+	reqTimeout := 2 * time.Second
+	recvTimeout := defaultBlkGetTimeout
+	idleTimeout := 500 * time.Millisecond
+	if n.blockSyncCfg != nil {
+		reqTimeout = time.Duration(n.blockSyncCfg.RequestTimeout)
+		recvTimeout = time.Duration(n.blockSyncCfg.BlockGetTimeout)
+		idleTimeout = time.Duration(n.blockSyncCfg.IdleTimeout)
+	}
+
+	s.SetWriteDeadline(time.Now().Add(reqTimeout))
 	_, err = s.Write([]byte(getMsg))
 	if err != nil {
-		n.log.Warnf("failed to request block proposal contents: %w", err)
+		n.log.Warnf("failed to request block proposal contents: %v", err)
 		return
 	}
 
-	rd := bufio.NewReader(s)
-	blkProp, err := io.ReadAll(rd)
+	blkProp, err := readAll(s, blkReadLimit, time.Now().Add(recvTimeout), idleTimeout)
 	if err != nil {
-		n.log.Warnf("failed to read block proposal contents: %w", err)
+		n.log.Warnf("failed to read block proposal contents: %v", err)
 		return
 	}
 
@@ -320,6 +330,22 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 	hash := blk.Header.Hash()
 	if hash != annHash {
 		n.log.Warnf("unexpected hash: wanted %s, got %s", hash, annHash)
+		return
+	}
+
+	// Re-check under the slot. The download above ran without it, so another
+	// proposal may already have been handed to consensus.
+	n.blkPropHandling <- struct{}{}
+	done := func() { <-n.blkPropHandling }
+	var ceProcessing bool // true once we've handed off to CE to handle it and call when done
+	defer func() {
+		if !ceProcessing {
+			done()
+		}
+	}()
+	if !n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp) {
+		n.log.Debug("do not want proposal content", "height", height, "hash", prop.Hash,
+			"prevHash", prop.PrevHash)
 		return
 	}
 
