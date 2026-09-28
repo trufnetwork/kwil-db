@@ -436,12 +436,19 @@ func readAll(s network.Stream, limit int64, deadline time.Time, idleTimeout time
 
 	for {
 		// Check absolute deadline for the entire resource.
-		if time.Now().After(deadline) {
+		now := time.Now()
+		if now.After(deadline) {
 			return nil, fmt.Errorf("timeout")
 		}
 
-		// Set read deadline for this chunk.
-		s.SetReadDeadline(time.Now().Add(idleTimeout))
+		// Idle must not push this read past the overall deadline. A chunk
+		// arriving just before recvTimeout would otherwise keep the stream
+		// open for another full idleTimeout.
+		chunkDeadline := now.Add(idleTimeout)
+		if chunkDeadline.After(deadline) {
+			chunkDeadline = deadline
+		}
+		s.SetReadDeadline(chunkDeadline)
 
 		// The following is verbatim from io.ReadAll.
 		n, err := r.Read(b[len(b):cap(b)])

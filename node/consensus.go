@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding"
@@ -29,6 +28,17 @@ import (
 // the logs.  The value 100 was chosen empirically: it easily covers ordinary
 // catch-up gaps while still surfacing genuine fork scenarios.
 const FAR_AHEAD_THRESHOLD = int64(100)
+
+// maxBlkPropReads caps how many proposal bodies are read at once. Each read
+// may buffer up to blkReadLimit. NOTE: a peer that passes AcceptProposal can
+// hold one slot until that read's idle or overall deadline. Two leaves room
+// for one slow read without excluding every other delivery.
+const maxBlkPropReads = 2
+
+// blkPropReadWait is how long a handler waits for a body-read slot before
+// rejecting. Long enough to pick up a slot freed by an idle timeout, short
+// enough that a full cap still fails the request.
+const blkPropReadWait = time.Second
 
 type (
 	ConsensusReset = types.ConsensusReset
@@ -118,7 +128,7 @@ func (bp *blockProp) ReadFrom(r io.Reader) (int64, error) {
 		return n, err
 	}
 	n += 8
-	if sigLen > 1000 { // TODO: smarter sanity check
+	if sigLen < 0 || sigLen > 1000 { // TODO: smarter sanity check
 		return n, errors.New("invalid signature length")
 	}
 	bp.LeaderSig = make([]byte, sigLen)
@@ -132,6 +142,9 @@ func (bp *blockProp) ReadFrom(r io.Reader) (int64, error) {
 		return n, err
 	}
 	n += 8
+	if pubkeyLen < 0 || pubkeyLen > 1000 {
+		return n, errors.New("invalid public key length")
+	}
 	bp.SenderPubKey = make([]byte, pubkeyLen)
 	nr, err = io.ReadFull(r, bp.SenderPubKey)
 	n += int64(nr)
@@ -220,6 +233,42 @@ func (n *Node) announceBlkProp(ctx context.Context, blk *ktypes.Block, senderPub
 	}
 }
 
+// acquireBlkPropRead reserves a body-read slot for from.
+// The same peer cannot hold a second slot. If every slot is busy, this waits
+// up to blkPropReadWait for one to free, then rejects.
+func (n *Node) acquireBlkPropRead(from peer.ID) bool {
+	n.blkPropReadMu.Lock()
+	if _, ok := n.blkPropReadPeers[from]; ok {
+		n.blkPropReadMu.Unlock()
+		return false
+	}
+	n.blkPropReadMu.Unlock()
+
+	timer := time.NewTimer(blkPropReadWait)
+	defer timer.Stop()
+	select {
+	case n.blkPropReads <- struct{}{}:
+	case <-timer.C:
+		return false
+	}
+
+	n.blkPropReadMu.Lock()
+	defer n.blkPropReadMu.Unlock()
+	if _, ok := n.blkPropReadPeers[from]; ok {
+		<-n.blkPropReads
+		return false
+	}
+	n.blkPropReadPeers[from] = struct{}{}
+	return true
+}
+
+func (n *Node) releaseBlkPropRead(from peer.ID) {
+	n.blkPropReadMu.Lock()
+	delete(n.blkPropReadPeers, from)
+	n.blkPropReadMu.Unlock()
+	<-n.blkPropReads
+}
+
 // blkPropStreamHandler is the stream handler for the ProtocolIDBlockPropose
 // protocol i.e. proposed block announcements, which originate from the leader,
 // but may be re-announced by other validators.
@@ -242,12 +291,16 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		return
 	}
 
+	// Header is a few hundred bytes. Deadline it so a peer that never finishes
+	// the announcement cannot park this handler.
+	s.SetReadDeadline(time.Now().Add(reqRWTimeout))
 	var prop blockProp
 	_, err := prop.ReadFrom(s)
 	if err != nil {
 		n.log.Warnf("invalid block proposal message: %v", err)
 		return
 	}
+	s.SetReadDeadline(time.Time{})
 
 	height := prop.Height
 	currentHeight := n.BlockHeight()
@@ -262,23 +315,18 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 	n.log.Info("got block proposal", "height", prop.Height, "hash", prop.Hash, "prevHash", prop.PrevHash,
 		"stamp", prop.Stamp, "leaderSig", prop.LeaderSig, "senderPubKey", hex.EncodeToString(prop.SenderPubKey))
 
-	// This requires atomicity of AcceptProposal -> download -> NotifyBlockProposal.
-	// We also must not ignore any proposal messages since they may be real
-	// (signed by leader) leader while others may be spam.
-	n.blkPropHandling <- struct{}{} // block until it's our turn
-	done := func() { <-n.blkPropHandling }
-	var ceProcessing bool // true once we've handed off to CE to handle it and call when done
-	defer func() {
-		if !ceProcessing {
-			done()
-		}
-	}()
-
 	from := s.Conn().RemotePeer()
 	n.log.Debug("Accept proposal?", "height", height, "blockID", prop.Hash, "prevHash", prop.PrevHash,
 		"from_peer", peers.PeerIDStringer(from))
 
-	if !n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp) {
+	// blkPropHandling is the only proposal slot. Hold it across the accept
+	// decision and the later handoff to consensus, not across the body read.
+	// A peer that has the leader's signature can otherwise withhold the block
+	// and stall every other proposal for as long as the stream stays open.
+	n.blkPropHandling <- struct{}{}
+	accept := n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp)
+	<-n.blkPropHandling
+	if !accept {
 		// NOTE: if this is ahead of our last commit height, we have to try to catch up
 		gap := height - currentHeight
 		if gap > 1 {
@@ -291,16 +339,34 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		return
 	}
 
-	_, err = s.Write([]byte(getMsg))
-	if err != nil {
-		n.log.Warnf("failed to request block proposal contents: %w", err)
-		return
+	reqTimeout := 2 * time.Second
+	recvTimeout := defaultBlkGetTimeout
+	idleTimeout := 500 * time.Millisecond
+	if n.blockSyncCfg != nil {
+		reqTimeout = time.Duration(n.blockSyncCfg.RequestTimeout)
+		recvTimeout = time.Duration(n.blockSyncCfg.BlockGetTimeout)
+		idleTimeout = time.Duration(n.blockSyncCfg.IdleTimeout)
 	}
 
-	rd := bufio.NewReader(s)
-	blkProp, err := io.ReadAll(rd)
+	// One peer can hold only one body-read slot, and only for the transfer.
+	// blkPropHandling stays free. A full cap is retried until blkPropReadWait,
+	// then rejected.
+	if !n.acquireBlkPropRead(from) {
+		n.log.Debug("proposal body read limit reached", "height", height,
+			"from", peers.PeerIDStringer(from))
+		return
+	}
+	blkProp, err := func() ([]byte, error) {
+		defer n.releaseBlkPropRead(from)
+
+		s.SetWriteDeadline(time.Now().Add(reqTimeout))
+		if _, err := s.Write([]byte(getMsg)); err != nil {
+			return nil, err
+		}
+		return readAll(s, blkReadLimit, time.Now().Add(recvTimeout), idleTimeout)
+	}()
 	if err != nil {
-		n.log.Warnf("failed to read block proposal contents: %w", err)
+		n.log.Warnf("failed to read block proposal contents: %v", err)
 		return
 	}
 
@@ -320,6 +386,22 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 	hash := blk.Header.Hash()
 	if hash != annHash {
 		n.log.Warnf("unexpected hash: wanted %s, got %s", hash, annHash)
+		return
+	}
+
+	// Re-check under the slot. The download above ran without it, so another
+	// proposal may already have been handed to consensus.
+	n.blkPropHandling <- struct{}{}
+	done := func() { <-n.blkPropHandling }
+	var ceProcessing bool // true once we've handed off to CE to handle it and call when done
+	defer func() {
+		if !ceProcessing {
+			done()
+		}
+	}()
+	if !n.ce.AcceptProposal(height, prop.Hash, prop.PrevHash, prop.LeaderSig, prop.Stamp) {
+		n.log.Debug("do not want proposal content", "height", height, "hash", prop.Hash,
+			"prevHash", prop.PrevHash)
 		return
 	}
 
