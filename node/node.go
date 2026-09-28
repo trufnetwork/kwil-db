@@ -207,6 +207,9 @@ type Node struct {
 	// discResp chan types.DiscoveryResponse
 
 	blkPropHandling chan struct{}
+	// blkPropReads limits concurrent proposal body reads. Separate from
+	// blkPropHandling so a slow body cannot hold the accept/handoff slot.
+	blkPropReads chan struct{}
 
 	txQueue chan orderedTxn // enforces ordering in the tx broadcasts to the network.
 
@@ -255,6 +258,7 @@ func NewNode(cfg *Config, opts ...Option) (*Node, error) {
 		resetMsg:        make(chan ConsensusReset, 1),
 		txQueue:         make(chan orderedTxn, txQueueSize),
 		blkPropHandling: make(chan struct{}, 1),
+		blkPropReads:    make(chan struct{}, maxBlkPropReads),
 
 		P2PService: *cfg.P2PService,
 	}

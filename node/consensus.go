@@ -29,6 +29,13 @@ import (
 // catch-up gaps while still surfacing genuine fork scenarios.
 const FAR_AHEAD_THRESHOLD = int64(100)
 
+// maxBlkPropReads caps how many proposal bodies are read at once. Each read
+// may buffer up to blkReadLimit. NOTE: a peer that passes AcceptProposal can
+// hold a slot until that read's idle or overall deadline. Two leaves room for
+// one slow read without excluding every other delivery; raise it if honest
+// proposals are dropped while several bodies are already in flight.
+const maxBlkPropReads = 2
+
 type (
 	ConsensusReset = types.ConsensusReset
 	AckRes         = types.AckRes
@@ -301,14 +308,23 @@ func (n *Node) blkPropStreamHandler(s network.Stream) {
 		idleTimeout = time.Duration(n.blockSyncCfg.IdleTimeout)
 	}
 
-	s.SetWriteDeadline(time.Now().Add(reqTimeout))
-	_, err = s.Write([]byte(getMsg))
-	if err != nil {
-		n.log.Warnf("failed to request block proposal contents: %v", err)
+	// Take a body-read slot only for the transfer. blkPropHandling stays free.
+	select {
+	case n.blkPropReads <- struct{}{}:
+	default:
+		n.log.Debug("proposal body read limit reached", "height", height,
+			"from", peers.PeerIDStringer(from))
 		return
 	}
+	blkProp, err := func() ([]byte, error) {
+		defer func() { <-n.blkPropReads }()
 
-	blkProp, err := readAll(s, blkReadLimit, time.Now().Add(recvTimeout), idleTimeout)
+		s.SetWriteDeadline(time.Now().Add(reqTimeout))
+		if _, err := s.Write([]byte(getMsg)); err != nil {
+			return nil, err
+		}
+		return readAll(s, blkReadLimit, time.Now().Add(recvTimeout), idleTimeout)
+	}()
 	if err != nil {
 		n.log.Warnf("failed to read block proposal contents: %v", err)
 		return
