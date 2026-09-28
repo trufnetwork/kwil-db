@@ -1949,6 +1949,16 @@ func Test_Actions(t *testing.T) {
 		$arr := array[1,2,3];
 		$arr[-1] := 4;
 		`, engine.ErrIndexOutOfBounds),
+		rawTest("assign to index outside int32", `
+		$arr := array[1,2,3];
+		-- 2^32+1 truncates to 1 if narrowed with a bare int32() cast
+		$arr[4294967297] := 4;
+		`, engine.ErrIndexOutOfBounds),
+		rawTest("assign past max array length", `
+		$arr := array[1,2,3];
+		-- maxArrayLen+1 (1<<20 + 1); must not allocate
+		$arr[1048577] := 4;
+		`, engine.ErrIndexOutOfBounds),
 		rawTest("assign to slice with from > to", `
 		$arr := array[1,2,3];
 		$arr[2:1] := array[4,5];

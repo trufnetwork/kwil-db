@@ -6,6 +6,7 @@ package interpreter
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/trufnetwork/kwil-db/core/types"
@@ -14,6 +15,16 @@ import (
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
 )
+
+// narrowArrIndex converts an action int64 subscript to int32.
+// Values outside the int32 range are rejected so the conversion cannot wrap
+// (MinInt32-1 and 2^32+1 both become a large positive int32).
+func narrowArrIndex(i int64) (int32, error) {
+	if i > math.MaxInt32 || i < math.MinInt32 {
+		return 0, fmt.Errorf("%w: array index %d", engine.ErrIndexOutOfBounds, i)
+	}
+	return int32(i), nil
+}
 
 // makeActionToExecutable creates an executable from an action
 func makeActionToExecutable(namespace string, act *action) *executable {
@@ -346,7 +357,12 @@ func (i *interpreterPlanner) VisitActionStmtAssignment(p0 *parse.ActionStmtAssig
 					return fmt.Errorf("array index must be integer, got %s", index.Type())
 				}
 
-				err = arr.Set(int32(index.RawValue().(int64)), scalarVal)
+				idx, err := narrowArrIndex(index.RawValue().(int64))
+				if err != nil {
+					return err
+				}
+
+				err = arr.Set(idx, scalarVal)
 				if err != nil {
 					return err
 				}
@@ -372,7 +388,7 @@ func (i *interpreterPlanner) VisitActionStmtAssignment(p0 *parse.ActionStmtAssig
 					return 0, fmt.Errorf("array index must be integer, got %s", val.Type())
 				}
 
-				return int32(val.RawValue().(int64)), nil
+				return narrowArrIndex(val.RawValue().(int64))
 			}
 
 			// we are assigning an array to a slice of an array
@@ -1081,7 +1097,12 @@ func (i *interpreterPlanner) VisitExpressionArrayAccess(p0 *parse.ExpressionArra
 				return nil, err
 			}
 
-			return arr.Get(int32(index.RawValue().(int64)))
+			idx, err := narrowArrIndex(index.RawValue().(int64))
+			if err != nil {
+				return nil, err
+			}
+
+			return arr.Get(idx)
 		}
 
 		// 1-indexed
@@ -1103,7 +1124,10 @@ func (i *interpreterPlanner) VisitExpressionArrayAccess(p0 *parse.ExpressionArra
 				return nil, err
 			}
 
-			start = int32(fromVal.RawValue().(int64))
+			start, err = narrowArrIndex(fromVal.RawValue().(int64))
+			if err != nil {
+				return nil, err
+			}
 		}
 		if toFn != nil {
 			toVal, err := toFn(exec)
@@ -1121,7 +1145,10 @@ func (i *interpreterPlanner) VisitExpressionArrayAccess(p0 *parse.ExpressionArra
 				return nil, err
 			}
 
-			end = int32(toVal.RawValue().(int64))
+			end, err = narrowArrIndex(toVal.RawValue().(int64))
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if start > end {
