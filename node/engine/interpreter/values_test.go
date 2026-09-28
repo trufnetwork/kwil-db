@@ -1,6 +1,7 @@
 package interpreter
 
 import (
+	"math"
 	"reflect"
 	"testing"
 
@@ -862,6 +863,37 @@ func Test_SetArrayNull(t *testing.T) {
 		err = n.(arrayValue).Set(1, &nullValue{})
 		require.NoError(t, err)
 	}
+}
+
+func TestSetArrRejectsUnboundedIndex(t *testing.T) {
+	v, err := NewValue(int64(1))
+	require.NoError(t, err)
+	scal := v.(scalarValue)
+
+	arr, err := makeArray([]scalarValue{scal}, nil)
+	require.NoError(t, err)
+
+	err = arr.Set(maxArrayLen+1, scal)
+	require.ErrorIs(t, err, engine.ErrIndexOutOfBounds)
+	require.Equal(t, int32(1), arr.Len())
+
+	// MinInt32-1 and 2^32+1 both wrap to a positive int32 under a bare cast.
+	_, err = narrowArrIndex(int64(math.MinInt32) - 1)
+	require.ErrorIs(t, err, engine.ErrIndexOutOfBounds)
+	_, err = narrowArrIndex(1<<32 + 1)
+	require.ErrorIs(t, err, engine.ErrIndexOutOfBounds)
+	got, err := narrowArrIndex(2)
+	require.NoError(t, err)
+	require.Equal(t, int32(2), got)
+
+	err = arr.Set(2, scal)
+	require.NoError(t, err)
+	require.Equal(t, int32(2), arr.Len())
+
+	nulls := &arrayOfNulls{}
+	err = nulls.Set(maxArrayLen+1, &nullValue{})
+	require.ErrorIs(t, err, engine.ErrIndexOutOfBounds)
+	require.Equal(t, int32(0), nulls.Len())
 }
 
 // ptrArr is a helper function that converts a slice of values to a slice of pointers to those values.

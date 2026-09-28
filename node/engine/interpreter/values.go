@@ -1647,10 +1647,16 @@ func getArr[T any](arr internalArray[T], i int32, fn func(T) scalarValue) (scala
 	return fn(pgArr.Elements[i-1]), nil
 }
 
+// maxArrayLen is the largest 1-based subscript an array assignment may grow to.
+// Past this, Set returns ErrIndexOutOfBounds instead of allocating. The ceiling
+// is a count: 1<<20 scalar slots is a few dozen MiB. Raise it if a schema
+// legitimately needs a longer array.
+const maxArrayLen int32 = 1 << 20
+
 // setArr sets the Value at index i in the array.
 // It treats the array as 1-based.
 func setArr[T, B any](arr internalArray[T], i int32, v scalarValue, fn func(B) T) error {
-	if i < 1 { // 1-based indexing
+	if i < 1 || i > maxArrayLen { // 1-based indexing, bounded growth
 		return engine.ErrIndexOutOfBounds
 	}
 
@@ -2696,7 +2702,7 @@ func (n *arrayOfNulls) Value() (driver.Value, error) {
 }
 
 func (n *arrayOfNulls) Set(i int32, v scalarValue) error {
-	if i < 1 {
+	if i < 1 || i > maxArrayLen {
 		return engine.ErrIndexOutOfBounds
 	}
 
