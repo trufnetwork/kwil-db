@@ -418,6 +418,23 @@ func serializeLog(log *ethtypes.Log) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// readExact returns the next n bytes.
+// Lengths come from resolution bodies. A length past the unread input panics
+// in make, which Finalize does not recover from.
+func readExact(r interface {
+	io.Reader
+	Len() int
+}, n uint64) ([]byte, error) {
+	if n > uint64(r.Len()) {
+		return nil, fmt.Errorf("invalid length %d", n)
+	}
+	b := make([]byte, n)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 // deserializeLog deserializes the bytes back into an ethCommonLogCopy.
 func deserializeLog(data []byte) (*ethtypes.Log, error) {
 	log := &ethtypes.Log{}
@@ -433,6 +450,9 @@ func deserializeLog(data []byte) (*ethtypes.Log, error) {
 	if err := binary.Read(buf, binary.BigEndian, &topicCount); err != nil {
 		return nil, err
 	}
+	if uint64(topicCount) > uint64(buf.Len())/32 {
+		return nil, fmt.Errorf("invalid topic count %d", topicCount)
+	}
 	log.Topics = make([]ethcommon.Hash, topicCount)
 	for i := range int(topicCount) {
 		if _, err := io.ReadFull(buf, log.Topics[i][:]); err != nil {
@@ -445,8 +465,9 @@ func deserializeLog(data []byte) (*ethtypes.Log, error) {
 	if err := binary.Read(buf, binary.BigEndian, &dataLen); err != nil {
 		return nil, err
 	}
-	log.Data = make([]byte, dataLen)
-	if _, err := io.ReadFull(buf, log.Data); err != nil {
+	var err error
+	log.Data, err = readExact(buf, uint64(dataLen))
+	if err != nil {
 		return nil, err
 	}
 

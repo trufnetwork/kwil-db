@@ -29,13 +29,20 @@ func RegisterEventResolution(name string, resolve ResolveFunc) {
 	registeredResolutions[name] = resolve
 
 	orderedsync.RegisterResolveFunc(name, func(ctx context.Context, app *common.App, block *common.BlockContext, res *orderedsync.ResolutionMessage) error {
-		logs, err := deserializeEthLogs(res.Data)
-		if err != nil {
-			return err
-		}
-
-		return resolve(ctx, app, block, res.Topic, logs)
+		return applyEventResolution(ctx, app, block, res, resolve)
 	})
+}
+
+// applyEventResolution decodes a confirmed ordered-sync payload and hands the
+// logs to resolve. A payload that cannot be decoded is skipped: failing the
+// block would replay the same bytes on every execution and stop the chain.
+func applyEventResolution(ctx context.Context, app *common.App, block *common.BlockContext, res *orderedsync.ResolutionMessage, resolve ResolveFunc) error {
+	logs, err := deserializeEthLogs(res.Data)
+	if err != nil {
+		app.Service.Logger.Warn("skipping undecodable evm sync payload", "topic", res.Topic, "error", err)
+		return nil
+	}
+	return resolve(ctx, app, block, res.Topic, logs)
 }
 
 var (
@@ -437,8 +444,7 @@ func (e *EthLog) UnmarshalBinary(data []byte) error {
 	}
 
 	// Read the metadata
-	e.Metadata = make([]byte, metadataLen)
-	_, err = buf.Read(e.Metadata)
+	e.Metadata, err = readExact(buf, metadataLen)
 	if err != nil {
 		return err
 	}
@@ -451,8 +457,7 @@ func (e *EthLog) UnmarshalBinary(data []byte) error {
 	}
 
 	// Read the log
-	logBts := make([]byte, logLen)
-	_, err = buf.Read(logBts)
+	logBts, err := readExact(buf, logLen)
 	if err != nil {
 		return err
 	}
@@ -497,8 +502,7 @@ func deserializeEthLogs(data []byte) ([]*EthLog, error) {
 		}
 
 		// Read the log
-		logBts := make([]byte, logLen)
-		_, err = buf.Read(logBts)
+		logBts, err := readExact(buf, logLen)
 		if err != nil {
 			return nil, err
 		}

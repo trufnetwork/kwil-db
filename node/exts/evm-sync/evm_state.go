@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"sync"
 	"time"
@@ -287,8 +286,8 @@ func (p *polledEvent) UnmarshalBinary(data []byte) error {
 	}
 
 	// 2. Read UniqueName bytes
-	nameBytes := make([]byte, nameLen)
-	if _, err := io.ReadFull(reader, nameBytes); err != nil {
+	nameBytes, err := readExact(reader, nameLen)
+	if err != nil {
 		return err
 	}
 	p.UniqueName = string(nameBytes)
@@ -300,8 +299,8 @@ func (p *polledEvent) UnmarshalBinary(data []byte) error {
 	}
 
 	// 4. Read Data bytes
-	dataBytes := make([]byte, dataLen)
-	if _, err := io.ReadFull(reader, dataBytes); err != nil {
+	dataBytes, err := readExact(reader, dataLen)
+	if err != nil {
 		return err
 	}
 	p.Data = dataBytes
@@ -312,8 +311,8 @@ func (p *polledEvent) UnmarshalBinary(data []byte) error {
 	}
 
 	// 6. Read ResolutionName bytes
-	nameBytes = make([]byte, nameLen)
-	if _, err := io.ReadFull(reader, nameBytes); err != nil {
+	nameBytes, err = readExact(reader, nameLen)
+	if err != nil {
 		return err
 	}
 	p.ResolutionName = string(nameBytes)

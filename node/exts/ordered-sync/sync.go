@@ -196,6 +196,20 @@ func (r *ResolutionMessage) MarshalBinary() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// readCounted returns the next n bytes.
+// The length comes from an untrusted resolution body. A negative or oversized
+// length panics in make, which Finalize does not recover from.
+func readCounted(r *bytes.Reader, n int32) ([]byte, error) {
+	if n < 0 || int(n) > r.Len() {
+		return nil, fmt.Errorf("invalid length %d", n)
+	}
+	b := make([]byte, n)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 func (r *ResolutionMessage) UnmarshalBinary(data []byte) error {
 	buf := bytes.NewReader(data)
 
@@ -204,8 +218,8 @@ func (r *ResolutionMessage) UnmarshalBinary(data []byte) error {
 	if err := binary.Read(buf, binary.BigEndian, &topicLen); err != nil {
 		return err
 	}
-	topicBytes := make([]byte, topicLen)
-	if _, err := io.ReadFull(buf, topicBytes); err != nil {
+	topicBytes, err := readCounted(buf, topicLen)
+	if err != nil {
 		return err
 	}
 	r.Topic = string(topicBytes)
@@ -235,8 +249,8 @@ func (r *ResolutionMessage) UnmarshalBinary(data []byte) error {
 	if err := binary.Read(buf, binary.BigEndian, &dataLen); err != nil {
 		return err
 	}
-	r.Data = make([]byte, dataLen)
-	if _, err := io.ReadFull(buf, r.Data); err != nil {
+	r.Data, err = readCounted(buf, dataLen)
+	if err != nil {
 		return err
 	}
 

@@ -33,4 +33,9 @@ func Test_PolledEventRoundTrip(t *testing.T) {
 		t.Errorf("Data mismatch: got %v, want %v",
 			decoded.Data, original.Data)
 	}
+
+	var hostile polledEvent
+	if err := hostile.UnmarshalBinary([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}); err == nil {
+		t.Fatal("oversized length must return an error")
+	}
 }
