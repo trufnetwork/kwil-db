@@ -14,8 +14,10 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/stretchr/testify/require"
 
+	kwilcommon "github.com/trufnetwork/kwil-db/common"
 	"github.com/trufnetwork/kwil-db/core/log"
 	"github.com/trufnetwork/kwil-db/node/exts/evm-sync/chains"
+	orderedsync "github.com/trufnetwork/kwil-db/node/exts/ordered-sync"
 )
 
 // TestSerializeDeserializeEthLogs tests that we can round-trip logs
@@ -247,6 +249,40 @@ func TestDeserializeEthLogsMalformedData(t *testing.T) {
 	// Try to deserialize
 	_, err = deserializeEthLogs(buf.Bytes())
 	require.Error(t, err, "deserialization should fail on malformed data")
+
+	// A length past the unread input used to panic in make.
+	huge := make([]byte, 8)
+	binary.BigEndian.PutUint64(huge, ^uint64(0))
+	_, err = deserializeEthLogs(huge)
+	require.Error(t, err)
+
+	_, err = deserializeLog(append(make([]byte, 20), 0xff, 0xff, 0xff, 0xff))
+	require.Error(t, err)
+}
+
+func TestApplyEventResolutionSkipsHostilePayload(t *testing.T) {
+	called := false
+	app := &kwilcommon.App{Service: &kwilcommon.Service{Logger: log.DiscardLogger}}
+	huge := make([]byte, 8)
+	binary.BigEndian.PutUint64(huge, ^uint64(0))
+	err := applyEventResolution(context.Background(), app, nil, &orderedsync.ResolutionMessage{
+		Topic: "t",
+		Data:  huge,
+	}, func(context.Context, *kwilcommon.App, *kwilcommon.BlockContext, string, []*EthLog) error {
+		called = true
+		return nil
+	})
+	require.NoError(t, err)
+	require.False(t, called)
+
+	err = applyEventResolution(context.Background(), app, nil, &orderedsync.ResolutionMessage{
+		Topic: "t",
+	}, func(context.Context, *kwilcommon.App, *kwilcommon.BlockContext, string, []*EthLog) error {
+		called = true
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, called)
 }
 
 // mockEventKVReader implements EventKVReader for tests.
