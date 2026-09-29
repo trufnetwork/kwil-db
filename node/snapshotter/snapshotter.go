@@ -23,7 +23,9 @@ import (
 )
 
 const (
-	chunkSize int64 = 16e6 - 4096 // 16 MB
+	// ChunkSize is the maximum snapshot chunk. Producers split the compressed
+	// dump here; downloaders must not write more than this before checking the hash.
+	ChunkSize int64 = 16e6 - 4096 // 16 MB
 
 	DefaultSnapshotFormat = 0
 
@@ -373,7 +375,7 @@ func (s *Snapshotter) splitStreamIntoChunks(ctx context.Context, height uint64, 
 
 		hasher := sha256.New()
 		multiWriter := io.MultiWriter(chunkFile, hasher)
-		written, copyErr := io.CopyN(multiWriter, &contextReader{ctx: ctx, Reader: r}, chunkSize)
+		written, copyErr := io.CopyN(multiWriter, &contextReader{ctx: ctx, Reader: r}, ChunkSize)
 
 		if err := chunkFile.Close(); err != nil {
 			return nil, fmt.Errorf("failed to close chunk file: %w", err)
@@ -400,7 +402,7 @@ func (s *Snapshotter) splitStreamIntoChunks(ctx context.Context, height uint64, 
 		indexLogged := chunkIndex - 1
 		s.log.Info("Chunk created", "index", indexLogged, "chunkfile", chunkFileName, "size", written)
 
-		if copyErr == io.EOF || copyErr == io.ErrUnexpectedEOF || written < chunkSize {
+		if copyErr == io.EOF || copyErr == io.ErrUnexpectedEOF || written < ChunkSize {
 			break
 		}
 	}

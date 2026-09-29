@@ -105,7 +105,7 @@ func TestSplitDumpIntoChunksExactMultiple(t *testing.T) {
 	height := uint64(11)
 	require.NoError(t, os.MkdirAll(snapshotChunkDir(dir, height, 0), 0o755))
 
-	data := bytes.Repeat([]byte{0x42}, int(chunkSize))
+	data := bytes.Repeat([]byte{0x42}, int(ChunkSize))
 	channel := make(chan []byte, 1)
 	channel <- []byte{1, 2, 3}
 	close(channel)
