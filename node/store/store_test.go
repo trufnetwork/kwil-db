@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -897,4 +898,65 @@ func TestBlockStore_GetRawReportsAReadFailure(t *testing.T) {
 	require.Zero(t, height)
 	require.Nil(t, rawBlk)
 	require.Nil(t, ci)
+}
+
+// holdsPointers reports whether a value of type t contains anything the
+// garbage collector has to follow.
+func holdsPointers(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Array:
+		return t.Len() > 0 && holdsPointers(t.Elem())
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if holdsPointers(t.Field(i).Type) {
+				return true
+			}
+		}
+		return false
+	case reflect.Pointer, reflect.UnsafePointer, reflect.Map, reflect.Slice,
+		reflect.String, reflect.Interface, reflect.Chan, reflect.Func:
+		return true
+	default:
+		return false
+	}
+}
+
+// The index has an entry for every block in the store, millions on a long
+// chain. If an entry holds a pointer, every garbage collection cycle scans the
+// whole index, and on a node with a memory limit that can take most of its CPU.
+func TestBlockStore_IndexHoldsNoPointers(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+	for _, m := range []any{bs.idx, bs.hashes} {
+		mt := reflect.TypeOf(m)
+		require.False(t, holdsPointers(mt.Key()), "%v key holds a pointer", mt)
+		require.False(t, holdsPointers(mt.Elem()), "%v value holds a pointer", mt)
+	}
+}
+
+func TestBlockStore_BestStampIsTheBestBlocks(t *testing.T) {
+	bs, dir := setupTestBlockStore(t)
+
+	var blocks []*ktypes.Block
+	for _, height := range []int64{1, 3, 2} { // 2 arrives after 3 and must not move Best
+		block, appHash, _ := createTestBlock(t, height, 1)
+		require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+		blocks = append(blocks, block)
+	}
+	best := blocks[1]
+
+	height, hash, _, stamp := bs.Best()
+	require.Equal(t, best.Header.Height, height)
+	require.Equal(t, best.Hash(), hash)
+	require.True(t, best.Header.Timestamp.Equal(stamp), "got %v, want %v", stamp, best.Header.Timestamp)
+
+	// Reopening rebuilds the index from disk and must arrive at the same stamp.
+	require.NoError(t, bs.Close())
+	reopened, err := NewBlockStore(dir)
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	height, hash, _, stamp = reopened.Best()
+	require.Equal(t, best.Header.Height, height)
+	require.Equal(t, best.Hash(), hash)
+	require.True(t, best.Header.Timestamp.Equal(stamp), "after reopen got %v, want %v", stamp, best.Header.Timestamp)
 }
