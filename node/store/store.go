@@ -25,16 +25,18 @@ var mets metrics.StoreMetrics = metrics.Store
 // This version of BlockStore has one badger DB. The block is one value.
 // Transaction gets seek into block.
 
+// blockHashes holds no pointers, so the garbage collector never scans the
+// hashes map, which has one entry for every block in the store.
 type blockHashes struct {
 	hash    types.Hash
 	appHash types.Hash
-	stamp   time.Time
 }
 
 type BlockStore struct {
 	mtx        sync.RWMutex
 	bestHeight int64
 	bestHash   types.Hash
+	bestStamp  time.Time
 	idx        map[types.Hash]int64
 	hashes     map[int64]blockHashes
 	fetching   map[types.Hash]bool // TODO: remove, app concern
@@ -160,11 +162,11 @@ func NewBlockStore(dir string, opts ...Option) (*BlockStore, error) {
 			bs.hashes[height] = blockHashes{
 				hash:    hash,
 				appHash: ci.AppHash,
-				stamp:   stamp,
 			}
 			if bs.bestHeight < height {
 				bs.bestHeight = height
 				bs.bestHash = hash
+				bs.bestStamp = stamp
 			}
 			count++
 		}
@@ -384,11 +386,11 @@ func (bki *BlockStore) Store(blk *ktypes.Block, commitInfo *ktypes.CommitInfo) e
 	bki.hashes[height] = blockHashes{
 		hash:    blkHash,
 		appHash: commitInfo.AppHash,
-		stamp:   blk.Header.Timestamp,
 	}
 	if bki.bestHeight < height {
 		bki.bestHeight = height
 		bki.bestHash = blkHash
+		bki.bestStamp = blk.Header.Timestamp
 	}
 
 	return nil
@@ -421,7 +423,7 @@ func (bki *BlockStore) Best() (height int64, blkHash, appHash types.Hash, stamp 
 	bki.mtx.RLock()
 	defer bki.mtx.RUnlock()
 	height, blkHash = bki.bestHeight, bki.bestHash
-	appHash, stamp = bki.hashes[height].appHash, bki.hashes[height].stamp
+	appHash, stamp = bki.hashes[height].appHash, bki.bestStamp
 	return
 }
 
