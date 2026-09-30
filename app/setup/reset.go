@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -117,6 +118,19 @@ func ResetCmd() *cobra.Command {
 
 // resetPGState drops and creates the database.
 func resetPGState(ctx context.Context, conf *pg.ConnConfig) error {
+	// A node stopped mid-block can leave prepared transactions behind, and
+	// Postgres will not drop a database that holds any.
+	rolledBack, err := pg.RollbackOrphanedPreparedTxns(ctx, conf)
+	if errors.Is(err, pg.ErrDatabaseInUse) {
+		return fmt.Errorf("stop the node before resetting: %w", err)
+	}
+	if err != nil {
+		return err
+	}
+	if rolledBack > 0 {
+		fmt.Printf("Rolled back %d leftover prepared transaction(s) in %s\n", rolledBack, conf.DBName)
+	}
+
 	dropDB := conf.DBName
 	conf.DBName = "postgres"
 	defer func() { conf.DBName = dropDB }()
