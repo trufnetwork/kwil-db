@@ -148,6 +148,41 @@ func ensureUnixTimestampFuncs(ctx context.Context, conn *pgx.Conn) error {
 	return err
 }
 
+// ErrDatabaseInUse means another session is connected to the database.
+var ErrDatabaseInUse = errors.New("database is in use")
+
+// sqlCountOtherSessions counts the clients connected to the current database
+// besides the caller. A running node holds client connections and a
+// replication walsender. Autovacuum workers are left out, since Postgres stops
+// them itself before a DROP DATABASE.
+const sqlCountOtherSessions = `SELECT count(*) FROM pg_stat_activity
+	WHERE datname = current_database() AND pid <> pg_backend_pid()
+	AND backend_type IN ('client backend', 'walsender')`
+
+// RollbackOrphanedPreparedTxns rolls back the prepared transactions that a node
+// left in its database when it stopped between PREPARE TRANSACTION and COMMIT
+// PREPARED, and returns how many it rolled back. Postgres refuses to drop a
+// database that holds any. It returns ErrDatabaseInUse, and rolls back nothing,
+// while another session is connected, because a running node's prepared
+// transactions are not orphaned.
+func RollbackOrphanedPreparedTxns(ctx context.Context, cfg *ConnConfig) (int, error) {
+	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(ctx)
+
+	var others int64
+	if err := conn.QueryRow(ctx, sqlCountOtherSessions).Scan(&others); err != nil {
+		return 0, err
+	}
+	if others > 0 {
+		return 0, fmt.Errorf("%w: %d other connections to %q", ErrDatabaseInUse, others, cfg.DBName)
+	}
+
+	return rollbackPreparedTxns(ctx, conn)
+}
+
 type preparedTxn struct {
 	XID      uint32    `db:"transaction"` // type xid is a 32-bit integer
 	GID      string    `db:"gid"`
