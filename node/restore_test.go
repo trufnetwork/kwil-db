@@ -9,29 +9,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCopyForPsqlDropsOnlyRestrictLines(t *testing.T) {
+// fnWithRestrictText is a function whose body holds a line that reads like a
+// \restrict command. psql sends it to the server as part of the body.
+const fnWithRestrictText = "CREATE FUNCTION restored.f() RETURNS text\n" +
+	"LANGUAGE sql AS $fn$\n" +
+	"SELECT $value$\n" +
+	"\\restrict key1\n" +
+	"$value$;\n" +
+	"$fn$;\n"
+
+func TestCopyForPsqlDropsOnlyTheDumpsOwnRestrictLines(t *testing.T) {
 	longRow := strings.Repeat("x", 3<<20) // longer than the reader's buffer
-	dump := "\\restrict key1\n" +
-		"\\unrestrict key1\n" +
-		"\\restrict key1\n" +
+	dump := "\\restrict wrapkey\n" +
+		"\\unrestrict wrapkey\n" +
+		"\\restrict wrapkey\n" +
 		"CREATE TABLE t (v text);\n" +
+		fnWithRestrictText +
 		"COPY t (v) FROM stdin;\n" +
-		"\\\\restrict not a command\n" + // COPY data: an escaped backslash
+		"\\\\restrict wrapkey\n" + // COPY data: an escaped backslash
 		longRow + "\n" +
 		"\\.\n" +
-		"\\unrestrict key1\n" +
+		"\\unrestrict wrapkey\n" +
 		"SELECT 1;" // no trailing newline
 
 	var out bytes.Buffer
 	require.NoError(t, copyForPsql(&out, strings.NewReader(dump)))
 
 	want := "CREATE TABLE t (v text);\n" +
+		fnWithRestrictText +
 		"COPY t (v) FROM stdin;\n" +
-		"\\\\restrict not a command\n" +
+		"\\\\restrict wrapkey\n" +
 		longRow + "\n" +
 		"\\.\n" +
 		"SELECT 1;"
 	require.Equal(t, want, out.String())
+}
+
+func TestCopyForPsqlPassesADumpThatDoesNotOpenWithRestrict(t *testing.T) {
+	dump := "CREATE SCHEMA restored;\n" + fnWithRestrictText + "\\unrestrict key1\n"
+
+	var out bytes.Buffer
+	require.NoError(t, copyForPsql(&out, strings.NewReader(dump)))
+	require.Equal(t, dump, out.String())
 }
 
 func TestSnapshotHashCoversTheLinesPsqlDoesNotGet(t *testing.T) {

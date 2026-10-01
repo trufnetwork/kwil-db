@@ -834,16 +834,21 @@ func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snaps
 	return nil
 }
 
-// copyForPsql copies a dump to psql line by line, leaving out the \restrict
-// and \unrestrict lines that pg_dump 16.10 and later write. A psql older than
-// those releases does not know them, and with ON_ERROR_STOP it would stop at
-// the first line. They guard against a dump built from untrusted data; a
-// snapshot is checked against its trusted provider's chunk hashes before it is
-// restored. No line of COPY data can start with them, since COPY text escapes
-// a backslash as \\.
+// copyForPsql copies a dump to psql line by line, leaving out the \restrict and
+// \unrestrict lines that pg_dump 16.10 and later write. A psql older than those
+// releases does not know them, and with ON_ERROR_STOP it would stop at the
+// first line. pg_dump opens the dump with \restrict and a random key, and
+// every line it adds uses that key, so only lines that match the key exactly
+// are left out. The same text inside a function body or a string is SQL, not a
+// command, and passes through. A dump that does not open with \restrict passes
+// through unchanged. The lines guard against commands hidden in the data of a
+// dump; a snapshot is checked against its trusted provider's chunk hashes
+// before it is restored.
 func copyForPsql(w io.Writer, r io.Reader) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	bw := bufio.NewWriterSize(w, 1<<20)
+	var restrict, unrestrict []byte // set from the first line
+	first := true
 	for {
 		line, err := br.ReadSlice('\n')
 		if err == bufio.ErrBufferFull {
@@ -858,11 +863,22 @@ func copyForPsql(w io.Writer, r io.Reader) error {
 					return werr
 				}
 			}
-		} else if !isRestrictLine(line) {
-			if _, werr := bw.Write(line); werr != nil {
-				return werr
+		} else {
+			trimmed := bytes.TrimRight(line, "\r\n")
+			if first {
+				if key, ok := bytes.CutPrefix(trimmed, []byte(`\restrict `)); ok && len(key) > 0 && !bytes.ContainsAny(key, " \t") {
+					restrict = bytes.Clone(trimmed)
+					unrestrict = append([]byte(`\unrestrict `), key...)
+				}
+			}
+			drop := restrict != nil && (bytes.Equal(trimmed, restrict) || bytes.Equal(trimmed, unrestrict))
+			if !drop {
+				if _, werr := bw.Write(line); werr != nil {
+					return werr
+				}
 			}
 		}
+		first = false
 		if err == io.EOF {
 			return bw.Flush()
 		}
@@ -870,10 +886,6 @@ func copyForPsql(w io.Writer, r io.Reader) error {
 			return err
 		}
 	}
-}
-
-func isRestrictLine(line []byte) bool {
-	return bytes.HasPrefix(line, []byte(`\restrict `)) || bytes.HasPrefix(line, []byte(`\unrestrict `))
 }
 
 // headBuffer keeps the first max bytes written to it.

@@ -101,3 +101,22 @@ func TestRestoreDBRejectsAWrongHash(t *testing.T) {
 	err := RestoreDB(context.Background(), strings.NewReader(dump), db, wrong[:], log.DiscardLogger)
 	require.ErrorContains(t, err, "invalid snapshot hash")
 }
+
+func TestRestoreDBKeepsRestrictTextInsideAFunction(t *testing.T) {
+	db := restoreTestDB(t, "kwil_test_restore_function")
+	dump := "\\restrict wrapkey\n" +
+		"CREATE SCHEMA restored;\n" +
+		fnWithRestrictText +
+		"\\unrestrict wrapkey\n"
+
+	require.NoError(t, restore(t, db, dump))
+
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, fmt.Sprintf("host=%s port=%s user=%s password=%s database=%s sslmode=disable",
+		db.Host, db.Port, db.User, db.Pass, db.DBName))
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+	var got string
+	require.NoError(t, conn.QueryRow(ctx, `SELECT restored.f()`).Scan(&got))
+	require.Equal(t, "\n\\restrict key1\n", got)
+}
