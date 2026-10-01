@@ -104,6 +104,10 @@ func ResetCmd() *cobra.Command {
 				leaderFile := config.LeaderUpdatesFilePath(rootDir)
 				os.Remove(leaderFile) // ignore error
 				fmt.Println("Leader file removed", leaderFile)
+
+				restoreMarker := config.StatesyncRestoreMarkerPath(rootDir)
+				os.Remove(restoreMarker) // ignore error
+				fmt.Println("State sync restore marker removed", restoreMarker)
 			}
 
 			return nil

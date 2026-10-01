@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -181,6 +182,61 @@ func RollbackOrphanedPreparedTxns(ctx context.Context, cfg *ConnConfig) (int, er
 	}
 
 	return rollbackPreparedTxns(ctx, conn)
+}
+
+// sqlListSchemas lists the schemas in the current database, leaving out the
+// ones Postgres owns.
+const sqlListSchemas = `SELECT nspname FROM pg_namespace
+	WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
+	ORDER BY nspname`
+
+// ListSchemas returns the schemas in the configured database, leaving out the
+// ones Postgres owns.
+func ListSchemas(ctx context.Context, cfg *ConnConfig) ([]string, error) {
+	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+
+	rows, _ := conn.Query(ctx, sqlListSchemas)
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// DropSchemasExcept drops, in one transaction, every schema in the configured
+// database that is not in keep, leaving out the ones Postgres owns. It
+// returns the schemas it dropped.
+func DropSchemasExcept(ctx context.Context, cfg *ConnConfig, keep []string) ([]string, error) {
+	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	rows, _ := tx.Query(ctx, sqlListSchemas)
+	schemas, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+
+	var dropped []string
+	for _, schema := range schemas {
+		if slices.Contains(keep, schema) {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `DROP SCHEMA `+pgx.Identifier{schema}.Sanitize()+` CASCADE`); err != nil {
+			return nil, fmt.Errorf("drop schema %s: %w", schema, err)
+		}
+		dropped = append(dropped, schema)
+	}
+
+	return dropped, tx.Commit(ctx)
 }
 
 type preparedTxn struct {

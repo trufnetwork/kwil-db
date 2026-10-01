@@ -242,15 +242,16 @@ func initializeStatesyncService(ctx context.Context, d *coreDependencies, p2p *n
 
 	rcvdSnapsDir := config.ReceivedSnapshotsDir(d.rootDir)
 	ssCfg := &node.StatesyncConfig{
-		RcvdSnapsDir:  rcvdSnapsDir,
-		StateSyncCfg:  &d.cfg.StateSync,
-		DBConfig:      d.cfg.DB,
-		BlockSyncCfg:  &d.cfg.BlockSync,
-		Logger:        d.logger.New("STATESYNC"),
-		SnapshotStore: snapshotter,
-		BlockStore:    bs,
-		P2PService:    p2p,
-		DB:            poolDB,
+		RcvdSnapsDir:      rcvdSnapsDir,
+		RestoreMarkerPath: config.StatesyncRestoreMarkerPath(d.rootDir),
+		StateSyncCfg:      &d.cfg.StateSync,
+		DBConfig:          d.cfg.DB,
+		BlockSyncCfg:      &d.cfg.BlockSync,
+		Logger:            d.logger.New("STATESYNC"),
+		SnapshotStore:     snapshotter,
+		BlockStore:        bs,
+		P2PService:        p2p,
+		DB:                poolDB,
 	}
 	ss, err := node.NewStateSyncService(ctx, ssCfg)
 	if err != nil {
@@ -303,6 +304,16 @@ func buildDB(ctx context.Context, d *coreDependencies, ss *node.StateSyncService
 //
 // returns true if the DB was restored from genesis snapshot, false otherwise.
 func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncService) bool {
+	// A state sync restore that was stopped or failed part way leaves schemas
+	// behind, and the checks below would take the database for initialized.
+	if ss != nil {
+		if err := ss.ClearInterruptedRestore(ctx); err != nil {
+			failBuild(err, "failed to undo an interrupted state sync restore")
+		}
+	} else if interrupted, err := node.RestoreInterrupted(config.StatesyncRestoreMarkerPath(d.rootDir)); err != nil || interrupted {
+		failBuild(err, "a state sync restore did not finish; enable state sync to finish it, or reset the node")
+	}
+
 	if isDbInitialized(ctx, d) {
 		return false
 	}
