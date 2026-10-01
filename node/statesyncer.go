@@ -67,85 +67,101 @@ func (s *StateSyncService) DiscoverSnapshots(ctx context.Context) (int64, error)
 			return -1, nil
 		}
 
-		s.log.Info("Discovering snapshots...")
-		peers, err := discoverProviders(ctx, snapshotCatalogNS, s.discoverer) // TODO: set appropriate limit
+		if err := s.discoverCatalogs(ctx); err != nil {
+			return -1, err
+		}
+
+		synced, snap, err := s.downloadSnapshot(ctx)
 		if err != nil {
 			return -1, err
 		}
-		peers = filterLocalPeer(peers, s.host.ID())
-		s.snapshotPool.updatePeers(peers)
 
-		// discover snapshot catalogs from the discovered peers for the duration of the discoveryTimeout
-		for _, p := range peers {
-			go func(peer peer.AddrInfo) {
-				if err := s.requestSnapshotCatalogs(ctx, peer); err != nil {
-					s.log.Warn("failed to request snapshot catalogs from peer %s: %v", peer.ID, err)
-				}
-			}(p)
-		}
-
-		select {
-		case <-ctx.Done():
-			return -1, ctx.Err()
-		case <-time.After(time.Duration(s.cfg.DiscoveryTimeout)):
-			synced, snap, err := s.downloadSnapshot(ctx)
-			if err != nil {
+		if synced {
+			// RestoreDB from the snapshot
+			if err := s.restoreDB(ctx, snap); err != nil {
+				s.log.Warn("failed to restore DB from snapshot", "error", err)
 				return -1, err
 			}
 
-			if synced {
-				// RestoreDB from the snapshot
-				if err := s.restoreDB(ctx, snap); err != nil {
-					s.log.Warn("failed to restore DB from snapshot", "error", err)
-					return -1, err
-				}
-
-				// ensure that the apphash matches
-				err := s.verifyState(ctx, snap)
-				if err != nil {
-					s.log.Warn("failed to verify state after DB restore", "error", err)
-					return -1, err
-				}
-
-				return int64(snap.Height), nil
+			// ensure that the apphash matches
+			err := s.verifyState(ctx, snap)
+			if err != nil {
+				s.log.Warn("failed to verify state after DB restore", "error", err)
+				return -1, err
 			}
-			retry++
+
+			return int64(snap.Height), nil
 		}
+		retry++
 	}
 }
 
-// downloadSnapshot selects the best snapshot and verifies the snapshot contents with the trusted providers.
-// If the snapshot is valid, it fetches the snapshot chunks from the providers.
-// If a snapshot is deemed invalid by any of the trusted providers, it is blacklisted and the next best snapshot is selected.
-// If the snapshot cannot be verified because the trusted providers are unreachable, or its chunks cannot be
-// fetched, it returns (false, nil, nil) after a backoff so that the caller re-enters the discovery phase and
-// counts the attempt against MaxRetries. The snapshot is not blacklisted in that case.
-func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, snap *snapshotMetadata, err error) {
+// FindVerifiedSnapshot runs one round of snapshot discovery and returns the
+// height of the highest snapshot a trusted provider vouches for, without
+// downloading or restoring it. It returns false when no snapshot was
+// discovered or none could be verified.
+func (s *StateSyncService) FindVerifiedSnapshot(ctx context.Context) (uint64, bool, error) {
+	if err := s.discoverCatalogs(ctx); err != nil {
+		return 0, false, err
+	}
+
+	snap, err := s.verifiedBestSnapshot(ctx)
+	if errors.Is(err, errVerificationFailed) {
+		s.log.Warn("Could not reach a trusted provider to verify the best snapshot",
+			"height", snap.Height, "hash", hex.EncodeToString(snap.Hash))
+		return 0, false, nil
+	}
+	if err != nil || snap == nil {
+		return 0, false, err
+	}
+	return snap.Height, true, nil
+}
+
+// discoverCatalogs finds the peers that serve snapshot catalogs and asks each
+// one for its catalog, giving them the discovery timeout to answer.
+func (s *StateSyncService) discoverCatalogs(ctx context.Context) error {
+	s.log.Info("Discovering snapshots...")
+	peers, err := discoverProviders(ctx, snapshotCatalogNS, s.discoverer) // TODO: set appropriate limit
+	if err != nil {
+		return err
+	}
+	peers = filterLocalPeer(peers, s.host.ID())
+	s.snapshotPool.updatePeers(peers)
+
+	// discover snapshot catalogs from the discovered peers for the duration of the discoveryTimeout
+	for _, p := range peers {
+		go func(peer peer.AddrInfo) {
+			if err := s.requestSnapshotCatalogs(ctx, peer); err != nil {
+				s.log.Warn("failed to request snapshot catalogs from peer %s: %v", peer.ID, err)
+			}
+		}(p)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(time.Duration(s.cfg.DiscoveryTimeout)):
+		return nil
+	}
+}
+
+// errVerificationFailed means no trusted provider could be reached to verify
+// a snapshot. The snapshot may still be good, so it is not blacklisted.
+var errVerificationFailed = errors.New("no trusted provider could verify the snapshot")
+
+// verifiedBestSnapshot returns the highest snapshot in the pool that a trusted
+// provider vouches for, with the app hash that provider reports. Snapshots the
+// trusted providers reject are blacklisted along the way. It returns nil when
+// the pool holds no snapshot left to try. When no trusted provider can be
+// reached it returns the snapshot it tried with errVerificationFailed.
+func (s *StateSyncService) verifiedBestSnapshot(ctx context.Context) (*snapshotMetadata, error) {
 	for {
-		// select the best snapshot and request chunks
 		bestSnapshot, err := s.bestSnapshot()
-		if err != nil {
-			if err == ErrNoSnapshotsDiscovered {
-				return false, nil, nil // reenter discovery phase
-			}
-			return false, nil, err
+		if err == ErrNoSnapshotsDiscovered {
+			return nil, nil
 		}
-
-		s.log.Info("Requesting contents of the snapshot", "height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
-
-		// Clean up temp files only if this is a different snapshot than what we were previously working on
-		if s.currentSnapshot == nil ||
-			bestSnapshot.Height != s.currentSnapshot.Height ||
-			!bytes.Equal(bestSnapshot.Hash, s.currentSnapshot.Hash) {
-			s.log.Info("Starting new snapshot download, cleaning up temp files from previous attempts",
-				"new_height", bestSnapshot.Height, "new_hash", hex.EncodeToString(bestSnapshot.Hash))
-			if err := s.cleanupTempFiles(bestSnapshot, 0); err != nil {
-				s.log.Warn("Failed to cleanup temp files before new snapshot", "error", err)
-			}
-			s.currentSnapshot = bestSnapshot
-		} else {
-			s.log.Info("Retrying same snapshot, preserving temp files for resume capability",
-				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+		if err != nil {
+			return nil, err
 		}
 
 		// Verify the correctness of the snapshot with the trusted providers
@@ -160,46 +176,81 @@ func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, s
 			// Clean up any temp files for this blacklisted snapshot and remove final files
 			// since this snapshot is fundamentally invalid
 			if err := s.cleanupInvalidSnapshot(ctx, bestSnapshot); err != nil {
-				return false, nil, err
+				return nil, err
 			}
 			continue
 		case VerificationFailed:
-			// Verification failed due to network issues - do NOT blacklist the
-			// snapshot, back off and return to the discovery phase so the attempt
-			// is counted against MaxRetries and the node can fall back to block sync.
-			s.log.Warn("Failed to verify snapshot due to network issues, returning to discovery",
-				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash), "backoff", s.retryBackoff)
-			select {
-			case <-time.After(s.retryBackoff):
-			case <-ctx.Done():
-				return false, nil, ctx.Err()
-			}
-			return false, nil, nil // reenter discovery phase
-		case VerificationValid:
-			// Snapshot is valid, proceed with download
-			s.log.Info("Snapshot verified successfully",
-				"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
-			bestSnapshot.AppHash = appHash
+			return bestSnapshot, errVerificationFailed
 		}
 
-		// fetch snapshot chunks
-		if err := s.chunkFetcher(ctx, bestSnapshot); err != nil {
-			s.log.Warn("Chunk fetcher failed for snapshot, returning to discovery", "height", bestSnapshot.Height,
-				"error", err, "backoff", s.retryBackoff)
-			// Don't remove chunks directory - preserve any completed chunks and temp
-			// files so the next attempt resumes from where we left off.
-			select {
-			case <-time.After(s.retryBackoff):
-			case <-ctx.Done():
-				return false, nil, ctx.Err()
-			}
-			return false, nil, nil // reenter discovery phase
-		}
-
-		// retrieved all chunks successfully
-		s.currentSnapshot = nil // Clear tracking since this snapshot is complete
-		return true, bestSnapshot, nil
+		s.log.Info("Snapshot verified successfully",
+			"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+		bestSnapshot.AppHash = appHash
+		return bestSnapshot, nil
 	}
+}
+
+// downloadSnapshot selects the best snapshot and verifies the snapshot contents with the trusted providers.
+// If the snapshot is valid, it fetches the snapshot chunks from the providers.
+// If a snapshot is deemed invalid by any of the trusted providers, it is blacklisted and the next best snapshot is selected.
+// If the snapshot cannot be verified because the trusted providers are unreachable, or its chunks cannot be
+// fetched, it returns (false, nil, nil) after a backoff so that the caller re-enters the discovery phase and
+// counts the attempt against MaxRetries. The snapshot is not blacklisted in that case.
+func (s *StateSyncService) downloadSnapshot(ctx context.Context) (synced bool, snap *snapshotMetadata, err error) {
+	bestSnapshot, err := s.verifiedBestSnapshot(ctx)
+	switch {
+	case errors.Is(err, errVerificationFailed):
+		// Verification failed due to network issues - do NOT blacklist the
+		// snapshot, back off and return to the discovery phase so the attempt
+		// is counted against MaxRetries and the node can fall back to block sync.
+		s.log.Warn("Failed to verify snapshot due to network issues, returning to discovery",
+			"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash), "backoff", s.retryBackoff)
+		select {
+		case <-time.After(s.retryBackoff):
+		case <-ctx.Done():
+			return false, nil, ctx.Err()
+		}
+		return false, nil, nil // reenter discovery phase
+	case err != nil:
+		return false, nil, err
+	case bestSnapshot == nil:
+		return false, nil, nil // reenter discovery phase
+	}
+
+	s.log.Info("Requesting contents of the snapshot", "height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+
+	// Clean up temp files only if this is a different snapshot than what we were previously working on
+	if s.currentSnapshot == nil ||
+		bestSnapshot.Height != s.currentSnapshot.Height ||
+		!bytes.Equal(bestSnapshot.Hash, s.currentSnapshot.Hash) {
+		s.log.Info("Starting new snapshot download, cleaning up temp files from previous attempts",
+			"new_height", bestSnapshot.Height, "new_hash", hex.EncodeToString(bestSnapshot.Hash))
+		if err := s.cleanupTempFiles(bestSnapshot, 0); err != nil {
+			s.log.Warn("Failed to cleanup temp files before new snapshot", "error", err)
+		}
+		s.currentSnapshot = bestSnapshot
+	} else {
+		s.log.Info("Retrying same snapshot, preserving temp files for resume capability",
+			"height", bestSnapshot.Height, "hash", hex.EncodeToString(bestSnapshot.Hash))
+	}
+
+	// fetch snapshot chunks
+	if err := s.chunkFetcher(ctx, bestSnapshot); err != nil {
+		s.log.Warn("Chunk fetcher failed for snapshot, returning to discovery", "height", bestSnapshot.Height,
+			"error", err, "backoff", s.retryBackoff)
+		// Don't remove chunks directory - preserve any completed chunks and temp
+		// files so the next attempt resumes from where we left off.
+		select {
+		case <-time.After(s.retryBackoff):
+		case <-ctx.Done():
+			return false, nil, ctx.Err()
+		}
+		return false, nil, nil // reenter discovery phase
+	}
+
+	// retrieved all chunks successfully
+	s.currentSnapshot = nil // Clear tracking since this snapshot is complete
+	return true, bestSnapshot, nil
 }
 
 // chunkFetcher fetches snapshot chunks from the snapshot providers
