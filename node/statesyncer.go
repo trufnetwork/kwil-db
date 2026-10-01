@@ -4,6 +4,7 @@
 package node
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -769,7 +770,9 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 
 func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapshotHash []byte, logger log.Logger) error {
 
-	// unzip and stream the sql dump to psql
+	// unzip and stream the sql dump to psql. ON_ERROR_STOP makes psql exit at
+	// the first failed statement instead of carrying on and exiting 0 with the
+	// database half restored.
 	cmd := exec.CommandContext(ctx,
 		"psql",
 		"--username", db.User,
@@ -777,12 +780,14 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 		"--port", db.Port,
 		"--dbname", db.DBName,
 		"--no-password",
+		"--set", "ON_ERROR_STOP=1",
 	)
 	if db.Pass != "" {
 		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Pass)
 	}
+	stderr := &headBuffer{max: 16 << 10}
+	cmd.Stderr = stderr
 
-	// cmd.Stdout = &stderr
 	stdinPipe, err := cmd.StdinPipe() // stdin for psql command
 	if err != nil {
 		return err
@@ -796,24 +801,28 @@ func RestoreDB(ctx context.Context, reader io.Reader, db config.DBConfig, snapsh
 	}
 
 	// decompress the chunk streams and stream the sql dump to psql stdinPipe
-	if err := decompressAndValidateSnapshotHash(stdinPipe, reader, snapshotHash); err != nil {
-		return err
-	}
+	copyErr := decompressAndValidateSnapshotHash(stdinPipe, reader, snapshotHash)
 	stdinPipe.Close() // signifies the end of the input stream to the psql command
 
+	// psql's own error explains a failed restore better than the broken pipe
+	// the copy sees when psql stops early.
 	if err := cmd.Wait(); err != nil {
-		return err
+		return fmt.Errorf("psql failed to restore the snapshot: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if copyErr != nil {
+		return copyErr
 	}
 
 	logger.Info("Database restoration completed successfully")
 	return nil
 }
 
-// decompressAndValidateSnapshotHash decompresses the chunk streams and validates the snapshot hash
+// decompressAndValidateSnapshotHash decompresses the chunk streams and validates
+// the snapshot hash. The hash covers the stream as received; psql gets it
+// without the lines copyForPsql leaves out.
 func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snapshotHash []byte) error {
 	hasher := sha256.New()
-	_, err := io.Copy(io.MultiWriter(output, hasher), reader)
-	if err != nil {
+	if err := copyForPsql(output, io.TeeReader(reader, hasher)); err != nil {
 		return fmt.Errorf("failed to decompress chunk streams: %w", err)
 	}
 	hash := hasher.Sum(nil)
@@ -824,6 +833,63 @@ func decompressAndValidateSnapshotHash(output io.Writer, reader io.Reader, snaps
 	}
 	return nil
 }
+
+// copyForPsql copies a dump to psql line by line, leaving out the \restrict
+// and \unrestrict lines that pg_dump 16.10 and later write. A psql older than
+// those releases does not know them, and with ON_ERROR_STOP it would stop at
+// the first line. They guard against a dump built from untrusted data; a
+// snapshot is checked against its trusted provider's chunk hashes before it is
+// restored. No line of COPY data can start with them, since COPY text escapes
+// a backslash as \\.
+func copyForPsql(w io.Writer, r io.Reader) error {
+	br := bufio.NewReaderSize(r, 1<<20)
+	bw := bufio.NewWriterSize(w, 1<<20)
+	for {
+		line, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// A line longer than the buffer cannot be one of the short
+			// meta-commands, so pass it and the rest of it through.
+			if _, werr := bw.Write(line); werr != nil {
+				return werr
+			}
+			for err == bufio.ErrBufferFull {
+				line, err = br.ReadSlice('\n')
+				if _, werr := bw.Write(line); werr != nil {
+					return werr
+				}
+			}
+		} else if !isRestrictLine(line) {
+			if _, werr := bw.Write(line); werr != nil {
+				return werr
+			}
+		}
+		if err == io.EOF {
+			return bw.Flush()
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func isRestrictLine(line []byte) bool {
+	return bytes.HasPrefix(line, []byte(`\restrict `)) || bytes.HasPrefix(line, []byte(`\unrestrict `))
+}
+
+// headBuffer keeps the first max bytes written to it.
+type headBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (h *headBuffer) Write(p []byte) (int, error) {
+	if room := h.max - h.buf.Len(); room > 0 {
+		h.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (h *headBuffer) String() string { return h.buf.String() }
 
 // Utility to stream chunks of a snapshot
 type Streamer struct {
