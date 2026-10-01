@@ -38,6 +38,7 @@ type snapshotReq = snapshotter.SnapshotReq
 type blockStore interface {
 	blockHeightServer
 	Store(*ktypes.Block, *ktypes.CommitInfo) error
+	Sync() error
 }
 
 type StatesyncConfig struct {
@@ -214,16 +215,28 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to decode statesync block %d: %w", height, err)
 	}
-	// store block
-	if err := ss.blockStore.Store(blk, ci); err != nil {
-		return false, fmt.Errorf("failed to store statesync block to the blockstore %d: %w", height, err)
-	}
-	// The restore is complete. If removing the marker fails, the next start
-	// finds the block stored at the marker's height and removes it then.
-	if err := clearRestoreMarker(ss.restoreMarker); err != nil {
-		ss.log.Warn("Failed to remove the state sync restore marker", "error", err)
+	if err := ss.storeRestoredBlock(blk, ci); err != nil {
+		return false, err
 	}
 	return true, nil
+}
+
+// storeRestoredBlock stores the block at the snapshot height, the last step of
+// a restore, and then removes the restore marker. The block is synced to disk
+// first, so a crash cannot lose it once the marker is gone. If the marker
+// cannot be removed, the node stops at the snapshot height, where the next
+// start recognizes the restore as finished.
+func (ss *StateSyncService) storeRestoredBlock(blk *ktypes.Block, ci *ktypes.CommitInfo) error {
+	if err := ss.blockStore.Store(blk, ci); err != nil {
+		return fmt.Errorf("failed to store statesync block to the blockstore %d: %w", blk.Header.Height, err)
+	}
+	if err := ss.blockStore.Sync(); err != nil {
+		return fmt.Errorf("failed to sync statesync block %d to disk: %w", blk.Header.Height, err)
+	}
+	if err := clearRestoreMarker(ss.restoreMarker); err != nil {
+		return fmt.Errorf("failed to remove the state sync restore marker: %w", err)
+	}
+	return nil
 }
 
 // ClearInterruptedRestore undoes a state sync restore that did not finish, so

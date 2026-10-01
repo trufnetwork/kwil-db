@@ -11,32 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/trufnetwork/kwil-db/config"
 	"github.com/trufnetwork/kwil-db/core/log"
-	ktypes "github.com/trufnetwork/kwil-db/core/types"
-	"github.com/trufnetwork/kwil-db/node/types"
 )
-
-// restoreBlockStore stands in for the block store: only its height matters.
-type restoreBlockStore struct{ height int64 }
-
-func (f *restoreBlockStore) Best() (int64, types.Hash, types.Hash, time.Time) {
-	return f.height, types.Hash{}, types.Hash{}, time.Time{}
-}
-
-func (f *restoreBlockStore) GetRawByHeight(int64) (types.Hash, []byte, *ktypes.CommitInfo, error) {
-	return types.Hash{}, nil, nil, types.ErrNotFound
-}
-
-func (f *restoreBlockStore) Store(blk *ktypes.Block, _ *ktypes.CommitInfo) error {
-	f.height = blk.Header.Height
-	return nil
-}
 
 const restoreHeight = 100
 
