@@ -30,6 +30,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/utils"
 	"github.com/trufnetwork/kwil-db/node/meta"
 	"github.com/trufnetwork/kwil-db/node/peers"
+	"github.com/trufnetwork/kwil-db/node/pg"
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
 )
 
@@ -752,6 +753,21 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 		"cpu_cores", sysInfo.CPUCount,
 		"os", sysInfo.OS,
 		"estimated_time", fmt.Sprintf("~%d minutes", estimatedMinutes))
+
+	// Mark the restore as started before it touches the database, recording
+	// what the database already holds, so a restore that is stopped or fails
+	// part way can be undone at the next start.
+	schemas, err := pg.ListSchemas(ctx, pgConnConfig(s.dbConfig))
+	if err != nil {
+		return fmt.Errorf("list schemas before the restore: %w", err)
+	}
+	if err := writeRestoreMarker(s.restoreMarker, &restoreMarker{
+		Height:        snapshot.Height,
+		SnapshotHash:  hex.EncodeToString(snapshot.Hash),
+		SchemasBefore: schemas,
+	}); err != nil {
+		return err
+	}
 
 	// Start monitoring restoration progress
 	stopMonitoring := utils.MonitorRestoreProgress(ctx, estimatedMinutes, s.log)

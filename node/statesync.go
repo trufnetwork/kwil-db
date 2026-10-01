@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/trufnetwork/kwil-db/core/log"
 	ktypes "github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/peers"
+	"github.com/trufnetwork/kwil-db/node/pg"
 	"github.com/trufnetwork/kwil-db/node/snapshotter"
 )
 
@@ -43,6 +46,8 @@ type StatesyncConfig struct {
 	BlockSyncCfg *config.BlockSyncConfig
 	RcvdSnapsDir string
 	P2PService   *P2PService
+	// RestoreMarkerPath is the file that marks a restore in progress.
+	RestoreMarkerPath string
 
 	DB            DB
 	SnapshotStore SnapshotStore
@@ -56,6 +61,7 @@ type StateSyncService struct {
 	dbConfig         config.DBConfig
 	blockSyncCfg     *config.BlockSyncConfig
 	snapshotDir      string
+	restoreMarker    string
 	trustedProviders []*peer.AddrInfo // trusted providers
 
 	// DHT
@@ -95,6 +101,7 @@ func NewStateSyncService(ctx context.Context, cfg *StatesyncConfig) (*StateSyncS
 		dbConfig:      cfg.DBConfig,
 		blockSyncCfg:  cfg.BlockSyncCfg,
 		snapshotDir:   cfg.RcvdSnapsDir,
+		restoreMarker: cfg.RestoreMarkerPath,
 		db:            cfg.DB,
 		host:          cfg.P2PService.host,
 		discoverer:    cfg.P2PService.discovery,
@@ -211,7 +218,46 @@ func (ss *StateSyncService) DoStatesync(ctx context.Context) (bool, error) {
 	if err := ss.blockStore.Store(blk, ci); err != nil {
 		return false, fmt.Errorf("failed to store statesync block to the blockstore %d: %w", height, err)
 	}
+	// The restore is complete. If removing the marker fails, the next start
+	// finds the block stored at the marker's height and removes it then.
+	if err := clearRestoreMarker(ss.restoreMarker); err != nil {
+		ss.log.Warn("Failed to remove the state sync restore marker", "error", err)
+	}
 	return true, nil
+}
+
+// ClearInterruptedRestore undoes a state sync restore that did not finish, so
+// that the node state syncs again instead of starting on what the restore left
+// behind. The block at the snapshot height is stored last, so a block store
+// still at height 0 means the restore was stopped or failed part way. It drops
+// the schemas the restore created and keeps the ones the database held before.
+func (ss *StateSyncService) ClearInterruptedRestore(ctx context.Context) error {
+	m, err := readRestoreMarker(ss.restoreMarker)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	switch h, _, _, _ := ss.blockStore.Best(); {
+	case h == int64(m.Height):
+		return clearRestoreMarker(ss.restoreMarker) // it finished
+	case h != 0:
+		return fmt.Errorf("a state sync restore to height %d did not finish, and the block store is at height %d; reset the node", m.Height, h)
+	}
+
+	dropped, err := pg.DropSchemasExcept(ctx, pgConnConfig(ss.dbConfig), m.SchemasBefore)
+	if err != nil {
+		return fmt.Errorf("undo the interrupted state sync restore to height %d: %w", m.Height, err)
+	}
+	ss.log.Warn("Undid a state sync restore that did not finish; state syncing again",
+		"height", m.Height, "dropped_schemas", dropped)
+	return clearRestoreMarker(ss.restoreMarker)
+}
+
+func pgConnConfig(db config.DBConfig) *pg.ConnConfig {
+	return &pg.ConnConfig{Host: db.Host, Port: db.Port, User: db.User, Pass: db.Pass, DBName: db.DBName}
 }
 
 // blkGetHeightRequestHandler answers a block request while the node is still

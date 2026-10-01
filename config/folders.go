@@ -25,6 +25,7 @@ const (
 
 	leaderUpdatesFileName = "leader-updates.json"
 	commitIntentFileName  = "commit-intent.json"
+	statesyncRestoreName  = "statesync-restore.json"
 )
 
 // BlockstoreDir returns the blockstore directory in the root directory.
@@ -71,4 +72,10 @@ func LeaderUpdatesFilePath(rootDir string) string {
 
 func CommitIntentFilePath(rootDir string) string {
 	return filepath.Join(rootDir, commitIntentFileName)
+}
+
+// StatesyncRestoreMarkerPath returns the file that marks a state sync restore
+// as started and not yet finished.
+func StatesyncRestoreMarkerPath(rootDir string) string {
+	return filepath.Join(rootDir, statesyncRestoreName)
 }
