@@ -189,6 +189,24 @@ func (bki *BlockStore) Sync() error {
 	return bki.db.Sync()
 }
 
+// Reset deletes every block, leaving the store as a new node's: empty, at
+// height 0. A node clearing itself to restore a newer snapshot uses it, and it
+// must not run while blocks are being stored.
+func (bki *BlockStore) Reset() error {
+	bki.mtx.Lock()
+	defer bki.mtx.Unlock()
+
+	if err := bki.db.DropAll(); err != nil {
+		return err
+	}
+
+	bki.bestHeight, bki.bestHash, bki.bestStamp = 0, types.Hash{}, time.Time{}
+	bki.idx = make(map[types.Hash]int64)
+	bki.hashes = make(map[int64]blockHashes)
+	bki.fetching = make(map[types.Hash]bool)
+	return nil
+}
+
 func (bki *BlockStore) Have(hash types.Hash) bool {
 	bki.mtx.RLock()
 	defer bki.mtx.RUnlock()
