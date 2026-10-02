@@ -1001,3 +1001,43 @@ func TestBlockStore_Reset(t *testing.T) {
 	require.False(t, bs.Have(blocks[0].Hash()))
 	require.False(t, bs.HaveTx(blocks[0].Txns[0].Hash()))
 }
+
+func TestBlockStore_ResetWaitsForReads(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+	block, appHash, _ := createTestBlock(t, 1, 1)
+	require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+
+	// A read is in progress, as a peer's block request would be.
+	reading, release := make(chan struct{}), make(chan struct{})
+	go bs.view(func(*badger.Txn) error {
+		close(reading)
+		<-release
+		return nil
+	})
+	<-reading
+
+	reset := make(chan error)
+	go func() { reset <- bs.Reset() }()
+	select {
+	case <-reset:
+		t.Fatal("Reset ran while a read was in progress")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	require.NoError(t, <-reset)
+	require.False(t, bs.Have(block.Hash()))
+}
+
+func TestBlockStore_FailedResetEmptiesTheIndex(t *testing.T) {
+	bs, _ := setupTestBlockStore(t)
+	block, appHash, _ := createTestBlock(t, 1, 1)
+	require.NoError(t, bs.Store(block, &ktypes.CommitInfo{AppHash: appHash}))
+	require.NoError(t, bs.db.Close()) // so that the drop fails
+
+	require.Error(t, bs.Reset())
+
+	height, _, _, _ := bs.Best()
+	require.Zero(t, height)
+	require.False(t, bs.Have(block.Hash()))
+}

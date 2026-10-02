@@ -207,7 +207,8 @@ func ListSchemas(ctx context.Context, cfg *ConnConfig) ([]string, error) {
 // database that is not in keep, leaving out the ones Postgres owns. It
 // returns the schemas it dropped. It is for a node that is starting, so it
 // first rolls back the prepared transactions a stopped node left behind,
-// whose locks would otherwise hold the drop forever.
+// whose locks would otherwise hold the drop forever. Like the rollback when a
+// node opens its database, it assumes no other node uses the database.
 func DropSchemasExcept(ctx context.Context, cfg *ConnConfig, keep []string) ([]string, error) {
 	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
 	if err != nil {
