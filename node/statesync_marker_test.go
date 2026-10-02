@@ -151,7 +151,7 @@ func TestInterruptedResyncAtAnotherHeightIsRefused(t *testing.T) {
 	bs.height = 250 // neither where the resync started nor where it was going
 
 	// No database is configured, so reaching the drop would fail differently.
-	err := ss.ClearInterruptedRestore(context.Background())
+	_, err := ss.ClearInterruptedRestore(context.Background())
 	require.ErrorContains(t, err, "reset the node")
 
 	require.Empty(t, bs.calls)

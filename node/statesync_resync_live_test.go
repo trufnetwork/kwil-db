@@ -185,7 +185,15 @@ COPY main.records (id, v) FROM stdin;
 // node: restore the snapshot, check its app hash, store its block.
 func (n *resyncNode) restoreSnapshot(t *testing.T, dump string, appHash ktypes.Hash) {
 	t.Helper()
-	ctx := context.Background()
+	require.NoError(t, n.restoreDump(t, dump, appHash))
+	snap := &snapshotMetadata{Height: resyncSnap, AppHash: appHash[:]}
+	require.NoError(t, n.ss.verifyState(context.Background(), snap))
+	require.NoError(t, n.ss.storeRestoredBlock(&ktypes.Block{Header: &ktypes.BlockHeader{Height: resyncSnap}}, &ktypes.CommitInfo{}))
+}
+
+// restoreDump restores dump as the snapshot at resyncSnap.
+func (n *resyncNode) restoreDump(t *testing.T, dump string, appHash ktypes.Hash) error {
+	t.Helper()
 	var chunk bytes.Buffer
 	gz := gzip.NewWriter(&chunk)
 	_, err := gz.Write([]byte(dump))
@@ -195,9 +203,7 @@ func (n *resyncNode) restoreSnapshot(t *testing.T, dump string, appHash ktypes.H
 
 	sum := sha256.Sum256([]byte(dump))
 	snap := &snapshotMetadata{Height: resyncSnap, Chunks: 1, Hash: sum[:], Size: uint64(len(dump)), AppHash: appHash[:]}
-	require.NoError(t, n.ss.restoreDB(ctx, snap))
-	require.NoError(t, n.ss.verifyState(ctx, snap))
-	require.NoError(t, n.ss.storeRestoredBlock(&ktypes.Block{Header: &ktypes.BlockHeader{Height: resyncSnap}}, &ktypes.CommitInfo{}))
+	return n.ss.restoreDB(context.Background(), snap)
 }
 
 func records(t *testing.T, db config.DBConfig) []string {
@@ -347,14 +353,15 @@ func TestResyncStoppedBeforeTheBlockStoreIsClearedFinishesAtNextStart(t *testing
 
 	// The next start.
 	n.bs.resetErr = nil
-	require.NoError(t, n.ss.ClearInterruptedRestore(context.Background()))
+	require.True(t, nextStart(t, n.ss))
 
 	require.Zero(t, n.bs.height)
 	require.Equal(t, keptSchemas, schemas(t, n.ss))
 	n.operatorDataKept(t)
-	interrupted, err := RestoreInterrupted(n.ss.restoreMarker)
-	require.NoError(t, err)
-	require.False(t, interrupted)
+	n.stillResyncing(t)
+
+	n.restoreSnapshot(t, resyncDump(blockAppHash(resyncSnap)), blockAppHash(resyncSnap))
+	n.doneResyncing(t)
 }
 
 func TestResyncStoppedBeforeTheSchemasAreDroppedFinishesAtNextStart(t *testing.T) {
@@ -369,9 +376,55 @@ func TestResyncStoppedBeforeTheSchemasAreDroppedFinishesAtNextStart(t *testing.T
 
 	// The next start.
 	n.bs.onReset = nil
-	require.NoError(t, n.ss.ClearInterruptedRestore(context.Background()))
+	require.True(t, nextStart(t, n.ss))
 
 	require.Equal(t, keptSchemas, schemas(t, n.ss))
+	n.operatorDataKept(t)
+	n.stillResyncing(t)
+
+	n.restoreSnapshot(t, resyncDump(blockAppHash(resyncSnap)), blockAppHash(resyncSnap))
+	n.doneResyncing(t)
+}
+
+func TestResyncStaysAResyncUntilARestoreFinishes(t *testing.T) {
+	n := newResyncNode(t, "kwil_test_resync_restarts")
+	require.True(t, n.resync(t))
+
+	// The restore fails part way, after creating some of kwild's schemas.
+	appHash := blockAppHash(resyncSnap)
+	err := n.restoreDump(t, badDump, appHash)
+	require.Error(t, err)
+	require.Contains(t, schemas(t, n.ss), "kwild_voting")
+	n.stillResyncing(t)
+
+	// Each later start undoes what is left and is still resyncing, however
+	// many times state sync fails, so the node never replays from genesis.
+	for range 2 {
+		require.True(t, nextStart(t, n.ss))
+		require.Equal(t, keptSchemas, schemas(t, n.ss))
+		n.stillResyncing(t)
+	}
+
+	n.restoreSnapshot(t, resyncDump(appHash), appHash)
+	n.doneResyncing(t)
+	require.False(t, nextStart(t, n.ss))
+}
+
+// stillResyncing checks that the restore marker says the node was cleared to
+// resync from its old height.
+func (n *resyncNode) stillResyncing(t *testing.T) {
+	t.Helper()
+	m, err := readRestoreMarker(n.ss.restoreMarker)
+	require.NoError(t, err)
+	require.Equal(t, uint64(resyncFrom), m.ResyncFrom)
+}
+
+// doneResyncing checks that the node restored the snapshot and holds no
+// restore marker.
+func (n *resyncNode) doneResyncing(t *testing.T) {
+	t.Helper()
+	require.Equal(t, int64(resyncSnap), n.bs.height)
+	require.Equal(t, []string{"1 new", "2 new"}, records(t, n.db))
 	n.operatorDataKept(t)
 	interrupted, err := RestoreInterrupted(n.ss.restoreMarker)
 	require.NoError(t, err)

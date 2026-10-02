@@ -306,8 +306,12 @@ func buildDB(ctx context.Context, d *coreDependencies, ss *node.StateSyncService
 func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncService) bool {
 	// A state sync restore that was stopped or failed part way leaves schemas
 	// behind, and the checks below would take the database for initialized.
+	// resyncing is true while a node cleared to restore a newer snapshot has
+	// not restored one yet, on this start or a later one.
+	resyncing := false
 	if ss != nil {
-		if err := ss.ClearInterruptedRestore(ctx); err != nil {
+		var err error
+		if resyncing, err = ss.ClearInterruptedRestore(ctx); err != nil {
 			failBuild(err, "failed to undo an interrupted state sync restore")
 		}
 	} else if interrupted, err := node.RestoreInterrupted(config.StatesyncRestoreMarkerPath(d.rootDir)); err != nil || interrupted {
@@ -316,7 +320,6 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 
 	// A node that has state replays from it, unless it is far enough behind a
 	// verified snapshot to clear itself and restore that instead.
-	resyncing := false
 	if isDbInitialized(ctx, d) {
 		if ss == nil {
 			return false
@@ -345,7 +348,7 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 
 		// A cleared node must not fall back to replaying from genesis.
 		if resyncing {
-			failBuild(nil, "state sync did not restore a snapshot after the node was cleared for it; restart the node to try again")
+			failBuild(nil, "state sync did not restore a snapshot after the node was cleared for it; restart the node to try again, or reset it with `kwild setup reset --all` to replay from genesis")
 		}
 
 		// If statesync is not successful, restore from the genesis snapshot if available
