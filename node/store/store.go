@@ -33,7 +33,10 @@ type blockHashes struct {
 }
 
 type BlockStore struct {
-	mtx        sync.RWMutex
+	mtx sync.RWMutex
+	// dropMtx keeps Reset apart from reads: Badger's DropAll can panic a read
+	// that runs at the same time. Reads hold it shared, Reset exclusively.
+	dropMtx    sync.RWMutex
 	bestHeight int64
 	bestHash   types.Hash
 	bestStamp  time.Time
@@ -189,6 +192,34 @@ func (bki *BlockStore) Sync() error {
 	return bki.db.Sync()
 }
 
+// Reset deletes every block, leaving the store as a new node's: empty, at
+// height 0. A node clearing itself to restore a newer snapshot uses it, and it
+// must not run while blocks are being stored. Reads wait for it.
+func (bki *BlockStore) Reset() error {
+	bki.dropMtx.Lock()
+	defer bki.dropMtx.Unlock()
+	bki.mtx.Lock()
+	defer bki.mtx.Unlock()
+
+	err := bki.db.DropAll()
+
+	// Empty the index even when the drop failed part way, so that it never
+	// lists a block that is gone. Reopening the store rebuilds it from what
+	// is on disk.
+	bki.bestHeight, bki.bestHash, bki.bestStamp = 0, types.Hash{}, time.Time{}
+	bki.idx = make(map[types.Hash]int64)
+	bki.hashes = make(map[int64]blockHashes)
+	bki.fetching = make(map[types.Hash]bool)
+	return err
+}
+
+// view runs fn in a read transaction that Reset does not overlap.
+func (bki *BlockStore) view(fn func(txn *badger.Txn) error) error {
+	bki.dropMtx.RLock()
+	defer bki.dropMtx.RUnlock()
+	return bki.db.View(fn)
+}
+
 func (bki *BlockStore) Have(hash types.Hash) bool {
 	bki.mtx.RLock()
 	defer bki.mtx.RUnlock()
@@ -250,7 +281,7 @@ func (bki *BlockStore) Results(hash types.Hash) ([]ktypes.TxResult, error) {
 
 	// Get block header to determine number of transactions
 	var txCount uint32
-	err := bki.db.View(func(txn *badger.Txn) error {
+	err := bki.view(func(txn *badger.Txn) error {
 		key := slices.Concat(nsHeader, hash[:])
 		item, err := txn.Get(key)
 		if err != nil {
@@ -271,7 +302,7 @@ func (bki *BlockStore) Results(hash types.Hash) ([]ktypes.TxResult, error) {
 
 	results := make([]ktypes.TxResult, txCount)
 
-	err = bki.db.View(func(txn *badger.Txn) error {
+	err = bki.view(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = slices.Concat(nsResults, hash[:])
 
@@ -306,7 +337,7 @@ func (bki *BlockStore) Results(hash types.Hash) ([]ktypes.TxResult, error) {
 
 func (bki *BlockStore) Result(hash types.Hash, idx uint32) (*ktypes.TxResult, error) {
 	var res ktypes.TxResult
-	err := bki.db.View(func(txn *badger.Txn) error {
+	err := bki.view(func(txn *badger.Txn) error {
 		key := slices.Concat(nsResults, hash[:], binary.LittleEndian.AppendUint32(nil, idx))
 		item, err := txn.Get(key)
 		if err != nil {
@@ -442,7 +473,7 @@ func (bki *BlockStore) GetRaw(blkHash types.Hash) (int64, []byte, *ktypes.Commit
 
 	var rawBlock []byte
 	var ci ktypes.CommitInfo
-	err := bki.db.View(func(txn *badger.Txn) error {
+	err := bki.view(func(txn *badger.Txn) error {
 		// Load the block and get the tx
 		blockKey := slices.Concat(nsBlock, blkHash[:])
 		item, err := txn.Get(blockKey)
@@ -491,7 +522,7 @@ func (bki *BlockStore) Get(blkHash types.Hash) (*ktypes.Block, *ktypes.CommitInf
 
 	var block *ktypes.Block
 	var ci ktypes.CommitInfo
-	err := bki.db.View(func(txn *badger.Txn) error {
+	err := bki.view(func(txn *badger.Txn) error {
 		// Load the block and get the tx
 		blockKey := slices.Concat(nsBlock, blkHash[:])
 		item, err := txn.Get(blockKey)
@@ -581,7 +612,7 @@ func (bki *BlockStore) GetBlockHeader(blkHash types.Hash) (*ktypes.BlockHeader, 
 	}
 
 	var block *ktypes.Block
-	err := bki.db.View(func(txn *badger.Txn) error {
+	err := bki.view(func(txn *badger.Txn) error {
 		blockKey := slices.Concat(nsBlock, blkHash[:])
 		item, err := txn.Get(blockKey)
 		if err != nil {
@@ -627,7 +658,7 @@ func (bki *BlockStore) GetBlockHeaderByHeight(height int64) (*ktypes.BlockHeader
 
 func (bki *BlockStore) HaveTx(txHash types.Hash) bool {
 	var have bool
-	err := bki.db.View(func(txn *badger.Txn) error {
+	err := bki.view(func(txn *badger.Txn) error {
 		key := slices.Concat(nsTxn, txHash[:]) // tdb["t:txHash"]
 		if _, err := txn.Get(key); err != nil {
 			if errors.Is(err, badger.ErrKeyNotFound) {
@@ -651,7 +682,7 @@ func (bki *BlockStore) HaveTx(txHash types.Hash) bool {
 // containing the transaction.
 func (bki *BlockStore) GetTx(txHash types.Hash) (tx *ktypes.Transaction, height int64, blkHash types.Hash, blkIdx uint32, err error) {
 	var raw []byte
-	err = bki.db.View(func(txn *badger.Txn) error {
+	err = bki.view(func(txn *badger.Txn) error {
 		// Get block info from the tx index
 		key := slices.Concat(nsTxn, txHash[:]) // tdb["t:txHash"] => blk info
 		item, err := txn.Get(key)

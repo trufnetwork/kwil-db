@@ -205,13 +205,20 @@ func ListSchemas(ctx context.Context, cfg *ConnConfig) ([]string, error) {
 
 // DropSchemasExcept drops, in one transaction, every schema in the configured
 // database that is not in keep, leaving out the ones Postgres owns. It
-// returns the schemas it dropped.
+// returns the schemas it dropped. It is for a node that is starting, so it
+// first rolls back the prepared transactions a stopped node left behind,
+// whose locks would otherwise hold the drop forever. Like the rollback when a
+// node opens its database, it assumes no other node uses the database.
 func DropSchemasExcept(ctx context.Context, cfg *ConnConfig, keep []string) ([]string, error) {
 	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close(ctx)
+
+	if _, err := rollbackPreparedTxns(ctx, conn); err != nil {
+		return nil, err
+	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -237,6 +244,56 @@ func DropSchemasExcept(ctx context.Context, cfg *ConnConfig, keep []string) ([]s
 	}
 
 	return dropped, tx.Commit(ctx)
+}
+
+// sqlOutsideDependents finds the objects outside the schemas in $1 that
+// depend on objects inside them: the ones DROP SCHEMA ... CASCADE would take
+// with it. pg_depend names an object by its catalog and oid, so objns maps
+// each catalog that can hold one to the schema it lives in. A rule, trigger,
+// default or policy lives in its table's schema. An object with no schema,
+// such as a publication's table entry, counts as outside.
+const sqlOutsideDependents = `WITH inside AS (
+		SELECT oid FROM pg_namespace WHERE nspname = ANY($1)
+	), objns (classid, objid, nsp) AS (
+		SELECT 'pg_namespace'::regclass::oid, oid, oid FROM pg_namespace
+		UNION ALL SELECT 'pg_class'::regclass::oid, oid, relnamespace FROM pg_class
+		UNION ALL SELECT 'pg_proc'::regclass::oid, oid, pronamespace FROM pg_proc
+		UNION ALL SELECT 'pg_type'::regclass::oid, oid, typnamespace FROM pg_type
+		UNION ALL SELECT 'pg_constraint'::regclass::oid, oid, connamespace FROM pg_constraint
+		UNION ALL SELECT 'pg_statistic_ext'::regclass::oid, oid, stxnamespace FROM pg_statistic_ext
+		UNION ALL SELECT 'pg_rewrite'::regclass::oid, r.oid, c.relnamespace
+			FROM pg_rewrite r JOIN pg_class c ON c.oid = r.ev_class
+		UNION ALL SELECT 'pg_trigger'::regclass::oid, t.oid, c.relnamespace
+			FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+		UNION ALL SELECT 'pg_attrdef'::regclass::oid, a.oid, c.relnamespace
+			FROM pg_attrdef a JOIN pg_class c ON c.oid = a.adrelid
+		UNION ALL SELECT 'pg_policy'::regclass::oid, p.oid, c.relnamespace
+			FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+	)
+	SELECT DISTINCT pg_describe_object(d.classid, d.objid, 0) || ' depends on ' ||
+		pg_describe_object(d.refclassid, d.refobjid, 0)
+	FROM pg_depend d
+	JOIN objns ref ON ref.classid = d.refclassid AND ref.objid = d.refobjid
+	LEFT JOIN objns dep ON dep.classid = d.classid AND dep.objid = d.objid
+	WHERE d.deptype IN ('n', 'a')
+		AND ref.nsp IN (SELECT oid FROM inside)
+		AND (dep.nsp IS NULL OR dep.nsp NOT IN (SELECT oid FROM inside))
+	ORDER BY 1`
+
+// OutsideDependents returns the objects outside the given schemas that depend
+// on objects inside them, such as a view in another schema over one of their
+// tables, or a foreign key that references one. Dropping the schemas with
+// CASCADE would drop these too. Each is described as "<object> depends on
+// <object>".
+func OutsideDependents(ctx context.Context, cfg *ConnConfig, schemas []string) ([]string, error) {
+	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+
+	rows, _ := conn.Query(ctx, sqlOutsideDependents, schemas)
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
 type preparedTxn struct {
