@@ -19,6 +19,10 @@ type restoreMarker struct {
 	// SchemasBefore lists the schemas the database held before the restore,
 	// so that undoing the restore drops only what it created.
 	SchemasBefore []string `json:"schemas_before"`
+	// ResyncFrom is the height a node with state was at when it began clearing
+	// itself to restore a newer snapshot. It is 0 for a new node. A node
+	// stopped before its block store was cleared is still at this height.
+	ResyncFrom uint64 `json:"resync_from,omitempty"`
 }
 
 func writeRestoreMarker(path string, m *restoreMarker) error {

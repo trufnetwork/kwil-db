@@ -39,6 +39,7 @@ type blockStore interface {
 	blockHeightServer
 	Store(*ktypes.Block, *ktypes.CommitInfo) error
 	Sync() error
+	Reset() error
 }
 
 type StatesyncConfig struct {
@@ -244,29 +245,47 @@ func (ss *StateSyncService) storeRestoredBlock(blk *ktypes.Block, ci *ktypes.Com
 // behind. The block at the snapshot height is stored last, so a block store
 // still at height 0 means the restore was stopped or failed part way. It drops
 // the schemas the restore created and keeps the ones the database held before.
-func (ss *StateSyncService) ClearInterruptedRestore(ctx context.Context) error {
+// A node that was clearing itself to restore a newer snapshot, and stopped
+// before it cleared its block store, is still at the height it resynced from;
+// it finishes clearing itself.
+//
+// It returns true for a node that was cleared to restore a newer snapshot and
+// has not restored one yet. Such a node keeps its restore marker until a
+// restore finishes, so that it state syncs instead of replaying from genesis
+// however many times it restarts.
+func (ss *StateSyncService) ClearInterruptedRestore(ctx context.Context) (bool, error) {
 	m, err := readRestoreMarker(ss.restoreMarker)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	switch h, _, _, _ := ss.blockStore.Best(); {
+	h, _, _, _ := ss.blockStore.Best()
+	switch {
 	case h == int64(m.Height):
-		return clearRestoreMarker(ss.restoreMarker) // it finished
-	case h != 0:
-		return fmt.Errorf("a state sync restore to height %d did not finish, and the block store is at height %d; reset the node", m.Height, h)
+		return false, clearRestoreMarker(ss.restoreMarker) // it finished
+	case h != 0 && (m.ResyncFrom == 0 || h != int64(m.ResyncFrom)):
+		return false, fmt.Errorf("a state sync restore to height %d did not finish, and the block store is at height %d; reset the node", m.Height, h)
+	}
+
+	if h != 0 {
+		if err := ss.blockStore.Reset(); err != nil {
+			return false, fmt.Errorf("clear the block store to finish the resync from height %d: %w", m.ResyncFrom, err)
+		}
 	}
 
 	dropped, err := pg.DropSchemasExcept(ctx, pgConnConfig(ss.dbConfig), m.SchemasBefore)
 	if err != nil {
-		return fmt.Errorf("undo the interrupted state sync restore to height %d: %w", m.Height, err)
+		return false, fmt.Errorf("undo the interrupted state sync restore to height %d: %w", m.Height, err)
 	}
 	ss.log.Warn("Undid a state sync restore that did not finish; state syncing again",
-		"height", m.Height, "dropped_schemas", dropped)
-	return clearRestoreMarker(ss.restoreMarker)
+		"height", m.Height, "resync_from", m.ResyncFrom, "dropped_schemas", dropped)
+	if m.ResyncFrom != 0 {
+		return true, nil
+	}
+	return false, clearRestoreMarker(ss.restoreMarker)
 }
 
 func pgConnConfig(db config.DBConfig) *pg.ConnConfig {

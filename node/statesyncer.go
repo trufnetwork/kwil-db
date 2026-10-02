@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -812,11 +813,21 @@ func (s *StateSyncService) restoreDB(ctx context.Context, snapshot *snapshotMeta
 	if err != nil {
 		return fmt.Errorf("list schemas before the restore: %w", err)
 	}
-	if err := writeRestoreMarker(s.restoreMarker, &restoreMarker{
+	marker := &restoreMarker{
 		Height:        snapshot.Height,
 		SnapshotHash:  hex.EncodeToString(snapshot.Hash),
 		SchemasBefore: schemas,
-	}); err != nil {
+	}
+	// A node cleared to restore a newer snapshot stays marked as one until a
+	// restore finishes.
+	prev, err := readRestoreMarker(s.restoreMarker)
+	switch {
+	case err == nil:
+		marker.ResyncFrom = prev.ResyncFrom
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	if err := writeRestoreMarker(s.restoreMarker, marker); err != nil {
 		return err
 	}
 

@@ -665,6 +665,12 @@ func (v *VoteStore) LoadValidatorSet(ctx context.Context, db sql.Executor) error
 	return nil
 }
 
+// GetValidators reads the validator set from the database, for a caller that
+// needs it before the vote store is built.
+func GetValidators(ctx context.Context, db sql.Executor) ([]*types.Validator, error) {
+	return getValidators(ctx, db)
+}
+
 // getValidators gets all voters in the vote store, along with their power.
 func getValidators(ctx context.Context, db sql.Executor) ([]*types.Validator, error) {
 	res, err := db.Execute(ctx, allVoters)

@@ -99,6 +99,15 @@ func operatorRowKept(t *testing.T, ss *StateSyncService) {
 	require.Equal(t, "keep me", v)
 }
 
+// nextStart runs what a starting node does about an interrupted restore, and
+// returns whether the node is still resyncing.
+func nextStart(t *testing.T, ss *StateSyncService) bool {
+	t.Helper()
+	resyncing, err := ss.ClearInterruptedRestore(context.Background())
+	require.NoError(t, err)
+	return resyncing
+}
+
 func TestFailedRestoreIsUndoneAtNextStart(t *testing.T) {
 	ss, snap, _ := restoreService(t, "kwil_test_restore_undo_failed", badDump)
 	before := schemas(t, ss)
@@ -110,7 +119,7 @@ func TestFailedRestoreIsUndoneAtNextStart(t *testing.T) {
 	require.True(t, interrupted)
 
 	// The next start.
-	require.NoError(t, ss.ClearInterruptedRestore(context.Background()))
+	require.False(t, nextStart(t, ss))
 
 	require.Equal(t, before, schemas(t, ss))
 	operatorRowKept(t, ss)
@@ -119,7 +128,7 @@ func TestFailedRestoreIsUndoneAtNextStart(t *testing.T) {
 	require.False(t, interrupted)
 
 	// And the start after that has nothing to undo.
-	require.NoError(t, ss.ClearInterruptedRestore(context.Background()))
+	require.False(t, nextStart(t, ss))
 	require.Equal(t, before, schemas(t, ss))
 }
 
@@ -130,7 +139,7 @@ func TestRestoreStoppedBeforeItsBlockIsStoredIsUndone(t *testing.T) {
 	// The restore finished, but the node stopped before storing block 100.
 	require.NoError(t, ss.restoreDB(context.Background(), snap))
 
-	require.NoError(t, ss.ClearInterruptedRestore(context.Background()))
+	require.False(t, nextStart(t, ss))
 
 	require.Equal(t, before, schemas(t, ss))
 	operatorRowKept(t, ss)
@@ -147,7 +156,7 @@ func TestFinishedRestoreIsKept(t *testing.T) {
 	// Block 100 was stored, and the node stopped before removing the marker.
 	bs.height = restoreHeight
 
-	require.NoError(t, ss.ClearInterruptedRestore(context.Background()))
+	require.False(t, nextStart(t, ss))
 
 	require.Equal(t, after, schemas(t, ss))
 	interrupted, err := RestoreInterrupted(ss.restoreMarker)
@@ -162,7 +171,7 @@ func TestInterruptedRestoreWithAnotherBlockStoreHeightIsRefused(t *testing.T) {
 	after := schemas(t, ss)
 	bs.height = restoreHeight + 7
 
-	err := ss.ClearInterruptedRestore(context.Background())
+	_, err := ss.ClearInterruptedRestore(context.Background())
 	require.ErrorContains(t, err, "reset the node")
 
 	require.Equal(t, after, schemas(t, ss), "nothing may be dropped")

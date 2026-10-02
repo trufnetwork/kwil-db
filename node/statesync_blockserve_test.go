@@ -76,7 +76,7 @@ func TestStateSyncAnswersBlockRequestsLikeTheNode(t *testing.T) {
 	require.NoError(t, n1.bki.Store(blk, &ktypes.CommitInfo{AppHash: appHash}))
 
 	// The same store behind both, so any difference is the handler's.
-	stateSyncing := newStateSyncServer(ctx, t, mn, n1.bki)
+	stateSyncing := newStateSyncServer(ctx, t, mn, n1.bki.(blockStore))
 
 	linkAll(t, mn)
 	startNodes(t, nodes)
