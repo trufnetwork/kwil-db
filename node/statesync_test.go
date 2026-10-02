@@ -217,6 +217,10 @@ func (m *mockBS) Sync() error {
 	return nil
 }
 
+func (m *mockBS) Reset() error {
+	return nil
+}
+
 func (m *mockBS) Best() (int64, types.Hash, types.Hash, time.Time) {
 	return 0, types.Hash{}, types.Hash{}, time.Time{}
 }

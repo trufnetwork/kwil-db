@@ -565,6 +565,8 @@ type StateSyncConfig struct {
 
 	// Concurrency control
 	ConcurrentChunkFetchers uint32 `toml:"concurrent_chunk_fetchers" comment:"number of concurrent chunk downloads during state sync (1-20)"`
+
+	ResyncWhenBehind uint64 `toml:"resync_when_behind" comment:"restore a newer snapshot instead of replaying when it is more than this many blocks ahead of the local height; the node keeps no blocks from before it, so leave 0 (off) on a node that serves history"`
 }
 
 // Validate validates the StateSyncConfig and sets defaults for unspecified values

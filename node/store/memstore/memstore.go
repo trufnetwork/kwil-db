@@ -213,6 +213,20 @@ func (bs *MemBS) Close() error { return nil }
 // Sync is a no-op for the in-memory block store.
 func (bs *MemBS) Sync() error { return nil }
 
+// Reset deletes every block.
+func (bs *MemBS) Reset() error {
+	bs.mtx.Lock()
+	defer bs.mtx.Unlock()
+	bs.idx = make(map[types.Hash]int64)
+	bs.hashes = make(map[int64]blockHashes)
+	bs.blocks = make(map[types.Hash]*types.Block)
+	bs.txResults = make(map[types.Hash][]types.TxResult)
+	bs.txIds = make(map[types.Hash]types.Hash)
+	bs.fetching = make(map[types.Hash]bool)
+	bs.commitInfo = make(map[types.Hash]*types.CommitInfo)
+	return nil
+}
+
 func (bs *MemBS) GetTx(txHash types.Hash) (tx *types.Transaction, height int64, hash types.Hash, idx uint32, err error) {
 	bs.mtx.RLock()
 	defer bs.mtx.RUnlock()

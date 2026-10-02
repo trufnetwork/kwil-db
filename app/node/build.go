@@ -314,8 +314,21 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 		failBuild(err, "a state sync restore did not finish; enable state sync to finish it, or reset the node")
 	}
 
+	// A node that has state replays from it, unless it is far enough behind a
+	// verified snapshot to clear itself and restore that instead.
+	resyncing := false
 	if isDbInitialized(ctx, d) {
-		return false
+		if ss == nil {
+			return false
+		}
+		cleared, err := ss.ResyncIfFarBehind(ctx, d.privKey.Public(), d.genesisCfg.Leader.PublicKey)
+		if err != nil {
+			failBuild(err, "failed to clear the node to restore a newer snapshot")
+		}
+		if !cleared {
+			return false
+		}
+		resyncing = true
 	}
 
 	if d.cfg.StateSync.Enable {
@@ -328,6 +341,11 @@ func restoreDB(d *coreDependencies, ctx context.Context, ss *node.StateSyncServi
 		if success {
 			d.logger.Info("DB restored from statesync snapshot")
 			return false
+		}
+
+		// A cleared node must not fall back to replaying from genesis.
+		if resyncing {
+			failBuild(nil, "state sync did not restore a snapshot after the node was cleared for it; restart the node to try again")
 		}
 
 		// If statesync is not successful, restore from the genesis snapshot if available

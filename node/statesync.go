@@ -39,6 +39,7 @@ type blockStore interface {
 	blockHeightServer
 	Store(*ktypes.Block, *ktypes.CommitInfo) error
 	Sync() error
+	Reset() error
 }
 
 type StatesyncConfig struct {
@@ -244,6 +245,9 @@ func (ss *StateSyncService) storeRestoredBlock(blk *ktypes.Block, ci *ktypes.Com
 // behind. The block at the snapshot height is stored last, so a block store
 // still at height 0 means the restore was stopped or failed part way. It drops
 // the schemas the restore created and keeps the ones the database held before.
+// A node that was clearing itself to restore a newer snapshot, and stopped
+// before it cleared its block store, is still at the height it resynced from;
+// it finishes clearing itself.
 func (ss *StateSyncService) ClearInterruptedRestore(ctx context.Context) error {
 	m, err := readRestoreMarker(ss.restoreMarker)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -253,11 +257,18 @@ func (ss *StateSyncService) ClearInterruptedRestore(ctx context.Context) error {
 		return err
 	}
 
-	switch h, _, _, _ := ss.blockStore.Best(); {
+	h, _, _, _ := ss.blockStore.Best()
+	switch {
 	case h == int64(m.Height):
 		return clearRestoreMarker(ss.restoreMarker) // it finished
-	case h != 0:
+	case h != 0 && (m.ResyncFrom == 0 || h != int64(m.ResyncFrom)):
 		return fmt.Errorf("a state sync restore to height %d did not finish, and the block store is at height %d; reset the node", m.Height, h)
+	}
+
+	if h != 0 {
+		if err := ss.blockStore.Reset(); err != nil {
+			return fmt.Errorf("clear the block store to finish the resync from height %d: %w", m.ResyncFrom, err)
+		}
 	}
 
 	dropped, err := pg.DropSchemasExcept(ctx, pgConnConfig(ss.dbConfig), m.SchemasBefore)

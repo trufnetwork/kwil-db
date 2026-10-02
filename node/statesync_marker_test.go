@@ -1,7 +1,9 @@
 package node
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,19 +17,30 @@ import (
 )
 
 // restoreBlockStore stands in for the block store. It records the order of
-// Store and Sync, and Sync fails when syncErr is set.
+// Store, Sync and Reset. It holds every block up to height, block h with the
+// app hash blockAppHash(h). Sync fails when syncErr is set, and Reset fails
+// when resetErr is set, after calling onReset.
 type restoreBlockStore struct {
-	height  int64
-	calls   []string
-	syncErr error
+	height   int64
+	calls    []string
+	syncErr  error
+	resetErr error
+	onReset  func()
+}
+
+func blockAppHash(height int64) types.Hash {
+	return types.HashBytes(fmt.Appendf(nil, "app hash %d", height))
 }
 
 func (f *restoreBlockStore) Best() (int64, types.Hash, types.Hash, time.Time) {
 	return f.height, types.Hash{}, types.Hash{}, time.Time{}
 }
 
-func (f *restoreBlockStore) GetRawByHeight(int64) (types.Hash, []byte, *ktypes.CommitInfo, error) {
-	return types.Hash{}, nil, nil, types.ErrNotFound
+func (f *restoreBlockStore) GetRawByHeight(height int64) (types.Hash, []byte, *ktypes.CommitInfo, error) {
+	if height < 1 || height > f.height {
+		return types.Hash{}, nil, nil, types.ErrNotFound
+	}
+	return types.Hash{}, nil, &ktypes.CommitInfo{AppHash: blockAppHash(height)}, nil
 }
 
 func (f *restoreBlockStore) Store(blk *ktypes.Block, _ *ktypes.CommitInfo) error {
@@ -39,6 +52,18 @@ func (f *restoreBlockStore) Store(blk *ktypes.Block, _ *ktypes.CommitInfo) error
 func (f *restoreBlockStore) Sync() error {
 	f.calls = append(f.calls, "sync")
 	return f.syncErr
+}
+
+func (f *restoreBlockStore) Reset() error {
+	f.calls = append(f.calls, "reset")
+	if f.onReset != nil {
+		f.onReset()
+	}
+	if f.resetErr != nil {
+		return f.resetErr
+	}
+	f.height = 0
+	return nil
 }
 
 func TestRestoreMarkerRoundTrip(t *testing.T) {
@@ -118,4 +143,19 @@ func TestStoreRestoredBlockStopsWhenTheMarkerCannotBeRemoved(t *testing.T) {
 
 	err := ss.storeRestoredBlock(restoredBlock, &ktypes.CommitInfo{})
 	require.ErrorContains(t, err, "remove the state sync restore marker")
+}
+
+func TestInterruptedResyncAtAnotherHeightIsRefused(t *testing.T) {
+	ss, bs := markedService(t)
+	require.NoError(t, writeRestoreMarker(ss.restoreMarker, &restoreMarker{Height: 1000, ResyncFrom: 100}))
+	bs.height = 250 // neither where the resync started nor where it was going
+
+	// No database is configured, so reaching the drop would fail differently.
+	err := ss.ClearInterruptedRestore(context.Background())
+	require.ErrorContains(t, err, "reset the node")
+
+	require.Empty(t, bs.calls)
+	interrupted, err := RestoreInterrupted(ss.restoreMarker)
+	require.NoError(t, err)
+	require.True(t, interrupted)
 }
