@@ -11,6 +11,7 @@ package jsonrpc
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 // Method is a type used for all recognized JSON-RPC method names.
@@ -60,10 +61,24 @@ type Request struct {
 	Params  json.RawMessage `json:"params"` // object in 2.0, array in 1.0
 }
 
+// integerID converts a float64 id to an int64 only if that is lossless. A bare
+// int64(f) conversion saturates to math.MinInt64 for NaN, Inf, and values at or
+// beyond 2^63, and truncates a fractional part.
+func integerID(f float64) (int64, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) ||
+		f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
 func stdID(id any) any {
 	switch t := id.(type) {
 	case float64: // json numeric unmarshals to float64 with any field
-		return int64(t) // JSON-RPC discourages fractional parts
+		if i, ok := integerID(t); ok {
+			return i
+		}
+		return t // not an exact int64, leave it as is rather than corrupt it
 	case string: // string is the other allowed type
 		return t
 	case int, int8, int16, int32, int64,

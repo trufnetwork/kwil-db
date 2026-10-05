@@ -43,9 +43,29 @@ func Test_stdID(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name:     "float64 with fraction",
+			name:     "float64 with fraction is not truncated",
 			input:    float64(123.45),
-			expected: int64(123),
+			expected: float64(123.45),
+		},
+		{
+			name:     "float64 at 2^63 is not saturated to MinInt64",
+			input:    float64(1 << 63),
+			expected: float64(1 << 63),
+		},
+		{
+			name:     "float64 beyond int64 is not saturated to MinInt64",
+			input:    float64(1e20),
+			expected: float64(1e20),
+		},
+		{
+			name:     "float64 at MinInt64 converts",
+			input:    float64(-1 << 63),
+			expected: int64(-1 << 63),
+		},
+		{
+			name:     "float64 negative integer converts",
+			input:    float64(-5),
+			expected: int64(-5),
 		},
 		{
 			name:     "custom type converts to string",

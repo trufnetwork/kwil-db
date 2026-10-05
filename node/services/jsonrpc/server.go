@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -694,6 +695,22 @@ func (s *Server) writeJSON(w http.ResponseWriter, thing any, code int) {
 	}
 }
 
+// validateNumericID rejects a numeric id that is not a whole number in the int64
+// range. JSON numbers decode to float64, and converting one of those to int64
+// saturates to math.MinInt64 for NaN, Inf, and values at or beyond 2^63, and
+// truncates a fraction, so the id could not be echoed back in the response.
+func validateNumericID(id any) error {
+	f, ok := id.(float64)
+	if !ok {
+		return nil
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) ||
+		f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return fmt.Errorf("id must be an integer in the int64 range, got %v", f)
+	}
+	return nil
+}
+
 func zeroID(id any) bool {
 	if id == nil {
 		return true // would be !rv.IsValid()
@@ -714,6 +731,11 @@ func (s *Server) handleJSONRPCRequest(ctx context.Context, req *jsonrpc.Request)
 	if req.JSONRPC != "2.0" || zeroID(req.ID) {
 		rpcErr := jsonrpc.NewError(jsonrpc.ErrorInvalidRequest, "invalid json-rpc request object", nil)
 		return jsonrpc.NewErrorResponse(req.ID, rpcErr)
+	}
+	if err := validateNumericID(req.ID); err != nil {
+		// The id cannot be echoed back, so the response carries a null id.
+		rpcErr := jsonrpc.NewError(jsonrpc.ErrorInvalidRequest, err.Error(), nil)
+		return jsonrpc.NewErrorResponse(nil, rpcErr)
 	}
 	if req.Method == "" {
 		rpcErr := jsonrpc.NewError(jsonrpc.ErrorUnknownMethod, "no route was supplied", nil)
