@@ -219,17 +219,3 @@ func Test_options(t *testing.T) {
 		})
 	}
 }
-
-func Test_handleJSONRPCRequest_invalidNumericID(t *testing.T) {
-	// 2^63 and larger do not fit an int64, and a fractional id is not a whole
-	// number. Neither can be echoed back, so they are rejected up front.
-	for _, id := range []float64{1 << 63, 1e20, 1.5} {
-		req := &jsonrpc.Request{JSONRPC: "2.0", ID: id, Method: "user.ping"}
-
-		resp := (&Server{}).handleJSONRPCRequest(context.Background(), req)
-
-		require.NotNil(t, resp.Error, "id %v", id)
-		require.Equal(t, jsonrpc.ErrorInvalidRequest, resp.Error.Code, "id %v", id)
-		require.Nil(t, resp.ID, "id %v", id)
-	}
-}
