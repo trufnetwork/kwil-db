@@ -1,10 +1,19 @@
 package jsonrpc
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestResponseNullID(t *testing.T) {
+	// JSON-RPC 2.0 requires the id member in every response, and null when
+	// the request's id could not be read.
+	b, err := json.Marshal(NewErrorResponse(nil, NewError(ErrorParse, "invalid request", nil)))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid request"}}`, string(b))
+}
 
 func Test_stdID(t *testing.T) {
 	tests := []struct {
