@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -642,7 +641,7 @@ func (s *Server) handlerJSONRPCV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := new(jsonrpc.Request)
-	err = json.Unmarshal(body, req)
+	err = decodeRequest(body, req)
 	if err != nil {
 		resp := jsonrpc.NewErrorResponse(nil, jsonrpc.NewError(jsonrpc.ErrorParse, "invalid request", nil))
 		s.writeJSON(w, resp, http.StatusBadRequest)
@@ -650,6 +649,46 @@ func (s *Server) handlerJSONRPCV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.processJSONRPCRequest(r.Context(), w, req)
+}
+
+// decodeRequest decodes a request as json.Unmarshal would, except that the id
+// keeps the numbers the client sent. Decoded into an any, a number becomes a
+// float64, which cannot hold every integer above 2^53, so the response could
+// not always carry the same id.
+func decodeRequest(body []byte, req *jsonrpc.Request) error {
+	var r struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return err
+	}
+	id, err := decodeID(r.ID)
+	if err != nil {
+		return err
+	}
+	*req = jsonrpc.Request{JSONRPC: r.JSONRPC, ID: id, Method: r.Method, Params: r.Params}
+	return nil
+}
+
+// decodeID decodes a raw id into the value json.Unmarshal would give an any,
+// except that a number stays a json.Number, and an object or an array stays
+// raw JSON, so its members keep their order and their numbers.
+func decodeID(raw json.RawMessage) (any, error) {
+	if len(raw) == 0 {
+		return nil, nil // no id member
+	}
+	switch c := raw[0]; {
+	case c == '-' || (c >= '0' && c <= '9'):
+		return json.Number(raw), nil
+	case c == '{' || c == '[':
+		return raw, nil
+	}
+	var id any // a string, a bool, or nil for null
+	err := json.Unmarshal(raw, &id)
+	return id, err
 }
 
 // processJSONRPCRequest handles the jsonrpc.Request with handleRequest to call the
@@ -695,25 +734,16 @@ func (s *Server) writeJSON(w http.ResponseWriter, thing any, code int) {
 	}
 }
 
-// validateNumericID rejects a numeric id that is not a whole number in the int64
-// range. JSON numbers decode to float64, and converting one of those to int64
-// saturates to math.MinInt64 for NaN, Inf, and values at or beyond 2^63, and
-// truncates a fraction, so the id could not be echoed back in the response.
-func validateNumericID(id any) error {
-	f, ok := id.(float64)
-	if !ok {
-		return nil
-	}
-	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) ||
-		f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
-		return fmt.Errorf("id must be an integer in the int64 range, got %v", f)
-	}
-	return nil
-}
-
 func zeroID(id any) bool {
 	if id == nil {
 		return true // would be !rv.IsValid()
+	}
+	if n, ok := id.(json.Number); ok {
+		// A number is zero when every digit before its exponent is 0. Read
+		// as a float64, an id too small for one, such as 1e-400, would be zero
+		// as well.
+		mantissa, _, _ := strings.Cut(strings.ToLower(n.String()), "e")
+		return strings.Trim(mantissa, "-0.") == ""
 	}
 	rv := reflect.ValueOf(id)
 	if rv.IsZero() {
@@ -731,11 +761,6 @@ func (s *Server) handleJSONRPCRequest(ctx context.Context, req *jsonrpc.Request)
 	if req.JSONRPC != "2.0" || zeroID(req.ID) {
 		rpcErr := jsonrpc.NewError(jsonrpc.ErrorInvalidRequest, "invalid json-rpc request object", nil)
 		return jsonrpc.NewErrorResponse(req.ID, rpcErr)
-	}
-	if err := validateNumericID(req.ID); err != nil {
-		// The id cannot be echoed back, so the response carries a null id.
-		rpcErr := jsonrpc.NewError(jsonrpc.ErrorInvalidRequest, err.Error(), nil)
-		return jsonrpc.NewErrorResponse(nil, rpcErr)
 	}
 	if req.Method == "" {
 		rpcErr := jsonrpc.NewError(jsonrpc.ErrorUnknownMethod, "no route was supplied", nil)
@@ -767,11 +792,26 @@ func (s *Server) handleJSONRPCRequest(ctx context.Context, req *jsonrpc.Request)
 
 	s.log.Debug("request success", "method", req.Method, "elapsed", time.Since(t0))
 
-	resp, err := jsonrpc.NewResponse(req.ID, result)
+	resp, err := newResponse(req.ID, result)
 	if err != nil { // failed to marshal result
 		s.log.Error("failed to marshal result", "method", req.Method, "error", err)
 		rpcErr := jsonrpc.NewError(jsonrpc.ErrorResultEncoding, "failed to encode result", nil)
 		return jsonrpc.NewErrorResponse(req.ID, rpcErr)
 	}
 	return resp
+}
+
+// newResponse is jsonrpc.NewResponse without its id conversion, which turns a
+// float64 id into an int64 and a json.Number into a string. The response
+// carries the id exactly as the request did, as error responses do.
+func newResponse(id, result any) (*jsonrpc.Response, error) {
+	resJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return &jsonrpc.Response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  resJSON,
+	}, nil
 }

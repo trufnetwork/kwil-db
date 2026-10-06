@@ -42,6 +42,13 @@ func Test_zeroID(t *testing.T) {
 		{"float64 1.1", float64(1.1), false},
 		{"ptr to int 1", ptrTo(1), false},
 		{"string a", "a", false},
+		{"json number 0", json.Number("0"), true},
+		{"json number 0.0", json.Number("0.0"), true},
+		{"json number 1", json.Number("1"), false},
+		{"json number beyond float64", json.Number("1e400"), false},
+		{"json number below float64", json.Number("1e-400"), false},
+		{"json number 10", json.Number("10"), false},
+		{"json number -0.0e5", json.Number("-0.0e5"), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -247,16 +254,64 @@ func Test_options(t *testing.T) {
 	}
 }
 
-func Test_handleJSONRPCRequest_invalidNumericID(t *testing.T) {
-	// 2^63 and larger do not fit an int64, and a fractional id is not a whole
-	// number. Neither can be echoed back, so they are rejected up front.
-	for _, id := range []float64{1 << 63, 1e20, 1.5} {
-		req := &jsonrpc.Request{JSONRPC: "2.0", ID: id, Method: "user.ping"}
+func Test_requestIDRoundTrip(t *testing.T) {
+	srv, err := NewServer("127.0.0.1:", log.DiscardLogger)
+	require.NoError(t, err)
+	srv.RegisterMethodHandler(
+		"rpc.dummy",
+		MakeMethodHandler(func(context.Context, *any) (*json.RawMessage, *jsonrpc.Error) {
+			respjson := []byte(`"hi"`)
+			return (*json.RawMessage)(&respjson), nil
+		}),
+	)
 
-		resp := (&Server{}).handleJSONRPCRequest(context.Background(), req)
+	post := func(t *testing.T, body string) (int, map[string]json.RawMessage) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, pathRPCV1, strings.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.srv.Handler.ServeHTTP(w, r)
+		var resp map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		return w.Code, resp
+	}
 
-		require.NotNil(t, resp.Error, "id %v", id)
-		require.Equal(t, jsonrpc.ErrorInvalidRequest, resp.Error.Code, "id %v", id)
-		require.Nil(t, resp.ID, "id %v", id)
+	// The response carries the id exactly as the request did, whether the
+	// method runs or fails: a fraction, an integer a float64 cannot hold,
+	// one beyond int64, numbers too large or too small even for a float64,
+	// and ids the spec does not allow but the server has always answered.
+	for _, id := range []string{
+		`1`, `-5`, `0.5`, `1.5`, `1e2`, `9007199254740993`,
+		`9223372036854775807`, `9223372036854775808`, `-9223372036854775809`,
+		`1e20`, `1e400`, `1e-400`, `-1e-400`, `"abc"`, `"1"`,
+		`true`, `{}`, `[1]`, `[1e2]`, `{"a":9007199254740993}`, `{"z":1e2,"a":2}`,
+	} {
+		code, resp := post(t, `{"jsonrpc":"2.0","id":`+id+`,"method":"rpc.dummy"}`)
+		require.Equal(t, http.StatusOK, code, id)
+		require.Equal(t, id, string(resp["id"]), id)
+		require.Equal(t, `"hi"`, string(resp["result"]), id)
+
+		code, resp = post(t, `{"jsonrpc":"2.0","id":`+id+`,"method":"rpc.nope"}`)
+		require.Equal(t, http.StatusNotFound, code, id)
+		require.Equal(t, id, string(resp["id"]), id)
+	}
+
+	// An id of 0 or an empty string is still refused, however it is written.
+	for _, id := range []string{`0`, `0.0`, `0e5`, `-0`, `-0.0`, `-0e5`, `""`} {
+		code, resp := post(t, `{"jsonrpc":"2.0","id":`+id+`,"method":"rpc.dummy"}`)
+		require.Equal(t, http.StatusBadRequest, code, id)
+		require.JSONEq(t, `{"code":-32600,"message":"invalid json-rpc request object"}`, string(resp["error"]), id)
+	}
+
+	// Whitespace after the request object is fine, as it was. Anything else
+	// after it is still refused.
+	for _, extra := range []string{"\n", "\r\n", " \t\r\n "} {
+		code, resp := post(t, `{"jsonrpc":"2.0","id":1,"method":"rpc.dummy"}`+extra)
+		require.Equal(t, http.StatusOK, code, extra)
+		require.Equal(t, `1`, string(resp["id"]), extra)
+	}
+	for _, extra := range []string{` x`, `}`, ` {}`, ` 1`} {
+		code, resp := post(t, `{"jsonrpc":"2.0","id":1,"method":"rpc.dummy"}`+extra)
+		require.Equal(t, http.StatusBadRequest, code, extra)
+		require.JSONEq(t, `{"code":-32700,"message":"invalid request"}`, string(resp["error"]), extra)
 	}
 }
