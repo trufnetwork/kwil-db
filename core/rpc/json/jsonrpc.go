@@ -98,7 +98,7 @@ func NewRequest(id any, method string, params json.RawMessage) *Request {
 // Either the "response" or "error" field are expected to be set.
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
+	ID      any             `json:"id"`               // null when the request's id could not be read
 	Result  json.RawMessage `json:"result,omitempty"` // object, marshalled by handler
 	Error   *Error          `json:"error,omitempty"`
 }

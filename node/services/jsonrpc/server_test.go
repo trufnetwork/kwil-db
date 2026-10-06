@@ -68,11 +68,38 @@ func Test_timeout(t *testing.T) {
 	// Expect http.TimeoutHandler to have responded...
 	assert.Equal(t, http.StatusServiceUnavailable, w.Result().StatusCode)
 
-	// ...with our jsonrpc.Error.Code
-	var resp jsonrpc.Response
+	// ...with our jsonrpc.Error.Code, and a null id since the request's id
+	// is not known here.
+	var resp map[string]json.RawMessage
 	err := json.NewDecoder(w.Body).Decode(&resp)
 	require.NoError(t, err)
-	assert.Equal(t, resp.Error.Code, jsonrpc.ErrorTimeout)
+	var rpcErr jsonrpc.Error
+	require.NoError(t, json.Unmarshal(resp["error"], &rpcErr))
+	assert.Equal(t, rpcErr.Code, jsonrpc.ErrorTimeout)
+	assert.Equal(t, `null`, string(resp["id"]))
+}
+
+func Test_unreadableIDIsNull(t *testing.T) {
+	srv, err := NewServer("127.0.0.1:", log.DiscardLogger)
+	require.NoError(t, err)
+
+	// A body that does not parse, a request with no id and one with a null
+	// id: each error response carries "id": null, since JSON-RPC 2.0 requires
+	// an id member in every response.
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":`,
+		`{"jsonrpc":"2.0","method":"rpc.nope"}`,
+		`{"jsonrpc":"2.0","id":null,"method":"rpc.nope"}`,
+	} {
+		r := httptest.NewRequest(http.MethodPost, pathRPCV1, strings.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.srv.Handler.ServeHTTP(w, r)
+		require.Equal(t, http.StatusBadRequest, w.Code, body)
+
+		var resp map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		require.Equal(t, `null`, string(resp["id"]), body)
+	}
 }
 
 func Test_options(t *testing.T) {

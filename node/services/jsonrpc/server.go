@@ -369,8 +369,8 @@ func (s *Server) handleSvcHealth(w http.ResponseWriter, r *http.Request) {
 // insight into the latencies introduced by bandwidth and marshalling.
 func jsonRPCTimeoutHandler(h http.Handler, timeout time.Duration, logger log.Logger) http.Handler {
 	// We'll respond with a jsonrpc.Response type, but the request handler is
-	// downstream and we don't have the request ID.
-	resp := jsonrpc.NewErrorResponse(-1, jsonrpc.NewError(jsonrpc.ErrorTimeout, "RPC timeout", nil))
+	// downstream and we don't have the request ID, so the id is null.
+	resp := jsonrpc.NewErrorResponse(nil, jsonrpc.NewError(jsonrpc.ErrorTimeout, "RPC timeout", nil))
 	respMsg, _ := json.Marshal(resp)
 	h = http.TimeoutHandler(h, timeout, string(respMsg)) // https://github.com/golang/go/issues/27375
 
@@ -643,7 +643,7 @@ func (s *Server) handlerJSONRPCV1(w http.ResponseWriter, r *http.Request) {
 	req := new(jsonrpc.Request)
 	err = json.Unmarshal(body, req)
 	if err != nil {
-		resp := jsonrpc.NewErrorResponse(-1, jsonrpc.NewError(jsonrpc.ErrorParse, "invalid request", nil))
+		resp := jsonrpc.NewErrorResponse(nil, jsonrpc.NewError(jsonrpc.ErrorParse, "invalid request", nil))
 		s.writeJSON(w, resp, http.StatusBadRequest)
 		return
 	}
