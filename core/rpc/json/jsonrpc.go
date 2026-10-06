@@ -79,6 +79,8 @@ func stdID(id any) any {
 			return i
 		}
 		return t // not an exact int64, leave it as is rather than corrupt it
+	case json.Number: // a number decoded with UseNumber, kept as the client sent it
+		return t
 	case string: // string is the other allowed type
 		return t
 	case int, int8, int16, int32, int64,
