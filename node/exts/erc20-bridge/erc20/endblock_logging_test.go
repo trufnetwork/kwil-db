@@ -101,8 +101,16 @@ func TestEndBlock_EmptyBlockLogsNothingAtInfo(t *testing.T) {
 	require.NoError(t, hook(ctx, app, block))
 	require.Empty(t, out.String(), "an empty block must log nothing at INFO or WARN")
 
-	// The same block at DEBUG shows each instance took the path above, so the
-	// silence at INFO is not the hook skipping them.
+	// A second block finds nothing changed and skips the checks (see
+	// endblock_idle.go). That path must be silent at INFO too.
+	out.Reset()
+	require.NoError(t, hook(ctx, app, &common.BlockContext{Height: 201, Timestamp: now + 1}))
+	require.Empty(t, out.String(), "a block that skips the checks must log nothing at INFO or WARN")
+
+	// The first block again at DEBUG, with the marks dropped as on a restart,
+	// shows each instance took the path above, so the silence at INFO is not
+	// the hook skipping them.
+	resetIdleMarks()
 	out.Reset()
 	app.Service.Logger = log.New(log.WithWriter(&out), log.WithLevel(log.LevelDebug))
 	require.NoError(t, hook(ctx, app, block))

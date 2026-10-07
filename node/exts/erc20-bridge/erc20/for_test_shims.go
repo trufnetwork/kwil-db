@@ -177,6 +177,7 @@ func ForTestingEnsureExtensionRegistered(ctx context.Context, platform *kwilTest
 func ForTestingResetSingleton() {
 	// Completely reinitialize the singleton to ensure clean state
 	_SINGLETON = &extensionInfo{instances: newInstanceMap()}
+	resetIdleMarks()
 
 	// Cancel all running signers and clear tracking maps for clean test state
 	runningSignersMu.Lock()
