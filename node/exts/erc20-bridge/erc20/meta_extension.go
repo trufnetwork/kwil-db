@@ -1739,7 +1739,7 @@ func init() {
 			// DEBUG: Log entry into end_block check
 			elapsedTime := block.Timestamp - info.currentEpoch.StartTime
 			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
+				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: currentEpoch ID=%s, startHeight=%d, startTime=%d, distributionPeriod=%d, elapsed=%d",
 					id, info.currentEpoch.ID, info.currentEpoch.StartHeight, info.currentEpoch.StartTime, info.userProvidedData.DistributionPeriod, elapsedTime)
 			}
 
@@ -1778,7 +1778,7 @@ func init() {
 
 			// DEBUG: Log previous epoch check result
 			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
+				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Previous epoch check: exists=%v, confirmed=%v (endBlock=%d)",
 					id, preExists, preConfirmed, info.currentEpoch.StartHeight)
 			}
 
@@ -1786,7 +1786,7 @@ func init() {
 				(preExists && preConfirmed) { // previous epoch exists and is confirmed
 				// DEBUG: Log before generating merkle tree
 				if app.Service != nil && app.Service.Logger != nil {
-					app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
+					app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Calling genMerkleTreeForEpoch with epoch ID=%s, escrow=%s",
 						id, info.currentEpoch.ID, info.EscrowAddress.Hex())
 				}
 
@@ -1875,7 +1875,7 @@ func init() {
 
 			// if previous epoch exists and not confirmed, we do nothing.
 			if app.Service != nil && app.Service.Logger != nil {
-				app.Service.Logger.Infof("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
+				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
 					id, info.currentEpoch.ID)
 			}
 			return nil
@@ -1927,7 +1927,7 @@ func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.
 	escrowAddr string, blockHash [32]byte) (leafNum int, jsonTree []byte, root []byte, total *big.Int, err error) {
 	// DEBUG: Log entry into genMerkleTreeForEpoch
 	if app.Service != nil && app.Service.Logger != nil {
-		app.Service.Logger.Infof("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
+		app.Service.Logger.Debugf("[MERKLE] genMerkleTreeForEpoch called with epoch ID=%s, escrow=%s", epochID, escrowAddr)
 	}
 
 	var rewards []*EpochReward
@@ -1944,12 +1944,12 @@ func genMerkleTreeForEpoch(ctx context.Context, app *common.App, epochID *types.
 
 	// DEBUG: Log number of rewards collected
 	if app.Service != nil && app.Service.Logger != nil {
-		app.Service.Logger.Infof("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
+		app.Service.Logger.Debugf("[MERKLE] Collected %d rewards for epoch ID=%s", len(rewards), epochID)
 	}
 
 	if len(rewards) == 0 { // no rewards, delay finalize current epoch
 		if app.Service != nil && app.Service.Logger != nil {
-			app.Service.Logger.Warnf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
+			app.Service.Logger.Debugf("[MERKLE] No rewards found for epoch ID=%s, returning 0", epochID)
 		}
 		return 0, nil, nil, nil, nil // should skip
 	}
