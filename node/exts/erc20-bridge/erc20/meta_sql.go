@@ -46,6 +46,8 @@ func createNewRewardInstance(ctx context.Context, app *common.App, info *userPro
 // createEpoch creates a new epoch for a reward.
 // It only stores the epoch's ID, start height, and referenced instance
 func createEpoch(ctx context.Context, app *common.App, epoch *PendingEpoch, instanceID *types.UUID) error {
+	noteRewardStateWrite()
+
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}INSERT INTO epochs(id, created_at_block, created_at_unix, instance_id)
 	VALUES (
@@ -64,6 +66,8 @@ func createEpoch(ctx context.Context, app *common.App, epoch *PendingEpoch, inst
 // finalizeEpoch finalizes an epoch.
 // It sets the end height, block hash, and reward root
 func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, endHeight int64, blockHash []byte, root []byte, total *types.Decimal) error {
+	noteRewardStateWrite()
+
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE epochs
 	SET ended_at = $ended_at,
@@ -86,6 +90,8 @@ func finalizeEpoch(ctx context.Context, app *common.App, epochID *types.UUID, en
 // because there are no rewards to distribute and nothing for validators to vote on.
 // This prevents the stuck epoch loop where empty epochs retry finalization every block.
 func finalizeEmptyEpoch(ctx context.Context, app *common.App, epochID *types.UUID, endHeight int64, blockHash []byte) error {
+	noteRewardStateWrite()
+
 	return app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
 	{kwil_erc20_meta}UPDATE epochs
 	SET ended_at = $ended_at,
@@ -102,6 +108,8 @@ func finalizeEmptyEpoch(ctx context.Context, app *common.App, epochID *types.UUI
 // confirmEpoch confirms an epoch was received on-chain.
 // Validator votes are preserved for withdrawal proof generation.
 func confirmEpoch(ctx context.Context, app *common.App, root []byte) error {
+	noteRewardStateWrite()
+
 	// 1. Get the epoch ID first (avoids subquery parser limitations)
 	var epochID *types.UUID
 	err := app.Engine.ExecuteWithoutEngineCtx(ctx, app.DB, `
@@ -385,6 +393,8 @@ func createSchema(ctx context.Context, app *common.App) error {
 
 // issueReward issues a reward to a user.
 func issueReward(ctx context.Context, app *common.App, instanceId *types.UUID, epochID *types.UUID, user ethcommon.Address, amount *types.Decimal) error {
+	noteRewardStateWrite()
+
 	// DEBUG: Log before inserting into epoch_rewards
 	if app.Service != nil && app.Service.Logger != nil {
 		app.Service.Logger.Infof("[DB] issueReward: Inserting into epoch_rewards - epoch_id=%s, recipient=%s, amount=%s",
@@ -481,6 +491,8 @@ func transferTokensFromUserToNetwork(ctx context.Context, app *common.App, rewar
 
 // lockAndIssue locks balance from a user and issues a reward to the designated recipient.
 func lockAndIssue(ctx context.Context, app *common.App, rewardID *types.UUID, epochID *types.UUID, from ethcommon.Address, recipient ethcommon.Address, amount *types.Decimal) error {
+	noteRewardStateWrite()
+
 	// DEBUG: Log lockAndIssue operation
 	if app.Service != nil && app.Service.Logger != nil {
 		app.Service.Logger.Infof("[DB] lockAndIssue: reward_id=%s, epoch_id=%s, from=%s, recipient=%s, amount=%s",

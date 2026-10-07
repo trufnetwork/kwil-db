@@ -1751,6 +1751,22 @@ func init() {
 				return nil
 			}
 
+			// Read before the queries below, so a write after this point makes
+			// a mark recorded from them stale. See endblock_idle.go.
+			version := rewardStateVersion.Load()
+
+			// Nothing the checks below read has changed since a check that found
+			// this epoch waiting, so they would find it waiting again. Once the
+			// grace period ends, run them anyway: they finalize the empty epoch.
+			if reason, ok := idleSince(*id, *info.currentEpoch.ID, version); ok &&
+				(reason == idleAwaitingConfirmation ||
+					isWithinEmptyEpochGracePeriod(elapsedTime, info.userProvidedData.DistributionPeriod)) {
+				if app.Service != nil && app.Service.Logger != nil {
+					app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Unchanged since the last check, still waiting (%s)", id, reason)
+				}
+				return nil
+			}
+
 			// Beacon finality check removed from epoch finalization.
 			// Rationale: Epoch finalization happens on TruflationNetwork consensus based on
 			// withdrawal requests that already exist in TN state. The security concern for
@@ -1807,6 +1823,7 @@ func init() {
 							app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: 0 rewards for epoch %s, waiting for grace period (%d/%ds)",
 								id, info.currentEpoch.ID, staleness, graceThreshold)
 						}
+						markIdle(*id, *info.currentEpoch.ID, version, idleAwaitingRewards)
 						return nil
 					}
 
@@ -1878,6 +1895,7 @@ func init() {
 				app.Service.Logger.Debugf("[ENDBLOCK] Instance %s: Previous epoch not confirmed yet, skipping finalization (currentEpoch ID=%s)",
 					id, info.currentEpoch.ID)
 			}
+			markIdle(*id, *info.currentEpoch.ID, version, idleAwaitingConfirmation)
 			return nil
 		})
 		if err != nil {
