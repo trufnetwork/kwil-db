@@ -87,10 +87,3 @@ func markIdle(instanceID, epochID types.UUID, version uint64, reason idleReason)
 	defer idleMarksMu.Unlock()
 	idleMarks[instanceID] = idleMark{epochID: epochID, version: version, reason: reason}
 }
-
-// resetIdleMarks forgets every mark, as a restart does.
-func resetIdleMarks() {
-	idleMarksMu.Lock()
-	defer idleMarksMu.Unlock()
-	idleMarks = map[types.UUID]idleMark{}
-}

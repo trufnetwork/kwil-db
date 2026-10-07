@@ -173,6 +173,14 @@ func ForTestingEnsureExtensionRegistered(ctx context.Context, platform *kwilTest
 }
 
 // ForTestingResetSingleton resets the test singleton to a clean state.
+// resetIdleMarks forgets every reward-hook idle mark, as a restart does. See
+// endblock_idle.go.
+func resetIdleMarks() {
+	idleMarksMu.Lock()
+	defer idleMarksMu.Unlock()
+	idleMarks = map[types.UUID]idleMark{}
+}
+
 // This should be called at the beginning of each test to ensure isolation.
 func ForTestingResetSingleton() {
 	// Completely reinitialize the singleton to ensure clean state
