@@ -253,6 +253,81 @@ func Test_built_in_sql(t *testing.T) {
 			},
 		},
 		{
+			name: "primary key flags match info.columns",
+			fn: func(ctx context.Context, db sql.DB) {
+				// listTablesInNamespace takes a column's primary key flag from the
+				// table's primary key index. info.columns.is_primary_key answers the
+				// same question through information_schema, so the two must agree
+				// on every column: composite and named keys, views and a second
+				// namespace.
+				for _, stmt := range []string{
+					`CREATE TABLE main.ledger (
+						account TEXT,
+						seq INT8,
+						amount INT8 NOT NULL,
+						PRIMARY KEY (account, seq)
+					);`,
+					`CREATE TABLE main.notes (
+						id INT8 CONSTRAINT notes_custom_pk PRIMARY KEY,
+						ledger_account TEXT,
+						ledger_seq INT8,
+						body TEXT UNIQUE,
+						FOREIGN KEY (ledger_account, ledger_seq) REFERENCES main.ledger (account, seq)
+					);`,
+					`CREATE INDEX notes_body_idx ON main.notes (body, id);`,
+					`CREATE VIEW main.ledger_accounts AS SELECT account, seq FROM main.ledger;`,
+				} {
+					_, err := db.Execute(ctx, stmt)
+					require.NoError(t, err)
+				}
+				_, err := createNamespace(ctx, db, "other", namespaceTypeUser)
+				require.NoError(t, err)
+				_, err = db.Execute(ctx, `CREATE TABLE other.pairs (b TEXT, a TEXT, c TEXT, PRIMARY KEY (a, b));`)
+				require.NoError(t, err)
+
+				pkColumns := map[string]map[string][]string{} // namespace -> table -> primary key columns
+				for _, namespace := range []string{"main", "other"} {
+					want := map[string]bool{}
+					var tableName, columnName string
+					var isPK bool
+					err := queryRowFunc(ctx, db, `SELECT table_name, name, is_primary_key FROM info.columns WHERE namespace = $1`,
+						[]any{&tableName, &columnName, &isPK}, func() error {
+							want[tableName+"."+columnName] = isPK
+							return nil
+						}, namespace)
+					require.NoError(t, err)
+
+					tables, err := listTablesInNamespace(ctx, db, namespace)
+					require.NoError(t, err)
+
+					got := map[string]bool{}
+					pkColumns[namespace] = map[string][]string{}
+					for _, tbl := range tables {
+						pkColumns[namespace][tbl.Name] = []string{}
+						for _, col := range tbl.Columns {
+							got[tbl.Name+"."+col.Name] = col.IsPrimaryKey
+							if col.IsPrimaryKey {
+								pkColumns[namespace][tbl.Name] = append(pkColumns[namespace][tbl.Name], col.Name)
+							}
+						}
+					}
+					require.Equal(t, want, got, "namespace %s", namespace)
+				}
+
+				// Pin the keys too, so the agreement above cannot hold by both being empty.
+				require.Equal(t, map[string]map[string][]string{
+					"main": {
+						"ledger":          {"account", "seq"},
+						"notes":           {"id"},
+						"ledger_accounts": {},
+					},
+					"other": {
+						"pairs": {"b", "a"},
+					},
+				}, pkColumns)
+			},
+		},
+		{
 			name: "test store and load extensions",
 			fn: func(ctx context.Context, db sql.DB) {
 				vals := func() map[string]Value {
