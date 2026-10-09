@@ -537,48 +537,13 @@ func runWithPostgres(ctx context.Context, opts *Options, fn func(context.Context
 
 	port := "52853" // random port
 
-	// Run the container
-	cmd := exec.CommandContext(ctx, "docker", dockerStartArgs(port)...)
-	out, err := cmd.Output()
+	out, err := startTestContainer(ctx, opts, port)
 	if err != nil {
-		return fmt.Errorf("failed to get output from container: %w", err)
-	}
-	switch {
-	case err == nil:
-		// do nothing
-	case strings.Contains(err.Error(), "command not found"):
-		{
-			return fmt.Errorf("docker not found. Please ensure Docker is installed and running")
-		}
-	case strings.Contains(err.Error(), "Conflict. The container name") && opts.ReplaceExistingContainer != nil:
-		// check if the container is in use
-		use, err := opts.ReplaceExistingContainer()
-		if err != nil {
-			return err
-		}
-
-		if !use {
-			return fmt.Errorf(`cannot create test-container: conflicting container name: "%s"`, ContainerName)
-		}
-
-		cmdStop := exec.CommandContext(ctx, "docker", "rm", "-f", ContainerName)
-		err = cmdStop.Run()
-		if err != nil {
-			return fmt.Errorf("error removing conflicting container: %w", err)
-		}
-
-		cmd = exec.CommandContext(ctx, "docker", dockerStartArgs(port)...)
-		err = cmd.Run()
-		if err != nil {
-			return fmt.Errorf("error running test container: %w", err)
-		}
-	default:
-		return fmt.Errorf("error running test container: %w", err)
+		return err
 	}
 
 	defer func() {
-		cmdStop := exec.CommandContext(ctx, "docker", "rm", "-f", ContainerName)
-		err2 := cmdStop.Run()
+		err2 := removeTestContainer(ctx)
 		if err2 != nil {
 			if err == nil {
 				err = err2
@@ -588,14 +553,9 @@ func runWithPostgres(ctx context.Context, opts *Options, fn func(context.Context
 		}
 	}()
 
-	err = waitForLogs(ctx, ContainerName, "database system is ready to accept connections", "database system is shut down", "PostgreSQL init process complete; ready for start up")
-	if err != nil {
-		return fmt.Errorf("error waiting for logs: %w", err)
-	}
-
 	opts.Logger.Logf("running test container: %s", string(out))
 
-	db, err := connectWithRetry(ctx, port, 10) // might take a while to start up on slower machines
+	db, err := connectWithRetry(ctx, port, 100) // might take a while to start up on slower machines
 	if err != nil {
 		return fmt.Errorf("error connecting to database: %w", err)
 	}
@@ -603,6 +563,108 @@ func runWithPostgres(ctx context.Context, opts *Options, fn func(context.Context
 	defer db.Close()
 
 	return fn(ctx, db, opts.Logger)
+}
+
+// containerStartTimeout bounds how long a test container has to print the lines
+// that say Postgres is up. Startup takes seconds. A container that has not
+// printed them by then is stuck, and waiting on it only stalls the test run.
+var containerStartTimeout = 60 * time.Second
+
+// startTestContainer runs the test container and waits until Postgres reports
+// that it is ready. A container that is not ready within containerStartTimeout
+// is removed, its last log lines are logged, and a new one is started once.
+// It returns the output of docker run.
+func startTestContainer(ctx context.Context, opts *Options, port string) ([]byte, error) {
+	const attempts = 2
+
+	var waitErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		out, err := runTestContainer(ctx, opts, port)
+		if err != nil {
+			return nil, err
+		}
+
+		waitCtx, cancel := context.WithTimeout(ctx, containerStartTimeout)
+		waitErr = waitForLogs(waitCtx, ContainerName, "database system is ready to accept connections", "database system is shut down", "PostgreSQL init process complete; ready for start up")
+		cancel()
+		if waitErr == nil {
+			return out, nil
+		}
+
+		opts.Logger.Logf("test container was not ready within %s (attempt %d of %d): %v\nlast log lines:\n%s",
+			containerStartTimeout, attempt, attempts, waitErr, containerLogTail(ctx))
+
+		if err := removeTestContainer(ctx); err != nil {
+			return nil, errors.Join(fmt.Errorf("error waiting for logs: %w", waitErr), err)
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("error waiting for logs: %w", waitErr)
+}
+
+// runTestContainer starts the test container and returns the output of docker run.
+func runTestContainer(ctx context.Context, opts *Options, port string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, "docker", dockerStartArgs(port)...).Output()
+	if err == nil {
+		return out, nil
+	}
+
+	// docker reports a name conflict on stderr, which Output keeps on the
+	// ExitError; the error's own message is only the exit status.
+	var exitErr *exec.ExitError
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return nil, fmt.Errorf("docker not found. Please ensure Docker is installed and running")
+	case errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), "Conflict. The container name") && opts.ReplaceExistingContainer != nil:
+		// check if the container is in use
+		use, err := opts.ReplaceExistingContainer()
+		if err != nil {
+			return nil, err
+		}
+
+		if !use {
+			return nil, fmt.Errorf(`cannot create test-container: conflicting container name: "%s"`, ContainerName)
+		}
+
+		if err := removeTestContainer(ctx); err != nil {
+			return nil, fmt.Errorf("error removing conflicting container: %w", err)
+		}
+
+		out, err = exec.CommandContext(ctx, "docker", dockerStartArgs(port)...).Output()
+		if err != nil {
+			return nil, fmt.Errorf("error running test container: %w", err)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("failed to get output from container: %w", err)
+	}
+}
+
+// removeTestContainer removes the test container together with its data
+// volume. The image declares a volume for the Postgres data directory, and
+// removing the container without -v leaves that volume behind. It runs even
+// when ctx has ended, so a run that is cut short leaves no container behind.
+func removeTestContainer(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+
+	return exec.CommandContext(ctx, "docker", "rm", "-f", "-v", ContainerName).Run()
+}
+
+// containerLogTail returns the test container's last log lines from both of its
+// streams, to show why it did not start.
+func containerLogTail(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "docker", "logs", "--tail", "50", ContainerName).CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("(docker logs failed: %v) %s", err, out)
+	}
+	return string(out)
 }
 
 // waitForLogs waits for the logs to be received from the container.
@@ -683,7 +745,8 @@ func dockerStartArgs(port string) (args []string) {
 }
 
 // connectWithRetry tries to connect to Postgres, and will retry n times at
-// 1 second intervals if it fails.
+// 100 millisecond intervals if it fails. Postgres accepts connections a moment
+// after the container reports it ready, so the first attempt often fails.
 func connectWithRetry(ctx context.Context, port string, n int) (*pg.DB, error) {
 	var db *pg.DB
 	var err error
@@ -708,7 +771,7 @@ func connectWithRetry(ctx context.Context, port string, n int) (*pg.DB, error) {
 			return nil, err
 		}
 
-		time.Sleep(time.Second)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	return nil, err

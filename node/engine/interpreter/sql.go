@@ -159,20 +159,26 @@ func listNamespaces(ctx context.Context, db sql.DB) ([]struct {
 }
 
 // listTablesInNamespace lists all tables in a namespace.
+//
+// It runs after every CREATE TABLE, CREATE INDEX, ALTER TABLE and DROP INDEX
+// (reloadNamespaceCache), so a migration pays for it once per statement. Each
+// CTE therefore reads only the requested namespace, and a column's primary key
+// flag comes from the table's primary key index: info.columns.is_primary_key
+// gives the same answer through an information_schema lookup per column, which
+// was most of this query's cost.
 func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]*engine.Table, error) {
 	tables := make([]*engine.Table, 0)
 	var schemaName string
 	var tblName string
 	var colNames, dataTypes, indexNames, constraintNames, constraintTypes, fkNames, fkOnUpdate, fkOnDelete []string
 	var indexCols, constraintCols, fkCols [][]string
-	var isNullables, isPrimaryKeys, isPKs, isUniques []bool
+	var isNullables, isPKs, isUniques []bool
 	scans := []any{
 		&schemaName,
 		&tblName,
 		&colNames,
 		&dataTypes,
 		&isNullables,
-		&isPrimaryKeys,
 		&indexNames,
 		&isPKs,
 		&isUniques,
@@ -192,9 +198,9 @@ func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]
 		SELECT c.namespace, c.table_name,
 			json_agg(c.name ORDER BY c.ordinal_position) AS column_names,
 			json_agg(c.data_type ORDER BY c.ordinal_position) AS data_types,
-			json_agg(c.is_nullable ORDER BY c.ordinal_position) AS is_nullables,
-			json_agg(c.is_primary_key ORDER BY c.ordinal_position) AS is_primary_keys
+			json_agg(c.is_nullable ORDER BY c.ordinal_position) AS is_nullables
 		FROM info.columns c
+		WHERE c.namespace = $1
 		GROUP BY c.namespace, c.table_name
 	),
 	indexes AS (
@@ -204,6 +210,7 @@ func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]
 			json_agg(i.is_unique ORDER BY i.name) AS is_uniques,
 			json_agg(i.columns ORDER BY i.name) AS column_names
 		FROM info.indexes i
+		WHERE i.namespace = $1
 		GROUP BY i.namespace, i.table_name
 	), constraints AS (
 		SELECT c.namespace, c.table_name,
@@ -211,6 +218,7 @@ func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]
 			json_agg(c.constraint_type ORDER BY c.name) AS constraint_types,
 			json_agg(c.columns ORDER BY c.name) AS columns
 		FROM info.constraints c
+		WHERE c.namespace = $1
 		GROUP BY c.namespace, c.table_name
 	), foreign_keys AS (
 		SELECT f.namespace, f.table_name,
@@ -219,11 +227,12 @@ func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]
 			json_agg(f.on_update ORDER BY f.name) AS on_updates,
 			json_agg(f.on_delete ORDER BY f.name) AS on_deletes
 		FROM info.foreign_keys f
+		WHERE f.namespace = $1
 		GROUP BY f.namespace, f.table_name
 	)
 	SELECT
 		t.namespace, t.name,
-		c.column_names, c.data_types, c.is_nullables, c.is_primary_keys,
+		c.column_names, c.data_types, c.is_nullables,
 		i.names, i.is_pks, i.is_uniques, i.column_names,
 		co.constraint_names, co.constraint_types, co.columns,
 		f.constraint_names, f.columns, f.on_updates, f.on_deletes
@@ -249,10 +258,9 @@ func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]
 				}
 
 				tbl.Columns = append(tbl.Columns, &engine.Column{
-					Name:         colName,
-					DataType:     dt,
-					Nullable:     isNullables[i],
-					IsPrimaryKey: isPrimaryKeys[i],
+					Name:     colName,
+					DataType: dt,
+					Nullable: isNullables[i],
 				})
 			}
 
@@ -261,6 +269,14 @@ func listTablesInNamespace(ctx context.Context, db sql.DB, namespace string) ([]
 				indexType := engine.BTREE
 				if isPKs[i] {
 					indexType = engine.PRIMARY
+					// the primary key's index covers exactly its columns
+					for _, pkCol := range indexCols[i] {
+						for _, col := range tbl.Columns {
+							if col.Name == pkCol {
+								col.IsPrimaryKey = true
+							}
+						}
+					}
 				} else if isUniques[i] {
 					indexType = engine.UNIQUE_BTREE
 				}
