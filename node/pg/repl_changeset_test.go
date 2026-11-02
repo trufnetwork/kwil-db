@@ -8,10 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/node/types/sql"
+	"github.com/trufnetwork/kwil-db/node/utils/muhash"
 )
 
 func TestChangesetEntry_Serialize(t *testing.T) {
@@ -724,4 +726,61 @@ func TestApplyUpdatesNoopAndToast(t *testing.T) {
 		assert.Equal(t, "UPDATE ds_x.user_attributes SET value = $1 WHERE id = $2 AND value IS NULL", db.stmt)
 		assert.Equal(t, []any{"next", "id-1"}, db.args)
 	})
+}
+
+// decodeOne runs one logical replication message through decodeWALData.
+func decodeOne(msg []byte, writer *changesetIoWriter) (bool, int64, error) {
+	return decodeWALData(muhash.New(), msg, map[uint32]*pglogrepl.RelationMessageV2{},
+		new(walStats), func(string) bool { return true }, writer)
+}
+
+// TestRollbackPreparedLeavesTheNextChangesetAlone checks that the rollback of
+// a prepared transaction does not close the changeset writer's channel. That
+// transaction's changeset was closed at PREPARE. By the time its rollback is
+// decoded, pg.DB may have handed the writer the next transaction's channel.
+func TestRollbackPreparedLeavesTheNextChangesetAlone(t *testing.T) {
+	next := make(chan any, 1)
+	writer := &changesetIoWriter{
+		csChan:   next,
+		metadata: &changesetMetadata{relationIdx: map[[2]string]int{}},
+	}
+
+	msg := []byte{byte(MessageTypeRollbackPrepared), 0} // type, flags
+	msg = binary.BigEndian.AppendUint64(msg, 2)         // end of the prepared transaction
+	msg = binary.BigEndian.AppendUint64(msg, 3)         // end of the rollback
+	msg = binary.BigEndian.AppendUint64(msg, 0)         // prepare time
+	msg = binary.BigEndian.AppendUint64(msg, 0)         // rollback time
+	msg = binary.BigEndian.AppendUint32(msg, 7)         // xid
+	msg = append(msg, "gid\x00"...)
+
+	final, seq, err := decodeOne(msg, writer)
+	require.NoError(t, err)
+	require.False(t, final)
+	require.Equal(t, int64(-1), seq)
+
+	require.NotNil(t, writer.csChan, "the writer dropped the next transaction's changeset")
+	select {
+	case _, open := <-next:
+		require.True(t, open, "the next transaction's changeset was closed")
+	default:
+	}
+}
+
+// TestStreamedTransactionIsAnError checks that every message of a streamed
+// transaction stops decoding. createRepl turns streaming off, and a
+// transaction that arrives in pieces cannot be hashed correctly.
+func TestStreamedTransactionIsAnError(t *testing.T) {
+	for _, m := range []struct {
+		typ  pglogrepl.MessageType
+		size int // body length
+	}{
+		{pglogrepl.MessageTypeStreamStart, 5},
+		{pglogrepl.MessageTypeStreamStop, 0},
+		{pglogrepl.MessageTypeStreamCommit, 29},
+		{pglogrepl.MessageTypeStreamAbort, 8},
+	} {
+		msg := append([]byte{byte(m.typ)}, make([]byte, m.size)...)
+		_, _, err := decodeOne(msg, &changesetIoWriter{})
+		require.ErrorContains(t, err, "unexpected streamed transaction message", "message %q", m.typ)
+	}
 }

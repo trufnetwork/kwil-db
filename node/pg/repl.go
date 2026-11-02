@@ -114,11 +114,20 @@ func createRepl(ctx context.Context, conn *pgconn.PgConn, publicationName, slotN
 	logger.Infof("Created logical replication slot %v at LSN %v (%d)",
 		slotRes.SlotName, slotRes.ConsistentPoint, slotLSN)
 
+	// Streaming stays off, so Postgres sends each transaction whole once it
+	// commits or prepares, without the changes of any savepoint rolled back
+	// in it. captureRepl hashes one transaction at a time and relies on that.
+	// With streaming on, a transaction over logical_decoding_work_mem arrives
+	// in pieces while it is still running. Another transaction's commit can
+	// land between those pieces, and a later rollback to a savepoint
+	// withdraws changes already sent, so each node would hash whatever its
+	// own timing produced. Without streaming, Postgres holds such a
+	// transaction on disk until it ends.
 	pluginArgs := []string{
 		"proto_version '3'",
 		"publication_names '" + publicationName + "'",
 		"messages 'true'",
-		"streaming 'true'",
+		"streaming 'false'",
 	}
 	err = pglogrepl.StartReplication(ctx, conn, slotName, sysident.XLogPos,
 		pglogrepl.StartReplicationOptions{
@@ -152,7 +161,6 @@ func captureRepl(ctx context.Context, conn *pgconn.PgConn, startLSN uint64, comm
 	hasher := muhash.New()
 	relations := map[uint32]*pglogrepl.RelationMessageV2{}
 
-	var inStream bool
 	var seq int64 = -1
 
 	stats := new(walStats)
@@ -231,7 +239,7 @@ func captureRepl(ctx context.Context, conn *pgconn.PgConn, startLSN uint64, comm
 				return fmt.Errorf("ParseXLogData failed: %w", err)
 			}
 
-			final, anySeq, err := decodeWALData(hasher, xld.WALData, relations, &inStream, stats, schemaFilter, writer)
+			final, anySeq, err := decodeWALData(hasher, xld.WALData, relations, stats, schemaFilter, writer)
 			if err != nil {
 				return fmt.Errorf("decodeWALData failed: %w", err)
 			}
@@ -248,8 +256,8 @@ func captureRepl(ctx context.Context, conn *pgconn.PgConn, startLSN uint64, comm
 				clientXLogPos = xld.WALStart
 			}
 
-			// logger.Debugf("XLogData (in stream? %v) => WALStart %s ServerWALEnd %s",
-			// 	inStream, xld.WALStart, xld.ServerWALEnd)
+			// logger.Debugf("XLogData => WALStart %s ServerWALEnd %s",
+			// 	xld.WALStart, xld.ServerWALEnd)
 
 			if final {
 				// This is either a commit of a regular transaction or a
@@ -304,28 +312,12 @@ func (ws *walStats) reset() {
 	*ws = walStats{}
 }
 
-// resetTransactionState cleans up all transaction-related state when a transaction
-// is aborted or rolled back, preventing AppHash divergence from dirty state.
-func resetTransactionState(hasher *muhash.MuHash, stats *walStats, changesetWriter *changesetIoWriter, seq *int64) {
-	hasher.Reset()
-	stats.reset()
-	changesetWriter.finalize()
-	*seq = -1
-
-	// TODO: Add telemetry for state reset events
-	// - Increment state_reset_total counter with reason (abort/rollback)
-	// - Record timestamp and validator ID
-	// - Track frequency to identify patterns
-
-	logger.Debugf("Transaction state reset after abort/rollback")
-}
-
 // decodeWALData decodes a wal data message given known relations, returning
 // true if it was a commit message, or a non-negative seq value if it was a
 // special update message on the internal sentry table
 func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*pglogrepl.RelationMessageV2,
-	inStream *bool, stats *walStats, okSchema func(schema string) bool, changesetWriter *changesetIoWriter) (bool, int64, error) {
-	logicalMsg, err := parseV3(walData, *inStream)
+	stats *walStats, okSchema func(schema string) bool, changesetWriter *changesetIoWriter) (bool, int64, error) {
+	logicalMsg, err := parseV3(walData, false) // false: no streamed transactions, see createRepl
 	if err != nil {
 		return false, 0, fmt.Errorf("parse logical replication message: %w", err)
 	}
@@ -518,34 +510,17 @@ func decodeWALData(hasher *muhash.MuHash, walData []byte, relations map[uint32]*
 			logicalMsg.UserGID, logicalMsg.RollbackLSN, uint64(logicalMsg.RollbackLSN),
 			logicalMsg.EndLSN, uint64(logicalMsg.EndLSN))
 
-		// TODO: Add telemetry/metrics for rollback prepared events
-		// - Increment rollback_prepared_total counter
-		// - Record event with validator ID and timestamp
-		// - Consider surfacing hard error to Precommit for immediate block execution failure
+		// Nothing to undo. The transaction was hashed, and its commit ID
+		// sent, at PREPARE, when its changeset was also closed. By now the
+		// changeset writer may belong to the next transaction, so it is left
+		// alone.
 
-		// Reset transaction state to prevent AppHash divergence
-		resetTransactionState(hasher, stats, changesetWriter, &seq)
-
-	// v2 Stream control messages.  Only expected with large transactions.
-	case *pglogrepl.StreamStartMessageV2:
-		*inStream = true
-		logger.Warnf(" [msg] StreamStartMessageV2: xid %d, first segment? %d", logicalMsg.Xid, logicalMsg.FirstSegment)
-	case *pglogrepl.StreamStopMessageV2:
-		*inStream = false
-		logger.Warnf(" [msg] StreamStopMessageV2")
-	case *pglogrepl.StreamCommitMessageV2:
-		logger.Warnf("Stream commit message: xid %d", logicalMsg.Xid)
-	case *pglogrepl.StreamAbortMessageV2:
-		logger.Warnf("Stream abort message: xid %d", logicalMsg.Xid)
-
-		// TODO: Add telemetry/metrics for stream abort events
-		// - Increment stream_abort_total counter
-		// - Add WAL-free-space telemetry and fail early if below threshold
-		// - Check if abort was caused by disk space exhaustion
-		// - Consider surfacing hard error to Precommit for immediate block execution failure
-
-		// Reset transaction state to prevent AppHash divergence
-		resetTransactionState(hasher, stats, changesetWriter, &seq)
+	// Stream messages come only when streaming is on, and createRepl turns it
+	// off. A transaction sent this way cannot be hashed correctly, so stop
+	// rather than send a commit ID that other nodes would not share.
+	case *pglogrepl.StreamStartMessageV2, *pglogrepl.StreamStopMessageV2,
+		*pglogrepl.StreamCommitMessageV2, *pglogrepl.StreamAbortMessageV2:
+		return false, 0, fmt.Errorf("unexpected streamed transaction message %T", logicalMsg)
 
 	default:
 		logger.Warnf("Unknown message type in pgoutput stream: %T", logicalMsg)
