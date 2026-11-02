@@ -247,4 +247,5 @@ var (
 	ErrRedeclaredPrimaryKey      = errors.New("redeclare primary key")
 	ErrRedeclaredConstraint      = errors.New("redeclared constraint")
 	ErrGrantOrRevoke             = errors.New("grant or revoke error")
+	ErrMaxDepth                  = errors.New("maximum nesting depth exceeded")
 )
