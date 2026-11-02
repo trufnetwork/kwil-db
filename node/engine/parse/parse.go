@@ -73,9 +73,73 @@ func ParseWithErrListener(sql string) (p *ParseResult, err error) {
 		}
 	}()
 
-	p.Statements = parser.Entry().Accept(parseVisitor).([]TopLevelStatement)
+	tree := parser.Entry()
+	if !checkTreeDepth(tree, errLis) {
+		return p, nil
+	}
+
+	p.Statements = tree.Accept(parseVisitor).([]TopLevelStatement)
 
 	return p, nil
+}
+
+// maxParseDepth bounds how deeply rules may nest in the parse tree. The
+// parser, the AST visitor, the planner and the interpreter all recurse over
+// that tree, and a Go stack overflow kills the node instead of panicking, so
+// a deeply nested statement (e.g. a few MB of parentheses in a raw statement)
+// would crash every node that executes it. Real schemas nest under 30 levels.
+const maxParseDepth = 1000
+
+// depthLimiter aborts parsing once rules nest deeper than maxParseDepth, before
+// the parser's own recursion can exhaust the stack. It does not see
+// left-recursive chains such as 1+1+1, which the parser builds in a loop;
+// checkTreeDepth catches those once parsing is done.
+type depthLimiter struct {
+	antlr.BaseParseTreeListener
+	errs  *errorListener
+	depth int
+}
+
+func (d *depthLimiter) EnterEveryRule(ctx antlr.ParserRuleContext) {
+	d.depth++
+	if d.depth > maxParseDepth {
+		d.errs.TokenErr(ctx.GetStart(), ErrMaxDepth, "statement nests deeper than %d levels", maxParseDepth)
+		// unwinds to the deferFn of setupParser, which returns the error above
+		panic(ErrMaxDepth)
+	}
+}
+
+func (d *depthLimiter) ExitEveryRule(antlr.ParserRuleContext) {
+	d.depth--
+}
+
+// checkTreeDepth reports false, and records an error, if the tree is deeper
+// than maxParseDepth. It walks iteratively, since the tree may be too deep to
+// recurse over.
+func checkTreeDepth(root antlr.ParserRuleContext, errs *errorListener) bool {
+	type node struct {
+		ctx   antlr.ParserRuleContext
+		depth int
+	}
+
+	stack := []node{{root, 1}}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if n.depth > maxParseDepth {
+			errs.TokenErr(n.ctx.GetStart(), ErrMaxDepth, "statement nests deeper than %d levels", maxParseDepth)
+			return false
+		}
+
+		for _, child := range n.ctx.GetChildren() {
+			if c, ok := child.(antlr.ParserRuleContext); ok {
+				stack = append(stack, node{c, n.depth + 1})
+			}
+		}
+	}
+
+	return true
 }
 
 func setupParser(sql string) (parser *gen.KuneiformParser, errList *errorListener, parserVisitor *schemaVisitor, deferFn func(any) error, err error) {
@@ -102,6 +166,7 @@ func setupParser(sql string) (parser *gen.KuneiformParser, errList *errorListene
 	parser.AddErrorListener(errList)
 
 	parser.BuildParseTrees = true
+	parser.AddParseListener(&depthLimiter{errs: errList})
 
 	deferFn = func(e any) (err error) {
 		if e != nil {
