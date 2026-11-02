@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/stretchr/testify/require"
+	"github.com/trufnetwork/kwil-db/node/engine/parse/gen"
 )
 
 func nest(open, inner, close string, n int) string {
@@ -41,6 +43,62 @@ func Test_MaxDepth(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+// treeDepth parses sql without any depth limit and returns the depth of the
+// deepest rule in the parse tree, counted the way checkTreeDepth counts it.
+func treeDepth(t *testing.T, sql string) int {
+	lexer := gen.NewKuneiformLexer(antlr.NewInputStream(sql))
+	parser := gen.NewKuneiformParser(antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel))
+	parser.RemoveErrorListeners()
+	errs := newErrorListener("test")
+	parser.AddErrorListener(errs)
+	tree := parser.Entry()
+	require.NoError(t, errs.Err())
+
+	var walk func(ctx antlr.ParserRuleContext, depth int) int
+	walk = func(ctx antlr.ParserRuleContext, depth int) int {
+		deepest := depth
+		for _, child := range ctx.GetChildren() {
+			if c, ok := child.(antlr.ParserRuleContext); ok {
+				deepest = max(deepest, walk(c, depth+1))
+			}
+		}
+		return deepest
+	}
+	return walk(tree, 1)
+}
+
+// Test_MaxDepthBoundary checks that a tree exactly maxParseDepth deep parses
+// and one level deeper does not, for both checks: parentheses are stopped by
+// depthLimiter while parsing, operator chains by checkTreeDepth afterwards.
+func Test_MaxDepthBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  func(n int) string
+	}{
+		{name: "parentheses", sql: func(n int) string { return "SELECT " + nest("(", "1", ")", n) + ";" }},
+		{name: "operator chain", sql: func(n int) string { return "SELECT 1" + strings.Repeat(" + 1", n) + ";" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// each repetition adds the same number of levels, so solve for
+			// the repetition count that reaches maxParseDepth exactly
+			base := treeDepth(t, tt.sql(1))
+			step := treeDepth(t, tt.sql(2)) - base
+			require.Equal(t, 1, step, "boundary test assumes one level per repetition")
+
+			n := 1 + maxParseDepth - base
+			require.Equal(t, maxParseDepth, treeDepth(t, tt.sql(n)))
+
+			_, err := Parse(tt.sql(n))
+			require.NoError(t, err, "a tree exactly maxParseDepth deep must parse")
+
+			_, err = Parse(tt.sql(n + 1))
+			require.ErrorIs(t, err, ErrMaxDepth, "a tree one level deeper must be rejected")
 		})
 	}
 }
