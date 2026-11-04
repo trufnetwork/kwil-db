@@ -71,10 +71,9 @@ END$$;`
 	END;
 	$$ LANGUAGE plpgsql;`
 
-	sqlCreateOrReplaceReplicaIdentity = `CREATE OR REPLACE FUNCTION set_replica_identity()
-RETURNS event_trigger
-LANGUAGE plpgsql
-AS $$
+	// sqlReplicaIdentityFuncBody is the body of set_replica_identity(), as
+	// Postgres keeps it in pg_proc.prosrc.
+	sqlReplicaIdentityFuncBody = `
 DECLARE
     obj record;
 BEGIN
@@ -84,7 +83,23 @@ BEGIN
         EXECUTE 'ALTER TABLE ' || obj.object_identity || ' REPLICA IDENTITY FULL';
     END LOOP;
 END;
-$$;`
+`
+
+	sqlCreateOrReplaceReplicaIdentity = `CREATE OR REPLACE FUNCTION set_replica_identity()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$` + sqlReplicaIdentityFuncBody + `$$;`
+
+	// sqlCheckReplicaIdentityTrigger reads whether the event trigger that
+	// ensureFullReplicaIdentityTrigger creates is enabled, fires on CREATE
+	// TABLE alone, and runs set_replica_identity() with the body given as $1.
+	sqlCheckReplicaIdentityTrigger = `SELECT e.evtenabled = 'O',
+		e.evtevent = 'ddl_command_end' AND e.evttags IS NOT DISTINCT FROM ARRAY['CREATE TABLE'],
+		p.proname = 'set_replica_identity' AND l.lanname = 'plpgsql' AND p.prosrc = $1
+	FROM pg_event_trigger e
+	JOIN pg_proc p ON p.oid = e.evtfoid
+	JOIN pg_language l ON l.oid = p.prolang
+	WHERE e.evtname = 'set_replica_identity_on_create';`
 
 	sqlAlterAllWithReplicaIdentFull = `DO $$
 DECLARE
@@ -101,22 +116,23 @@ BEGIN
 END $$;`
 )
 
-func checkSuperuser(ctx context.Context, conn *pgx.Conn) error {
+// checkRole verifies that the db user/role has the REPLICATION attribute, and
+// reports whether it is a superuser.
+func checkRole(ctx context.Context, conn *pgx.Conn) (superuser bool, err error) {
 	user := conn.Config().User
-	// Verify that the db user/role is superuser with replication privileges.
-	var isSuper, isReplicator bool
-	err := conn.QueryRow(ctx, `SELECT rolsuper, rolreplication FROM pg_roles WHERE rolname = $1;`, user).
-		Scan(&isSuper, &isReplicator)
+	var isReplicator bool
+	err = conn.QueryRow(ctx, `SELECT rolsuper, rolreplication FROM pg_roles WHERE rolname = $1;`, user).
+		Scan(&superuser, &isReplicator)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("postgres role does not exists: %v", user)
+			return false, fmt.Errorf("postgres role does not exists: %v", user)
 		}
-		return fmt.Errorf("unable to verify superuser status of postgres role %v: %w", user, err)
+		return false, fmt.Errorf("unable to verify superuser status of postgres role %v: %w", user, err)
 	}
-	if !isSuper || !isReplicator {
-		return fmt.Errorf("postgres role is not a superuser with replication: %v", user)
+	if !isReplicator {
+		return false, fmt.Errorf("postgres role does not have the REPLICATION attribute: %v", user)
 	}
-	return nil
+	return superuser, nil
 }
 
 func ensureCollation(ctx context.Context, conn *pgx.Conn) error {
@@ -384,6 +400,38 @@ func ensureFullReplicaIdentityTrigger(ctx context.Context, conn *pgx.Conn) error
 
 	_, err = conn.Exec(ctx, sqlCreateEvtTriggerReplIdent)
 	return err
+}
+
+// checkFullReplicaIdentityTrigger is ensureFullReplicaIdentityTrigger for a
+// role that is not a superuser, which may not create an event trigger. It
+// verifies that a superuser created the trigger and its function as
+// ensureFullReplicaIdentityTrigger would. It compares the function's name,
+// language and body, so the function may be in another schema or fix its own
+// search_path.
+func checkFullReplicaIdentityTrigger(ctx context.Context, conn *pgx.Conn) error {
+	var enabled, onCreateTable, runsFunc bool
+	err := conn.QueryRow(ctx, sqlCheckReplicaIdentityTrigger, sqlReplicaIdentityFuncBody).
+		Scan(&enabled, &onCreateTable, &runsFunc)
+	var problem string
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		problem = "does not exist"
+	case err != nil:
+		return fmt.Errorf("failed to read full replication identity trigger: %w", err)
+	case !enabled:
+		problem = "is not enabled as kwild creates it"
+	case !onCreateTable:
+		problem = "does not fire on CREATE TABLE alone"
+	case !runsFunc:
+		problem = "does not run set_replica_identity() as kwild defines it"
+	default:
+		return nil
+	}
+	cfg := conn.Config()
+	return fmt.Errorf("event trigger set_replica_identity_on_create in database %s %s; "+
+		"postgres role %s is not a superuser and cannot set it up, so run "+
+		"deployments/postgres-roles.sql from trufnetwork/node as a superuser, then start kwild again",
+		cfg.Database, problem, cfg.User)
 }
 
 func ensureSentryTable(ctx context.Context, conn *pgx.Conn) error {

@@ -38,8 +38,9 @@ var mets metrics.DBMetrics = metrics.DB
 //     dedicated logical replication connection and slot. The Precommit method
 //     is used to retrieve the commit ID prior to Commit.
 //
-// DB requires a superuser connection to a Postgres database that can perform
-// administrative actions on the database.
+// DB requires a connection to a Postgres database as a role with the
+// REPLICATION attribute. See NewDB for what a role that is not a superuser
+// needs.
 type DB struct {
 	pool *Pool    // raw connection pool
 	repl *replMon // logical replication monitor for collecting commit IDs
@@ -145,8 +146,11 @@ var defaultSchemaFilter = func(schema string) bool {
 // NewDB creates a new Kwil DB instance. On creation, it will connect to the
 // configured postgres process, creating as many connections as specified by the
 // PoolConfig plus a special connection for a logical replication slot receiver.
-// The database user (postgresql "role") must be a super user for several
-// reasons: creating triggers, collations, and the replication publication.
+// The database user (postgresql "role") must have the REPLICATION attribute. A
+// superuser role creates everything kwild needs. Any other role should own the
+// database, and a superuser must first create what only a superuser may: the
+// replication publication, and the event trigger and function that
+// ensureFullReplicaIdentityTrigger creates.
 //
 // WARNING: There must only be ONE instance of a DB for a given postgres
 // database. Transactions that use the Precommit method update an internal table
@@ -183,8 +187,10 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 		return nil, err
 	}
 
-	// Verify that the db user/role is superuser with replication privileges.
-	if err = checkSuperuser(ctx, conn); err != nil {
+	// Verify that the db user/role has replication privileges, and see whether
+	// it is a superuser.
+	superuser, err := checkRole(ctx, conn)
+	if err != nil {
 		return nil, err
 	}
 
@@ -205,8 +211,14 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 
 	// Ensure all tables that are created with no primary key or unique index
 	// are altered to have "full replication identity" for UPDATE and DELETES.
-	if err = ensureFullReplicaIdentityTrigger(ctx, conn); err != nil {
-		return nil, fmt.Errorf("failed to create full replication identity trigger: %w", err)
+	// Only a superuser may create the event trigger that does this, so for any
+	// other role, check that a superuser created it as kwild would.
+	if superuser {
+		if err = ensureFullReplicaIdentityTrigger(ctx, conn); err != nil {
+			return nil, fmt.Errorf("failed to create full replication identity trigger: %w", err)
+		}
+	} else if err = checkFullReplicaIdentityTrigger(ctx, conn); err != nil {
+		return nil, err
 	}
 
 	// Create the publication that is required for logical replication.

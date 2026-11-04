@@ -2350,3 +2350,101 @@ func TestPrecommitWaitsForALargeTransaction(t *testing.T) {
 	// test shows nothing.
 	require.Greater(t, time.Since(t0), commitIDStall)
 }
+
+// TestNewDBReplicationRole opens a DB as a role that has REPLICATION and is not
+// a superuser. Such a role may not create the event trigger that gives new
+// tables full replica identity, so NewDB checks the one a superuser set up.
+func TestNewDBReplicationRole(t *testing.T) {
+	ctx := context.Background()
+	const role, dbName = "kwild_repl_role", "kwil_test_repl_role"
+
+	admin, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
+	require.NoError(t, err)
+	t.Cleanup(func() { admin.Close(ctx) })
+
+	drop := func() error {
+		_, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`)
+		if err == nil {
+			_, err = admin.Exec(ctx, `DROP ROLE IF EXISTS `+role)
+		}
+		return err
+	}
+	require.NoError(t, drop()) // left by an interrupted run
+	t.Cleanup(func() {
+		// A closed DB's replication slot lasts until its walsender exits.
+		assert.Eventually(t, func() bool { return drop() == nil }, 10*time.Second, 100*time.Millisecond)
+	})
+
+	_, err = admin.Exec(ctx, `CREATE ROLE `+role+` LOGIN REPLICATION NOSUPERUSER PASSWORD '`+cfg.Pass+`'`)
+	require.NoError(t, err)
+	_, err = admin.Exec(ctx, `CREATE DATABASE `+dbName+` OWNER `+role)
+	require.NoError(t, err)
+
+	super, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, dbName, false))
+	require.NoError(t, err)
+	defer super.Close(ctx)
+	superExec := func(stmt string) {
+		t.Helper()
+		_, err := super.Exec(ctx, stmt)
+		require.NoError(t, err)
+	}
+
+	// A superuser sets up what the role may not, as the node's
+	// deployments/postgres-roles.sql does: the publication, and the event
+	// trigger with its function, which has a fixed search_path there.
+	superExec(`CREATE PUBLICATION ` + publicationName + ` FOR ALL TABLES`)
+	setUpTrigger := func() {
+		t.Helper()
+		superExec(`CREATE OR REPLACE FUNCTION public.set_replica_identity() RETURNS event_trigger
+			LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$` + sqlReplicaIdentityFuncBody + `$$`)
+		superExec(sqlDropEvtTriggerReplIdent)
+		superExec(sqlCreateEvtTriggerReplIdent)
+	}
+
+	roleCfg := *cfg
+	roleCfg.User, roleCfg.DBName = role, dbName
+
+	// NewDB fails, naming the setup step, while the trigger is missing or not
+	// as kwild creates it.
+	for _, tc := range []struct{ stmt, wantErr string }{
+		{sqlDropEvtTriggerReplIdent, "does not exist"},
+		{`ALTER EVENT TRIGGER set_replica_identity_on_create DISABLE`, "is not enabled"},
+		{`CREATE OR REPLACE FUNCTION public.set_replica_identity() RETURNS event_trigger
+			LANGUAGE plpgsql AS $$ BEGIN END; $$`, "does not run set_replica_identity()"},
+	} {
+		setUpTrigger()
+		superExec(tc.stmt)
+		_, err = NewDB(ctx, &roleCfg)
+		require.ErrorContains(t, err, "set_replica_identity_on_create in database "+dbName+" "+tc.wantErr)
+		require.ErrorContains(t, err, "deployments/postgres-roles.sql")
+	}
+
+	setUpTrigger()
+	db, err := NewDB(ctx, &roleCfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// The role creates a table, and the trigger gives it full replica identity.
+	db.AutoCommit(true)
+	_, err = db.Execute(ctx, `CREATE SCHEMA ds_repl_role`, QueryModeExec)
+	require.NoError(t, err)
+	_, err = db.Execute(ctx, `CREATE TABLE ds_repl_role.test (id INT8 PRIMARY KEY, val TEXT)`, QueryModeExec)
+	require.NoError(t, err)
+	db.AutoCommit(false)
+
+	var ident string
+	err = super.QueryRow(ctx, `SELECT relreplident::text FROM pg_class WHERE oid = 'ds_repl_role.test'::regclass`).Scan(&ident)
+	require.NoError(t, err)
+	require.Equal(t, "f", ident)
+
+	// The role reads the commit ID of a write over logical replication.
+	tx, err := db.BeginPreparedTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx)
+	_, err = tx.Execute(ctx, `INSERT INTO ds_repl_role.test (id, val) VALUES (1, 'hello')`)
+	require.NoError(t, err)
+	cid, err := tx.Precommit(ctx, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, cid)
+	require.NoError(t, tx.Commit(ctx))
+}
