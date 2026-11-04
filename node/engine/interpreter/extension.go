@@ -71,7 +71,7 @@ func initializeExtension(ctx context.Context, svc *common.Service, db sql.DB, i 
 
 				exec2 := exec.subscope(alias)
 
-				return method.Handler(exec2.engineCtx, exec2.app(), argVals, func(a []any) error {
+				return method.Handler(exec2.engineCtx, exec2.methodApp(method.AccessModifiers), argVals, func(a []any) error {
 					// if no return is specified for this method, then the callback should never be called
 					if method.Returns == nil {
 						return fmt.Errorf(`%w: method "%s"."%s" returned no Value, but expected one`, engine.ErrExtensionImplementation, alias, lowerName)

@@ -57,7 +57,7 @@ func (t *ThreadSafeInterpreter) Call(ctx *common.EngineContext, db sql.DB, names
 	}
 	defer unlock()
 
-	return t.i.call(ctx, db, namespace, action, args, resultFn, true)
+	return t.i.call(ctx, db, namespace, action, args, resultFn, nil)
 }
 
 func (t *ThreadSafeInterpreter) CallWithoutEngineCtx(ctx context.Context, db sql.DB, namespace string, action string, args []any, resultFn func(*common.Row) error) (*common.CallResult, error) {
@@ -71,7 +71,7 @@ func (t *ThreadSafeInterpreter) Execute(ctx *common.EngineContext, db sql.DB, st
 	}
 	defer unlock()
 
-	return t.i.execute(ctx, db, statement, params, fn, true)
+	return t.i.execute(ctx, db, statement, params, fn, nil)
 }
 
 func (t *ThreadSafeInterpreter) ExecuteWithoutEngineCtx(ctx context.Context, db sql.DB, statement string, params map[string]any, fn func(*common.Row) error) error {
@@ -85,10 +85,15 @@ type recursiveInterpreter struct {
 	// logs is the slice of logs that the interpreter has written.
 	// It references the slice that will be returned to the caller.
 	logs *[]string
+	// checkNestedCalls is passed on to the calls made through this interpreter.
+	checkNestedCalls bool
+	// callingMethod is the precompile method this interpreter was handed to,
+	// when checkNestedCalls is set. It is nil for extension lifecycle hooks.
+	callingMethod *callingMethod
 }
 
 func (r *recursiveInterpreter) Call(ctx *common.EngineContext, db sql.DB, namespace string, action string, args []any, resultFn func(*common.Row) error) (*common.CallResult, error) {
-	res, err := r.i.call(ctx, db, namespace, action, args, resultFn, false)
+	res, err := r.i.call(ctx, db, namespace, action, args, resultFn, r)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +107,7 @@ func (r *recursiveInterpreter) CallWithoutEngineCtx(ctx context.Context, db sql.
 }
 
 func (r *recursiveInterpreter) Execute(ctx *common.EngineContext, db sql.DB, statement string, params map[string]any, fn func(*common.Row) error) error {
-	return r.i.execute(ctx, db, statement, params, fn, false)
+	return r.i.execute(ctx, db, statement, params, fn, r)
 }
 
 func (r *recursiveInterpreter) ExecuteWithoutEngineCtx(ctx context.Context, db sql.DB, statement string, params map[string]any, fn func(*common.Row) error) error {
@@ -510,7 +515,9 @@ func parseAdhoc(statement string) ([]parse.TopLevelStatement, error) {
 }
 
 // Execute executes a statement against the database.
-func (i *baseInterpreter) execute(ctx *common.EngineContext, db sql.DB, statement string, params map[string]any, fn func(*common.Row) error, toplevel bool) (err error) {
+// from is the interpreter handed to the extension that made this call,
+// or nil for a top-level call.
+func (i *baseInterpreter) execute(ctx *common.EngineContext, db sql.DB, statement string, params map[string]any, fn func(*common.Row) error, from *recursiveInterpreter) (err error) {
 	copied := i.copy()
 	defer func() {
 		noErrOrPanic := true
@@ -550,7 +557,7 @@ func (i *baseInterpreter) execute(ctx *common.EngineContext, db sql.DB, statemen
 		return fmt.Errorf("no valid statements provided: %s", statement)
 	}
 
-	execCtx, err := i.newExecCtx(ctx, db, engine.DefaultNamespace, toplevel)
+	execCtx, err := i.newExecCtx(ctx, db, engine.DefaultNamespace, from)
 	if err != nil {
 		return err
 	}
@@ -617,7 +624,9 @@ func isValidVarName(s string) error {
 
 // Call executes an action against the database.
 // The resultFn is called with the result of the action, if any.
-func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, action string, args []any, resultFn func(*common.Row) error, toplevel bool) (callRes *common.CallResult, err error) {
+// from is the interpreter handed to the extension that made this call,
+// or nil for a top-level call.
+func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, action string, args []any, resultFn func(*common.Row) error, from *recursiveInterpreter) (callRes *common.CallResult, err error) {
 	copied := i.copy()
 	defer func() {
 		// if there is either an error or a panic, then we need
@@ -659,9 +668,14 @@ func (i *baseInterpreter) call(ctx *common.EngineContext, db sql.DB, namespace, 
 	namespace = strings.ToLower(namespace)
 	action = strings.ToLower(action)
 
-	execCtx, err := i.newExecCtx(ctx, db, namespace, toplevel)
+	execCtx, err := i.newExecCtx(ctx, db, namespace, from)
 	if err != nil {
 		return nil, err
+	}
+	if from != nil {
+		// the action or method called here must also be one that the
+		// calling precompile method may call (see canExecute)
+		execCtx.callingMethod = from.callingMethod
 	}
 
 	ns, ok := i.namespaces[namespace]
@@ -754,7 +768,9 @@ func rowToCommonRow(row *row) *common.Row {
 }
 
 // newExecCtx creates a new execution context.
-func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, namespace string, toplevel bool) (*executionContext, error) {
+// from is the interpreter handed to the extension that made the call,
+// or nil for a top-level call.
+func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, namespace string, from *recursiveInterpreter) (*executionContext, error) {
 	am, ok := db.(sql.AccessModer)
 	if !ok {
 		return nil, fmt.Errorf("database does not implement AccessModer")
@@ -770,9 +786,40 @@ func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, nam
 		interpreter:    i,
 		logs:           &logs,
 	}
-	e.scope.isTopLevel = toplevel
+	e.scope.isTopLevel = from == nil
+
+	// The top-level call decides whether nested calls are checked, so an
+	// extension cannot turn the checks off by passing its own engine context.
+	if from == nil {
+		e.checkNestedCalls = i.nestedCallChecksActive(txCtx)
+	} else {
+		e.checkNestedCalls = from.checkNestedCalls
+	}
 
 	return e, nil
+}
+
+// nestedCallChecksActive reports whether the calls that precompile methods make
+// through their engine are checked during a top-level call made with ctx. It
+// follows the height set with precompiles.SetNestedCallChecksHeight for the
+// chain named in ctx or, when ctx names none (as with read-only RPC calls), for
+// the chain this node runs.
+func (i *baseInterpreter) nestedCallChecksActive(ctx *common.EngineContext) bool {
+	if ctx == nil || ctx.TxContext == nil || ctx.TxContext.BlockContext == nil {
+		return false
+	}
+	block := ctx.TxContext.BlockContext
+
+	var chainID string
+	if block.ChainContext != nil {
+		chainID = block.ChainContext.ChainID
+	}
+	if chainID == "" && i.service != nil && i.service.GenesisConfig != nil {
+		chainID = i.service.GenesisConfig.ChainID
+	}
+
+	activation, ok := precompiles.NestedCallChecksHeight(chainID)
+	return ok && block.Height >= activation
 }
 
 // syncNamespaceManager syncs all current namespaces with the namespace manager.
