@@ -47,6 +47,42 @@ func Test_LegacySQL(t *testing.T) {
 			sql:    "SELECT array_agg(name) FROM users;",
 			legacy: "\nSELECT array_agg(name ORDER BY name)\nFROM users\n;",
 		},
+		// aggregates with DISTINCT and no ORDER BY of their own
+		{
+			name:   "count with DISTINCT",
+			sql:    "SELECT count(DISTINCT id) FROM users;",
+			legacy: "\nSELECT count(DISTINCT id)\nFROM users\n;",
+		},
+		{
+			name:   "sum with DISTINCT",
+			sql:    "SELECT sum(DISTINCT id) FROM users;",
+			legacy: "\nSELECT sum(DISTINCT id)\nFROM users\n;",
+		},
+		{
+			name:   "min with DISTINCT",
+			sql:    "SELECT min(DISTINCT id) FROM users;",
+			legacy: "\nSELECT min(DISTINCT id)\nFROM users\n;",
+		},
+		{
+			name:   "max with DISTINCT",
+			sql:    "SELECT max(DISTINCT id) FROM users;",
+			legacy: "\nSELECT max(DISTINCT id)\nFROM users\n;",
+		},
+		{
+			name:   "avg with DISTINCT",
+			sql:    "SELECT avg(DISTINCT id) FROM users;",
+			legacy: "\nSELECT avg(DISTINCT id)\nFROM users\n;",
+		},
+		{
+			name:   "string_agg with DISTINCT",
+			sql:    "SELECT string_agg(DISTINCT name, ',') FROM users;",
+			legacy: "\nSELECT string_agg(DISTINCT name, ',')\nFROM users\n;",
+		},
+		{
+			name:   "array_agg with DISTINCT has no default ordering",
+			sql:    "SELECT array_agg(DISTINCT name) FROM users;",
+			legacy: "\nSELECT array_agg(DISTINCT name)\nFROM users\n;",
+		},
 		{
 			name:    "literal with an open parenthesis",
 			sql:     "SELECT array_agg('(' ORDER BY id) FROM users;",
