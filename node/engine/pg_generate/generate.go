@@ -22,6 +22,21 @@ type GetVarFunc func(varName string) (dataType *types.DataType, err error)
 // It will return the ordered parameters in the order they appear in the statement.
 // It will also qualify the table names with the pgSchema.
 func GenerateSQL(ast parse.Node, pgSchema string, getVar GetVarFunc) (stmt string, params []string, err error) {
+	return generate(ast, pgSchema, getVar, false)
+}
+
+// GenerateLegacySQL generates SQL from an AST exactly as releases before the
+// generator upgrade did. A statement that may change state in a block below
+// its chain's upgrade height (see LegacyAt) is generated with it, so that the
+// block replays with the same results. It differs from GenerateSQL in two
+// ways: it writes every identifier unquoted, and it formats an aggregate call
+// without its own ORDER BY and then places the ORDER BY by searching the
+// formatted call's text.
+func GenerateLegacySQL(ast parse.Node, pgSchema string, getVar GetVarFunc) (stmt string, params []string, err error) {
+	return generate(ast, pgSchema, getVar, true)
+}
+
+func generate(ast parse.Node, pgSchema string, getVar GetVarFunc, legacy bool) (stmt string, params []string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// we should try to preserve any errors
@@ -36,6 +51,7 @@ func GenerateSQL(ast parse.Node, pgSchema string, getVar GetVarFunc) (stmt strin
 	s := &sqlGenerator{
 		pgSchema: pgSchema,
 		getVar:   getVar,
+		legacy:   legacy,
 	}
 
 	stmt = ast.Accept(s).(string)
@@ -51,6 +67,9 @@ type sqlGenerator struct {
 	// would have orderedParams = ["$1", "$2"]
 	orderedParams []string
 	getVar        GetVarFunc
+	// legacy is true if the SQL is generated as releases before the
+	// generator upgrade did. See GenerateLegacySQL.
+	legacy bool
 }
 
 func (s *sqlGenerator) VisitExpressionLiteral(p0 *parse.ExpressionLiteral) any {
@@ -98,80 +117,19 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 	case *engine.ScalarFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
 	case *engine.AggregateFunctionDefinition:
-		pgFmt, err = fn.PGFormatFunc(args, p0.Distinct)
-		if err == nil && len(p0.OrderBy) > 0 {
-			// Render ORDER BY terms from parse.OrderingTerm (AST nodes)
-			var ob []string
-			for _, term := range p0.OrderBy {
-				ob = append(ob, term.Accept(s).(string))
-			}
-			// Replace/append ORDER BY strictly within the function's own parentheses (balanced scan)
-			closeIdx := strings.LastIndex(pgFmt, ")")
-			if closeIdx > -1 {
-				// find matching '(' for that last ')'
-				depth := 0
-				openIdx := -1
-			scan:
-				for i := closeIdx; i >= 0; i-- {
-					switch pgFmt[i] {
-					case ')':
-						depth++
-					case '(':
-						depth--
-						if depth == 0 {
-							openIdx = i
-							break scan
-						}
-					}
-				}
-				if openIdx >= 0 {
-					// work on contents without surrounding parens
-					inner := pgFmt[openIdx+1 : closeIdx]
-					// find a top-level " ORDER BY " (not inside nested parens)
-					obIdx := -1
-					depth2 := 0
-					for i := 0; i+10 <= len(inner); i++ {
-						switch inner[i] {
-						case '(':
-							depth2++
-						case ')':
-							if depth2 > 0 {
-								depth2--
-							}
-						}
-						if depth2 == 0 && strings.HasPrefix(inner[i:], " ORDER BY ") {
-							obIdx = i
-							break
-						}
-					}
-					if obIdx >= 0 {
-						inner = inner[:obIdx] + " ORDER BY " + strings.Join(ob, ", ")
-					} else {
-						inner = strings.TrimRight(inner, " ")
-						if inner != "" {
-							inner = inner + " ORDER BY " + strings.Join(ob, ", ")
-						} else {
-							inner = "ORDER BY " + strings.Join(ob, ", ")
-						}
-					}
-					pgFmt = pgFmt[:openIdx+1] + inner + pgFmt[closeIdx:]
-				} else {
-					// Fallback: append ORDER BY at the end
-					if prefix, ok := strings.CutSuffix(pgFmt, ")"); ok {
-						pgFmt = prefix + " ORDER BY " + strings.Join(ob, ", ") + ")"
-					} else {
-						pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
-					}
-				}
-			} else {
-				// Fallback: append ORDER BY at the end
-				if prefix, ok := strings.CutSuffix(pgFmt, ")"); ok {
-					pgFmt = prefix + " ORDER BY " + strings.Join(ob, ", ") + ")"
-				} else {
-					pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
-				}
-			}
+		if s.legacy {
+			pgFmt, err = s.legacyAggregateCall(fn, p0, args)
+			break
 		}
+		// The call's own ORDER BY terms are rendered from the AST, after the
+		// arguments, and passed to the format function, which places them
+		// inside the call's parentheses. The formatted call is used as is,
+		// so every argument, string literals included, is kept whole.
+		var orderBy []string
+		for _, term := range p0.OrderBy {
+			orderBy = append(orderBy, term.Accept(s).(string))
+		}
+		pgFmt, err = fn.PGFormatFunc(args, p0.Distinct, orderBy)
 	case *engine.WindowFunctionDefinition:
 		pgFmt, err = fn.PGFormatFunc(args)
 	case *engine.TableValuedFunctionDefinition:
@@ -187,6 +145,92 @@ func (s *sqlGenerator) VisitExpressionFunctionCall(p0 *parse.ExpressionFunctionC
 	typeCast(p0, &str)
 
 	return str.String()
+}
+
+// legacyAggregateCall formats an aggregate call as releases before the
+// generator upgrade did: the call is formatted without its own ORDER BY,
+// whose terms are then rendered and placed by searching the formatted text
+// for the call's parentheses and for an ORDER BY already in it. It must keep
+// producing the same SQL, since blocks below the upgrade height replay with it.
+func (s *sqlGenerator) legacyAggregateCall(fn *engine.AggregateFunctionDefinition, p0 *parse.ExpressionFunctionCall, args []string) (string, error) {
+	pgFmt, err := fn.PGFormatFunc(args, p0.Distinct, nil)
+	if err != nil || len(p0.OrderBy) == 0 {
+		return pgFmt, err
+	}
+
+	// Render ORDER BY terms from parse.OrderingTerm (AST nodes)
+	var ob []string
+	for _, term := range p0.OrderBy {
+		ob = append(ob, term.Accept(s).(string))
+	}
+	// Replace/append ORDER BY strictly within the function's own parentheses (balanced scan)
+	closeIdx := strings.LastIndex(pgFmt, ")")
+	if closeIdx > -1 {
+		// find matching '(' for that last ')'
+		depth := 0
+		openIdx := -1
+	scan:
+		for i := closeIdx; i >= 0; i-- {
+			switch pgFmt[i] {
+			case ')':
+				depth++
+			case '(':
+				depth--
+				if depth == 0 {
+					openIdx = i
+					break scan
+				}
+			}
+		}
+		if openIdx >= 0 {
+			// work on contents without surrounding parens
+			inner := pgFmt[openIdx+1 : closeIdx]
+			// find a top-level " ORDER BY " (not inside nested parens)
+			obIdx := -1
+			depth2 := 0
+			for i := 0; i+10 <= len(inner); i++ {
+				switch inner[i] {
+				case '(':
+					depth2++
+				case ')':
+					if depth2 > 0 {
+						depth2--
+					}
+				}
+				if depth2 == 0 && strings.HasPrefix(inner[i:], " ORDER BY ") {
+					obIdx = i
+					break
+				}
+			}
+			if obIdx >= 0 {
+				inner = inner[:obIdx] + " ORDER BY " + strings.Join(ob, ", ")
+			} else {
+				inner = strings.TrimRight(inner, " ")
+				if inner != "" {
+					inner = inner + " ORDER BY " + strings.Join(ob, ", ")
+				} else {
+					inner = "ORDER BY " + strings.Join(ob, ", ")
+				}
+			}
+			pgFmt = pgFmt[:openIdx+1] + inner + pgFmt[closeIdx:]
+		} else {
+			// Fallback: append ORDER BY at the end
+			if prefix, ok := strings.CutSuffix(pgFmt, ")"); ok {
+				pgFmt = prefix + " ORDER BY " + strings.Join(ob, ", ") + ")"
+			} else {
+				pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
+			}
+		}
+	} else {
+		// Fallback: append ORDER BY at the end
+		if prefix, ok := strings.CutSuffix(pgFmt, ")"); ok {
+			pgFmt = prefix + " ORDER BY " + strings.Join(ob, ", ") + ")"
+		} else {
+			pgFmt = pgFmt + " ORDER BY " + strings.Join(ob, ", ")
+		}
+	}
+
+	return pgFmt, nil
 }
 
 // typeCast adds a typecast to the string builder if the typecast is not nil
@@ -246,7 +290,7 @@ func (s *sqlGenerator) VisitWindowImpl(p0 *parse.WindowImpl) any {
 }
 
 func (s *sqlGenerator) VisitWindowReference(p0 *parse.WindowReference) any {
-	return p0.Name
+	return s.ident(p0.Name)
 }
 
 func (s *sqlGenerator) VisitExpressionVariable(p0 *parse.ExpressionVariable) any {
@@ -340,7 +384,7 @@ func (s *sqlGenerator) VisitExpressionFieldAccess(p0 *parse.ExpressionFieldAcces
 	str := strings.Builder{}
 	str.WriteString(p0.Record.Accept(s).(string))
 	str.WriteString(".")
-	str.WriteString(p0.Field)
+	str.WriteString(s.ident(p0.Field))
 	typeCast(p0, &str)
 	return str.String()
 }
@@ -399,10 +443,10 @@ func (s *sqlGenerator) VisitExpressionUnary(p0 *parse.ExpressionUnary) any {
 func (s *sqlGenerator) VisitExpressionColumn(p0 *parse.ExpressionColumn) any {
 	str := strings.Builder{}
 	if p0.Table != "" {
-		str.WriteString(p0.Table)
+		str.WriteString(s.ident(p0.Table))
 		str.WriteString(".")
 	}
-	str.WriteString(p0.Column)
+	str.WriteString(s.ident(p0.Column))
 	typeCast(p0, &str)
 	return str.String()
 }
@@ -411,7 +455,7 @@ func (s *sqlGenerator) VisitExpressionCollate(p0 *parse.ExpressionCollate) any {
 	str := strings.Builder{}
 	str.WriteString(p0.Expression.Accept(s).(string))
 	str.WriteString(" COLLATE ")
-	str.WriteString(p0.Collation)
+	str.WriteString(s.ident(p0.Collation))
 	return str.String()
 }
 
@@ -523,14 +567,14 @@ func (s *sqlGenerator) VisitExpressionCase(p0 *parse.ExpressionCase) any {
 
 func (s *sqlGenerator) VisitCommonTableExpression(p0 *parse.CommonTableExpression) any {
 	str := strings.Builder{}
-	str.WriteString(p0.Name)
+	str.WriteString(s.ident(p0.Name))
 	if p0.Columns != nil {
 		str.WriteString(" (")
 		for i, col := range p0.Columns {
 			if i > 0 {
 				str.WriteString(", ")
 			}
-			str.WriteString(col)
+			str.WriteString(s.ident(col))
 		}
 		str.WriteString(")")
 	}
@@ -646,7 +690,7 @@ func (s *sqlGenerator) VisitSelectCore(p0 *parse.SelectCore) any {
 			if i > 0 {
 				str.WriteString(", ")
 			}
-			str.WriteString(window.Name)
+			str.WriteString(s.ident(window.Name))
 			str.WriteString(" AS ")
 			str.WriteString(window.Window.Accept(s).(string))
 		}
@@ -660,7 +704,7 @@ func (s *sqlGenerator) VisitResultColumnExpression(p0 *parse.ResultColumnExpress
 	str.WriteString(p0.Expression.Accept(s).(string))
 	if p0.Alias != "" {
 		str.WriteString(" AS ")
-		str.WriteString(p0.Alias)
+		str.WriteString(s.ident(p0.Alias))
 	}
 	return str.String()
 }
@@ -668,7 +712,7 @@ func (s *sqlGenerator) VisitResultColumnExpression(p0 *parse.ResultColumnExpress
 func (s *sqlGenerator) VisitResultColumnWildcard(p0 *parse.ResultColumnWildcard) any {
 	str := strings.Builder{}
 	if p0.Table != "" {
-		str.WriteString(p0.Table)
+		str.WriteString(s.ident(p0.Table))
 		str.WriteString(".")
 	}
 	str.WriteString("*")
@@ -681,15 +725,15 @@ func (s *sqlGenerator) VisitRelationTable(p0 *parse.RelationTable) any {
 	// be a common table expression. The planner qualifies the table names.
 	// If no Namespace is set, it is likely a CTE
 	if p0.Namespace != "" {
-		str.WriteString(p0.Namespace)
+		str.WriteString(s.ident(p0.Namespace))
 		str.WriteString(".")
 	}
 	// we do not set the pgschema here because we want to allow for CTEs
 	// Therefore, the pgschema must be set here using the planner
-	str.WriteString(p0.Table)
+	str.WriteString(s.ident(p0.Table))
 	if p0.Alias != "" {
 		str.WriteString(" AS ")
-		str.WriteString(p0.Alias)
+		str.WriteString(s.ident(p0.Alias))
 	}
 	return str.String()
 }
@@ -701,7 +745,7 @@ func (s *sqlGenerator) VisitRelationSubquery(p0 *parse.RelationSubquery) any {
 	str.WriteString(") ")
 	if p0.Alias != "" {
 		str.WriteString("AS ")
-		str.WriteString(p0.Alias)
+		str.WriteString(s.ident(p0.Alias))
 	}
 	return str.String()
 }
@@ -718,14 +762,19 @@ func (s *sqlGenerator) VisitRelationTableFunction(p0 *parse.RelationTableFunctio
 	if p0.Alias != "" || len(p0.ColumnAliases) > 0 {
 		str.WriteString(" AS ")
 		if p0.Alias != "" {
-			str.WriteString(p0.Alias)
+			str.WriteString(s.ident(p0.Alias))
 		} else {
 			str.WriteString("t") // Default table alias
 		}
 
 		if len(p0.ColumnAliases) > 0 {
 			str.WriteString("(")
-			str.WriteString(strings.Join(p0.ColumnAliases, ", "))
+			for i, col := range p0.ColumnAliases {
+				if i > 0 {
+					str.WriteString(", ")
+				}
+				str.WriteString(s.ident(col))
+			}
 			str.WriteString(")")
 		}
 	}
@@ -749,13 +798,13 @@ func (s *sqlGenerator) VisitUpdateStatement(p0 *parse.UpdateStatement) any {
 	str := strings.Builder{}
 	str.WriteString("UPDATE ")
 	if s.pgSchema != "" {
-		str.WriteString(s.pgSchema)
+		str.WriteString(s.ident(s.pgSchema))
 		str.WriteString(".")
 	}
-	str.WriteString(p0.Table)
+	str.WriteString(s.ident(p0.Table))
 	if p0.Alias != "" {
 		str.WriteString(" AS ")
-		str.WriteString(p0.Alias)
+		str.WriteString(s.ident(p0.Alias))
 	}
 	str.WriteString("\nSET ")
 	for i, set := range p0.SetClause {
@@ -785,7 +834,7 @@ func (s *sqlGenerator) VisitUpdateStatement(p0 *parse.UpdateStatement) any {
 
 func (s *sqlGenerator) VisitUpdateSetClause(p0 *parse.UpdateSetClause) any {
 	str := strings.Builder{}
-	str.WriteString(p0.Column)
+	str.WriteString(s.ident(p0.Column))
 	str.WriteString(" = ")
 	str.WriteString(p0.Value.Accept(s).(string))
 	return str.String()
@@ -796,14 +845,14 @@ func (s *sqlGenerator) VisitDeleteStatement(p0 *parse.DeleteStatement) any {
 	str.WriteString("DELETE FROM ")
 
 	if s.pgSchema != "" {
-		str.WriteString(s.pgSchema)
+		str.WriteString(s.ident(s.pgSchema))
 		str.WriteString(".")
 	}
 
-	str.WriteString(p0.Table)
+	str.WriteString(s.ident(p0.Table))
 	if p0.Alias != "" {
 		str.WriteString(" AS ")
-		str.WriteString(p0.Alias)
+		str.WriteString(s.ident(p0.Alias))
 	}
 
 	if p0.From != nil {
@@ -828,14 +877,14 @@ func (s *sqlGenerator) VisitInsertStatement(p0 *parse.InsertStatement) any {
 	str := strings.Builder{}
 	str.WriteString("INSERT INTO ")
 	if s.pgSchema != "" {
-		str.WriteString(s.pgSchema)
+		str.WriteString(s.ident(s.pgSchema))
 		str.WriteString(".")
 	}
 
-	str.WriteString(p0.Table)
+	str.WriteString(s.ident(p0.Table))
 	if p0.Alias != "" {
 		str.WriteString(" AS ")
-		str.WriteString(p0.Alias)
+		str.WriteString(s.ident(p0.Alias))
 	}
 	if len(p0.Columns) > 0 {
 		str.WriteString(" (")
@@ -844,7 +893,7 @@ func (s *sqlGenerator) VisitInsertStatement(p0 *parse.InsertStatement) any {
 			if i > 0 {
 				str.WriteString(", ")
 			}
-			str.WriteString(col)
+			str.WriteString(s.ident(col))
 		}
 
 		str.WriteString(") ")
@@ -887,7 +936,7 @@ func (s *sqlGenerator) VisitUpsertClause(p0 *parse.OnConflict) any {
 			if i > 0 {
 				str.WriteString(", ")
 			}
-			str.WriteString(col)
+			str.WriteString(s.ident(col))
 		}
 		str.WriteString(")\n")
 
