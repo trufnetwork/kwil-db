@@ -87,6 +87,13 @@ type executionContext struct {
 	savepointCounter int
 	// inAction is true if the execution is currently in an action.
 	inAction bool
+	// checkNestedCalls is true if the calls that precompile methods make through
+	// their engine must be ones those methods may make. It is decided by the
+	// top-level call and passed on to every nested call.
+	checkNestedCalls bool
+	// callingMethod is the precompile method whose engine made this call, when
+	// checkNestedCalls is set. canExecute checks the called action against it.
+	callingMethod *callingMethod
 }
 
 // subscope creates a new subscope execution context.
@@ -96,13 +103,14 @@ type executionContext struct {
 // It is used for when an action calls another action / extension method.
 func (e *executionContext) subscope(namespace string) *executionContext {
 	return &executionContext{
-		engineCtx:      e.engineCtx,
-		scope:          newScope(namespace),
-		canMutateState: e.canMutateState,
-		db:             e.db,
-		interpreter:    e.interpreter,
-		logs:           e.logs,
-		inAction:       true,
+		engineCtx:        e.engineCtx,
+		scope:            newScope(namespace),
+		canMutateState:   e.canMutateState,
+		db:               e.db,
+		interpreter:      e.interpreter,
+		logs:             e.logs,
+		inAction:         true,
+		checkNestedCalls: e.checkNestedCalls,
 	}
 }
 
@@ -1095,6 +1103,18 @@ func (e *executionContext) canExecute(newNamespace, actionName string, modifiers
 		return fmt.Errorf("%w: action %s is system-only", engine.ErrActionSystemOnly, actionName)
 	}
 
+	// a call that a precompile method makes through its engine must also be one
+	// the method may make: a private action only in the method's own namespace,
+	// and a system action only from a method that users cannot call directly.
+	if m := e.callingMethod; m != nil {
+		if modifiers.Has(precompiles.PRIVATE) && m.namespace != newNamespace {
+			return fmt.Errorf("%w: action %s is private", engine.ErrActionPrivate, actionName)
+		}
+		if modifiers.Has(precompiles.SYSTEM) && m.modifiers.Has(precompiles.PUBLIC) {
+			return fmt.Errorf("%w: action %s is system-only", engine.ErrActionSystemOnly, actionName)
+		}
+	}
+
 	// if the action is owner only, then check if the user is the owner
 	if modifiers.Has(precompiles.OWNER) && !e.interpreter.accessController.IsOwner(e.engineCtx.TxContext.Caller) {
 		return fmt.Errorf("%w: action %s can only be executed by the owner", engine.ErrActionOwnerOnly, actionName)
@@ -1104,17 +1124,43 @@ func (e *executionContext) canExecute(newNamespace, actionName string, modifiers
 }
 
 func (e *executionContext) app() *common.App {
+	return e.appFor(nil)
+}
+
+// methodApp returns the app handed to a precompile method of the current
+// namespace. When nested calls are checked, the calls the method makes through
+// the app's engine must be ones a method with these modifiers may make.
+func (e *executionContext) methodApp(modifiers precompiles.Modifiers) *common.App {
+	var m *callingMethod
+	if e.checkNestedCalls {
+		m = &callingMethod{namespace: e.scope.namespace, modifiers: modifiers}
+	}
+	return e.appFor(m)
+}
+
+func (e *executionContext) appFor(m *callingMethod) *common.App {
 	// we need to wait until we make changes to the engine interface for extensions before we can implement this
 	return &common.App{
 		Service: e.interpreter.service,
 		DB:      e.db,
 		Engine: &recursiveInterpreter{
-			i:    e.interpreter,
-			logs: e.logs,
+			i:                e.interpreter,
+			logs:             e.logs,
+			checkNestedCalls: e.checkNestedCalls,
+			callingMethod:    m,
 		},
 		Accounts:   e.interpreter.accounts,
 		Validators: e.interpreter.validators,
 	}
+}
+
+// callingMethod is a precompile method that calls an action or another method
+// through its engine.
+type callingMethod struct {
+	// namespace is the namespace of the method's extension.
+	namespace string
+	// modifiers are the method's access modifiers.
+	modifiers precompiles.Modifiers
 }
 
 // getVarFromScope recursively searches the scopes for a variable.
