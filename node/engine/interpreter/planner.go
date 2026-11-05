@@ -12,7 +12,6 @@ import (
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
-	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
 )
 
 // makeActionToExecutable creates an executable from an action
@@ -1610,7 +1609,7 @@ func (i *interpreterPlanner) VisitSQLStatement(p0 *parse.SQLStatement) any {
 // genAndExec generates and executes a DML statement.
 // It should only be used for DDL statements, which do not bind or return values.
 func genAndExec(exec *executionContext, stmt parse.TopLevelStatement) error {
-	sql, _, err := pggenerate.GenerateSQL(stmt, exec.scope.namespace, exec.getVariableType)
+	sql, _, err := exec.generateSQL(stmt, exec.legacySQL())
 	if err != nil {
 		return fmt.Errorf("%w: %w", engine.ErrPGGen, err)
 	}

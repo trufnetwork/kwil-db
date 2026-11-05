@@ -11,6 +11,7 @@ import (
 	"github.com/trufnetwork/kwil-db/node/engine"
 	"github.com/trufnetwork/kwil-db/node/engine/parse"
 	pggenerate "github.com/trufnetwork/kwil-db/node/engine/pg_generate"
+	"github.com/trufnetwork/kwil-db/node/engine/planner/logical"
 )
 
 func Test_PgGenerate(t *testing.T) {
@@ -512,30 +513,64 @@ func Test_OrderBySafeInsertion(t *testing.T) {
 	}
 }
 
-func Test_OrderByFallbackInsertion(t *testing.T) {
-	const (
-		unmatchedParenFn = "test_order_by_unmatched_paren"
-		noClosingParenFn = "test_order_by_no_closing_paren"
-	)
+// Test_OrderByPassedToAggregateFormat checks that the ORDER BY terms of an
+// aggregate call are rendered from the AST and passed to the aggregate's
+// format function, and that the generator uses its result as is.
+func Test_OrderByPassedToAggregateFormat(t *testing.T) {
+	const fnName = "test_order_by_terms"
 
-	engine.Functions[unmatchedParenFn] = &engine.AggregateFunctionDefinition{
+	var gotInputs, gotOrderBy []string
+	var gotDistinct bool
+	engine.Functions[fnName] = &engine.AggregateFunctionDefinition{
 		ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
 			return types.TextType, nil
 		},
-		PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
-			return "test_aggregate)", nil
-		},
-	}
-	engine.Functions[noClosingParenFn] = &engine.AggregateFunctionDefinition{
-		ValidateArgsFunc: func(args []*types.DataType) (*types.DataType, error) {
-			return types.TextType, nil
-		},
-		PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
+		PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
+			gotInputs, gotDistinct, gotOrderBy = inputs, distinct, orderBy
 			return "test_aggregate", nil
 		},
 	}
-	defer delete(engine.Functions, unmatchedParenFn)
-	defer delete(engine.Functions, noClosingParenFn)
+	defer delete(engine.Functions, fnName)
+
+	generate := func(t *testing.T, sql string) (string, []string) {
+		stmts, err := parse.Parse(sql)
+		require.NoError(t, err)
+		require.Len(t, stmts, 1)
+
+		got, params, err := pggenerate.GenerateSQL(stmts[0], "kwil", func(varName string) (*types.DataType, error) {
+			return types.TextType, nil
+		})
+		require.NoError(t, err)
+		return got, params
+	}
+
+	t.Run("with ORDER BY", func(t *testing.T) {
+		got, params := generate(t, "SELECT "+fnName+"(DISTINCT $a, 'x' ORDER BY $b DESC NULLS LAST, lower(name)) FROM users;")
+		require.Equal(t, "\nSELECT test_aggregate\nFROM users\n;", got)
+		require.True(t, gotDistinct)
+		require.Equal(t, []string{"$1::TEXT", "'x'"}, gotInputs)
+		require.Equal(t, []string{"$2::TEXT DESC NULLS LAST", "lower(name)"}, gotOrderBy)
+		// the arguments are numbered before the ORDER BY terms
+		require.Equal(t, []string{"$a", "$b"}, params)
+	})
+
+	t.Run("without ORDER BY", func(t *testing.T) {
+		got, params := generate(t, "SELECT "+fnName+"(name) FROM users;")
+		require.Equal(t, "\nSELECT test_aggregate\nFROM users\n;", got)
+		require.False(t, gotDistinct)
+		require.Equal(t, []string{"name"}, gotInputs)
+		require.Empty(t, gotOrderBy)
+		require.Empty(t, params)
+	})
+}
+
+// Test_OrderByStringLiteralArgs checks that an explicit ORDER BY inside an
+// aggregate call leaves string literal arguments intact when their text
+// contains the words ORDER BY, a quote or a parenthesis.
+func Test_OrderByStringLiteralArgs(t *testing.T) {
+	getVar := func(varName string) (*types.DataType, error) {
+		return types.TextType, nil
+	}
 
 	tests := []struct {
 		name string
@@ -543,14 +578,29 @@ func Test_OrderByFallbackInsertion(t *testing.T) {
 		want string
 	}{
 		{
-			name: "unmatched closing parenthesis",
-			sql:  "SELECT " + unmatchedParenFn + "(name ORDER BY id) FROM users;",
-			want: "\nSELECT test_aggregate ORDER BY id)\nFROM users\n;",
+			name: "array_agg literal containing ORDER BY",
+			sql:  "SELECT array_agg('a ORDER BY b' ORDER BY id) FROM users;",
+			want: "\nSELECT array_agg('a ORDER BY b' ORDER BY id)\nFROM users\n;",
 		},
 		{
-			name: "no closing parenthesis",
-			sql:  "SELECT " + noClosingParenFn + "(name ORDER BY id) FROM users;",
-			want: "\nSELECT test_aggregate ORDER BY id\nFROM users\n;",
+			name: "array_agg literal containing ORDER BY followed by another literal",
+			sql:  "SELECT array_agg('a ORDER BY b' ORDER BY id) FROM users WHERE name = 'c';",
+			want: "\nSELECT array_agg('a ORDER BY b' ORDER BY id)\nFROM users\nWHERE name = 'c'\n;",
+		},
+		{
+			name: "string_agg literal containing ORDER BY",
+			sql:  "SELECT string_agg('a ORDER BY b', ', ' ORDER BY id) FROM users;",
+			want: "\nSELECT string_agg('a ORDER BY b', ', ' ORDER BY id)\nFROM users\n;",
+		},
+		{
+			name: "array_agg literal containing an open parenthesis",
+			sql:  "SELECT array_agg('(' ORDER BY id) FROM users;",
+			want: "\nSELECT array_agg('(' ORDER BY id)\nFROM users\n;",
+		},
+		{
+			name: "array_agg literal containing a close parenthesis",
+			sql:  "SELECT array_agg(')' ORDER BY id) FROM users;",
+			want: "\nSELECT array_agg(')' ORDER BY id)\nFROM users\n;",
 		},
 	}
 
@@ -560,12 +610,281 @@ func Test_OrderByFallbackInsertion(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, stmts, 1)
 
-			got, params, err := pggenerate.GenerateSQL(stmts[0], "kwil", func(varName string) (*types.DataType, error) {
-				return types.TextType, nil
+			got, params, err := pggenerate.GenerateSQL(stmts[0], "kwil", getVar)
+			require.NoError(t, err)
+			// Each literal is written with its inner quotes doubled, so a
+			// complete statement always holds an even number of quotes.
+			require.Zero(t, strings.Count(got, "'")%2, "unterminated string literal in %q", got)
+			require.Equal(t, tt.want, got)
+			require.Empty(t, params)
+		})
+	}
+
+	// A literal whose value holds a quote is written with that quote doubled.
+	t.Run("array_agg literal containing a quote and ORDER BY", func(t *testing.T) {
+		call := &parse.ExpressionFunctionCall{
+			Name: "array_agg",
+			Args: []parse.Expression{
+				&parse.ExpressionLiteral{Type: types.TextType, Value: "it's ORDER BY b"},
+			},
+			OrderBy: []*parse.OrderingTerm{
+				{Expression: &parse.ExpressionColumn{Column: "id"}},
+			},
+		}
+
+		got, params, err := pggenerate.GenerateSQL(call, "kwil", getVar)
+		require.NoError(t, err)
+		require.Zero(t, strings.Count(got, "'")%2, "unterminated string literal in %q", got)
+		require.Equal(t, "array_agg('it''s ORDER BY b' ORDER BY id);", got)
+		require.Empty(t, params)
+	})
+}
+
+// Test_StringLiteralTextStaysInLiteral checks that SQL text inside a string
+// literal stays inside that literal in the generated SQL, in a plain select
+// list and in aggregate calls with and without their own ORDER BY.
+func Test_StringLiteralTextStaysInLiteral(t *testing.T) {
+	getVar := func(varName string) (*types.DataType, error) {
+		return types.TextType, nil
+	}
+
+	literals := []struct {
+		name string
+		kwil string // the literal as written in the statement
+		pg   string // the literal as written in the generated SQL
+	}{
+		{name: "quote", kwil: `'it\'s'`, pg: `'it\''s'`},
+		{name: "ORDER BY", kwil: "'a ORDER BY b'", pg: "'a ORDER BY b'"},
+		{name: "GROUP BY", kwil: "'a GROUP BY b'", pg: "'a GROUP BY b'"},
+		{name: "SQL keywords", kwil: "'SELECT a FROM b WHERE c UNION SELECT d'", pg: "'SELECT a FROM b WHERE c UNION SELECT d'"},
+		{name: "ORDER BY inside parentheses", kwil: "'x) ORDER BY (y'", pg: "'x) ORDER BY (y'"},
+		{name: "semicolon", kwil: "'a; b'", pg: "'a; b'"},
+		{name: "dollar quotes", kwil: "'$$ a $$'", pg: "'$$ a $$'"},
+		{name: "tagged dollar quotes", kwil: "'$tag$ a $tag$'", pg: "'$tag$ a $tag$'"},
+		{name: "parameter marker", kwil: "'$1'", pg: "'$1'"},
+		{name: "line comment", kwil: "'a -- b'", pg: "'a -- b'"},
+		{name: "line comment after a newline", kwil: "'a\n-- b'", pg: "'a\n-- b'"},
+		{name: "block comment", kwil: "'a /* b */'", pg: "'a /* b */'"},
+		{name: "unclosed block comment", kwil: "'a /* b'", pg: "'a /* b'"},
+		{name: "parentheses", kwil: "') ('", pg: "') ('"},
+		{name: "quotes around ORDER BY", kwil: `'\' ORDER BY \''`, pg: `'\'' ORDER BY \'''`},
+		{name: "trailing backslashes", kwil: `'a\\'`, pg: `'a\\'`},
+		{name: "backslashes before a quote", kwil: `'a\\\' b'`, pg: `'a\\\'' b'`},
+		{name: "backslashes, a quote and ORDER BY", kwil: `'\\\' ORDER BY id) --'`, pg: `'\\\'' ORDER BY id) --'`},
+		{name: "double quotes", kwil: `'"a" b'`, pg: `'"a" b'`},
+		{name: "empty", kwil: "''", pg: "''"},
+	}
+
+	contexts := []struct {
+		name string
+		sql  string // %[1]s is the literal as written in the statement
+		want string // %[1]s is the literal as written in the generated SQL
+	}{
+		{
+			name: "select list",
+			sql:  "SELECT %[1]s, id FROM users WHERE name = 'c';",
+			want: "\nSELECT %[1]s, id\nFROM users\nWHERE name = 'c'\n;",
+		},
+		{
+			name: "array_agg",
+			sql:  "SELECT array_agg(%[1]s) FROM users WHERE name = 'c';",
+			want: "\nSELECT array_agg(%[1]s ORDER BY %[1]s)\nFROM users\nWHERE name = 'c'\n;",
+		},
+		{
+			name: "array_agg with ORDER BY",
+			sql:  "SELECT array_agg(%[1]s ORDER BY id) FROM users WHERE name = 'c';",
+			want: "\nSELECT array_agg(%[1]s ORDER BY id)\nFROM users\nWHERE name = 'c'\n;",
+		},
+		{
+			name: "array_agg DISTINCT with ORDER BY",
+			sql:  "SELECT array_agg(DISTINCT name || %[1]s ORDER BY name || %[1]s DESC) FROM users;",
+			want: "\nSELECT array_agg(DISTINCT name || %[1]s ORDER BY name || %[1]s DESC)\nFROM users\n;",
+		},
+		{
+			name: "string_agg with ORDER BY",
+			sql:  "SELECT string_agg(name || %[1]s, %[1]s ORDER BY id, name) FROM users WHERE name = 'c';",
+			want: "\nSELECT string_agg(name || %[1]s, %[1]s ORDER BY id, name)\nFROM users\nWHERE name = 'c'\n;",
+		},
+		{
+			name: "count with ORDER BY",
+			sql:  "SELECT count(%[1]s ORDER BY id) FROM users;",
+			want: "\nSELECT count(%[1]s ORDER BY id)\nFROM users\n;",
+		},
+		{
+			name: "max with ORDER BY and a cast",
+			sql:  "SELECT max(coalesce(name, %[1]s) ORDER BY id)::TEXT FROM users;",
+			want: "\nSELECT max(coalesce(name, %[1]s) ORDER BY id)::TEXT\nFROM users\n;",
+		},
+		{
+			name: "aggregate ORDER BY term",
+			sql:  "SELECT array_agg(name ORDER BY %[1]s) FROM users;",
+			want: "\nSELECT array_agg(name ORDER BY %[1]s)\nFROM users\n;",
+		},
+	}
+
+	for _, lit := range literals {
+		for _, c := range contexts {
+			t.Run(lit.name+"/"+c.name, func(t *testing.T) {
+				stmts, err := parse.Parse(fmt.Sprintf(c.sql, lit.kwil))
+				require.NoError(t, err)
+				require.Len(t, stmts, 1)
+
+				got, params, err := pggenerate.GenerateSQL(stmts[0], "kwil", getVar)
+				require.NoError(t, err)
+				require.Equal(t, fmt.Sprintf(c.want, lit.pg), got)
+				require.Empty(t, params)
+				requireLiteralsIntact(t, got, lit.pg, "'c'")
 			})
+		}
+	}
+
+	// A literal value built in the AST can hold a bare quote, which is
+	// written doubled, and a single backslash, which is written as is.
+	for _, value := range []string{"it's", "a' ORDER BY b", "') ORDER BY ('", "a'; b", `a\`, `\' ORDER BY ('`, `$$') -- `} {
+		pg := "'" + strings.ReplaceAll(value, "'", "''") + "'"
+		lit := func() parse.Expression {
+			return &parse.ExpressionLiteral{Type: types.TextType, Value: value}
+		}
+		orderByID := []*parse.OrderingTerm{{Expression: &parse.ExpressionColumn{Column: "id"}}}
+
+		calls := []struct {
+			name string
+			call parse.Node
+			want string
+		}{
+			{
+				name: "array_agg with ORDER BY",
+				call: &parse.ExpressionFunctionCall{Name: "array_agg", Args: []parse.Expression{lit()}, OrderBy: orderByID},
+				want: "array_agg(" + pg + " ORDER BY id);",
+			},
+			{
+				name: "string_agg with ORDER BY",
+				call: &parse.ExpressionFunctionCall{Name: "string_agg", Args: []parse.Expression{lit(), lit()}, OrderBy: orderByID},
+				want: "string_agg(" + pg + ", " + pg + " ORDER BY id);",
+			},
+			{
+				name: "array_agg",
+				call: &parse.ExpressionFunctionCall{Name: "array_agg", Args: []parse.Expression{lit()}},
+				want: "array_agg(" + pg + " ORDER BY " + pg + ");",
+			},
+			{
+				name: "literal",
+				call: lit(),
+				want: pg + ";",
+			},
+		}
+		for _, c := range calls {
+			t.Run(fmt.Sprintf("value %q/%s", value, c.name), func(t *testing.T) {
+				got, params, err := pggenerate.GenerateSQL(c.call, "kwil", getVar)
+				require.NoError(t, err)
+				require.Equal(t, c.want, got)
+				require.Empty(t, params)
+				requireLiteralsIntact(t, got, pg)
+			})
+		}
+	}
+}
+
+// Test_PlannedAggregateKeepsLiterals plans statements the way the engine does
+// before it generates their SQL, with the default ordering that is applied
+// when a statement may change state, and checks the generated SQL.
+func Test_PlannedAggregateKeepsLiterals(t *testing.T) {
+	users := &engine.Table{
+		Name: "users",
+		Columns: []*engine.Column{
+			{Name: "id", DataType: types.IntType, IsPrimaryKey: true},
+			{Name: "name", DataType: types.TextType},
+		},
+	}
+	getVar := func(varName string) (*types.DataType, error) {
+		return nil, engine.ErrUnknownVariable
+	}
+
+	tests := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "array_agg",
+			sql:  "SELECT array_agg('a ORDER BY b' ORDER BY id) FROM users WHERE name = 'c';",
+			want: "\nSELECT array_agg('a ORDER BY b' ORDER BY id)\nFROM kwil.users\nWHERE name = 'c'\nORDER BY 1;",
+		},
+		{
+			name: "string_agg with GROUP BY",
+			sql:  "SELECT name, string_agg(name || '; -- ', ' ORDER BY ' ORDER BY id DESC) FROM users GROUP BY name;",
+			want: "\nSELECT name, string_agg(name || '; -- ', ' ORDER BY ' ORDER BY id DESC)\nFROM kwil.users\nGROUP BY name\nORDER BY 1, 2;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmts, err := parse.Parse(tt.sql)
+			require.NoError(t, err)
+			require.Len(t, stmts, 1)
+			stmt, ok := stmts[0].(*parse.SQLStatement)
+			require.True(t, ok)
+
+			_, err = logical.CreateLogicalPlan(stmt,
+				func(namespace, tableName string) (*engine.Table, error) {
+					if tableName != users.Name {
+						return nil, fmt.Errorf("table %s not found", tableName)
+					}
+					return users, nil
+				},
+				getVar,
+				func(objName string) (map[string]*types.DataType, error) {
+					return nil, engine.ErrUnknownVariable
+				},
+				func(fnName string) bool { return false },
+				true,
+				"kwil",
+			)
+			require.NoError(t, err)
+
+			got, params, err := pggenerate.GenerateSQL(stmt, "kwil", getVar)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
 			require.Empty(t, params)
 		})
+	}
+}
+
+// requireLiteralsIntact splits generated SQL into its string literals and the
+// text between them. It checks that every literal is closed and is one of
+// the allowed literals, and that no statement separator or comment marker
+// appears between literals, other than the final semicolon.
+func requireLiteralsIntact(t *testing.T, sql string, allowed ...string) {
+	t.Helper()
+
+	var outside strings.Builder
+	for i := 0; i < len(sql); i++ {
+		if sql[i] != '\'' {
+			outside.WriteByte(sql[i])
+			continue
+		}
+
+		// the literal ends at the next quote that is not doubled
+		end := -1
+		for j := i + 1; j < len(sql); j++ {
+			if sql[j] != '\'' {
+				continue
+			}
+			if j+1 < len(sql) && sql[j+1] == '\'' {
+				j++
+				continue
+			}
+			end = j
+			break
+		}
+		require.NotEqual(t, -1, end, "unterminated string literal in %q", sql)
+		require.Contains(t, allowed, sql[i:end+1], "unexpected string literal in %q", sql)
+		outside.WriteString("?")
+		i = end
+	}
+
+	between := strings.TrimSuffix(outside.String(), ";")
+	for _, marker := range []string{";", "--", "/*", "*/", "$$"} {
+		require.NotContains(t, between, marker, "%q outside string literals in %q", marker, sql)
 	}
 }

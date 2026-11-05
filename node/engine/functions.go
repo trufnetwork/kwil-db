@@ -744,18 +744,15 @@ var (
 
 				return types.IntType, nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
 				if len(inputs) == 0 {
 					if distinct {
 						return "", fmt.Errorf("count(DISTINCT *) is not supported")
 					}
-					return "count(*)", nil
-				}
-				if distinct {
-					return fmt.Sprintf("count(DISTINCT %s)", inputs[0]), nil
+					return formatAggregateCall("count", false, "*", orderBy), nil
 				}
 
-				return fmt.Sprintf("count(%s)", inputs[0]), nil
+				return formatAggregateCall("count", distinct, inputs[0], orderBy), nil
 			},
 		},
 		"sum": &AggregateFunctionDefinition{
@@ -783,11 +780,8 @@ var (
 
 				return retType, nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
-				if distinct {
-					return fmt.Sprintf("sum(DISTINCT %s)", inputs[0]), nil
-				}
-				return fmt.Sprintf("sum(%s)", inputs[0]), nil
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
+				return formatAggregateCall("sum", distinct, inputs[0], orderBy), nil
 			},
 		},
 		"min": &AggregateFunctionDefinition{
@@ -803,11 +797,8 @@ var (
 
 				return args[0], nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
-				if distinct {
-					return fmt.Sprintf("min(DISTINCT %s)", inputs[0]), nil
-				}
-				return fmt.Sprintf("min(%s)", inputs[0]), nil
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
+				return formatAggregateCall("min", distinct, inputs[0], orderBy), nil
 			},
 		},
 		"max": &AggregateFunctionDefinition{
@@ -823,11 +814,8 @@ var (
 
 				return args[0], nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
-				if distinct {
-					return fmt.Sprintf("max(DISTINCT %s)", inputs[0]), nil
-				}
-				return fmt.Sprintf("max(%s)", inputs[0]), nil
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
+				return formatAggregateCall("max", distinct, inputs[0], orderBy), nil
 			},
 		},
 		"array_agg": &AggregateFunctionDefinition{
@@ -844,11 +832,13 @@ var (
 				a2.IsArray = true
 				return a2, nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
-				if distinct {
-					return fmt.Sprintf("array_agg(DISTINCT %s)", inputs[0]), nil
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
+				if len(orderBy) == 0 && !distinct {
+					// with no ORDER BY of its own, the array is ordered by
+					// its values, so that its order is deterministic
+					orderBy = []string{inputs[0]}
 				}
-				return fmt.Sprintf("array_agg(%s ORDER BY %s)", inputs[0], inputs[0]), nil
+				return formatAggregateCall("array_agg", distinct, inputs[0], orderBy), nil
 			},
 		},
 		"string_agg": &AggregateFunctionDefinition{
@@ -871,14 +861,11 @@ var (
 
 				return types.TextType, nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
 				if len(inputs) != 2 {
 					return "", fmt.Errorf("string_agg requires exactly 2 arguments, got %d", len(inputs))
 				}
-				if distinct {
-					return fmt.Sprintf("string_agg(DISTINCT %s, %s)", inputs[0], inputs[1]), nil
-				}
-				return fmt.Sprintf("string_agg(%s, %s)", inputs[0], inputs[1]), nil
+				return formatAggregateCall("string_agg", distinct, inputs[0]+", "+inputs[1], orderBy), nil
 			},
 		},
 		"avg": &AggregateFunctionDefinition{
@@ -895,11 +882,8 @@ var (
 
 				return args[0], nil
 			},
-			PGFormatFunc: func(inputs []string, distinct bool) (string, error) {
-				if distinct {
-					return fmt.Sprintf("avg(DISTINCT %s)", inputs[0]), nil
-				}
-				return fmt.Sprintf("avg(%s)", inputs[0]), nil
+			PGFormatFunc: func(inputs []string, distinct bool, orderBy []string) (string, error) {
+				return formatAggregateCall("avg", distinct, inputs[0], orderBy), nil
 			},
 		},
 		// Window functions
@@ -1095,8 +1079,30 @@ type AggregateFunctionDefinition struct {
 	// PGFormat is a function that formats the inputs to the function in Postgres format.
 	// For example, the function `sum` would format the inputs as `sum($1)`.
 	// It can also format the inputs with DISTINCT. If no inputs are given, it is a *.
-	PGFormatFunc func(inputs []string, distinct bool) (string, error)
+	// orderBy holds the rendered terms of the call's own ORDER BY clause, if it
+	// has one (for array_agg(name ORDER BY id DESC) it is ["id DESC"]). The
+	// function places them inside the call's parentheses, and its result is
+	// used as is.
+	PGFormatFunc func(inputs []string, distinct bool, orderBy []string) (string, error)
 	// We currently don't need to evaluate aggregates since they are handled by the engine.
+}
+
+// formatAggregateCall formats a call to the aggregate function name, with
+// the ordering terms, if any, after the arguments: name(DISTINCT args ORDER BY terms).
+func formatAggregateCall(name string, distinct bool, args string, orderBy []string) string {
+	var b strings.Builder
+	b.WriteString(name)
+	b.WriteString("(")
+	if distinct {
+		b.WriteString("DISTINCT ")
+	}
+	b.WriteString(args)
+	if len(orderBy) > 0 {
+		b.WriteString(" ORDER BY ")
+		b.WriteString(strings.Join(orderBy, ", "))
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 func (a *AggregateFunctionDefinition) ValidateArgs(args []*types.DataType) (*types.DataType, error) {
