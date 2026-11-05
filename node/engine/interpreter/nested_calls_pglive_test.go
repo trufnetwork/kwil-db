@@ -13,7 +13,20 @@ import (
 	"github.com/trufnetwork/kwil-db/core/types"
 	"github.com/trufnetwork/kwil-db/extensions/precompiles"
 	"github.com/trufnetwork/kwil-db/node/engine"
+	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
+
+// readOnlyTx is a transaction that reports itself as read-only, as the
+// transaction of a read-only RPC call does.
+type readOnlyTx struct {
+	sql.Tx
+}
+
+func (readOnlyTx) AccessMode() sql.AccessMode { return sql.ReadOnly }
+
+func (r readOnlyTx) QueryScanFn(ctx context.Context, stmt string, scans []any, fn func() error, args ...any) error {
+	return r.Tx.(sql.QueryScanner).QueryScanFn(ctx, stmt, scans, fn, args...)
+}
 
 const (
 	nestedCallTestChain  = "nested-call-test-chain"
@@ -83,6 +96,8 @@ func Test_NestedCallsFromPrecompiles(t *testing.T) {
 		`CREATE ACTION system_target() system {}`,
 		`CREATE ACTION public_target() public {}`,
 		`CREATE ACTION public_view_target() public view {}`,
+		`CREATE ACTION private_view_target() private view {}`,
+		`CREATE ACTION system_view_target() system view {}`,
 		// a public action that hands a name to a public method of an extension
 		`CREATE ACTION via_public_method($ns text, $action text) public { ext_a.call_public_view($ns, $action); }`,
 		// a public action that hands a name to a system method of an extension
@@ -122,16 +137,19 @@ func Test_NestedCallsFromPrecompiles(t *testing.T) {
 		{"system method calls a private method of another extension", call{"main", "via_system_method", []any{"ext_b", "private_method"}}, engine.ErrActionPrivate},
 	}
 
-	callAt := func(height int64, c call) error {
+	callWith := func(db sql.DB, chainID string, height int64, c call) error {
 		engCtx := newEngineCtx(defaultCaller)
 		engCtx.TxContext.BlockContext.Height = height
-		engCtx.TxContext.BlockContext.ChainContext.ChainID = nestedCallTestChain
+		engCtx.TxContext.BlockContext.ChainContext.ChainID = chainID
 
-		res, err := interp.Call(engCtx, tx, c.namespace, c.action, c.args, nil)
+		res, err := interp.Call(engCtx, db, c.namespace, c.action, c.args, nil)
 		if err != nil {
 			return err
 		}
 		return res.Error
+	}
+	callAt := func(height int64, c call) error {
+		return callWith(tx, nestedCallTestChain, height, c)
 	}
 
 	for _, tt := range tests {
@@ -154,5 +172,26 @@ func Test_NestedCallsFromPrecompiles(t *testing.T) {
 
 		_, err := interp.Call(engCtx, tx, "ext_a", "call_public", []any{"main", "system_target"}, nil)
 		require.NoError(t, err)
+	})
+
+	t.Run("read-only calls below the height", func(t *testing.T) {
+		ro := readOnlyTx{tx}
+		viaPublicViewMethod := func(action string) call {
+			return call{"ext_a", "call_public_view", []any{"main", action}}
+		}
+
+		// a read-only call never reaches consensus, so it is checked below the
+		// height too, including on a syncing node, which gives RPC calls height -1
+		for _, height := range []int64{-1, nestedCallTestHeight - 1} {
+			require.ErrorIs(t, callWith(ro, nestedCallTestChain, height, viaPublicViewMethod("private_view_target")), engine.ErrActionPrivate)
+			require.ErrorIs(t, callWith(ro, nestedCallTestChain, height, viaPublicViewMethod("system_view_target")), engine.ErrActionSystemOnly)
+			require.NoError(t, callWith(ro, nestedCallTestChain, height, viaPublicViewMethod("public_view_target")))
+
+			// a call that can change state still follows the height
+			require.NoError(t, callWith(tx, nestedCallTestChain, height, viaPublicViewMethod("private_view_target")))
+		}
+
+		// a chain without a height keeps read-only calls unchecked too
+		require.NoError(t, callWith(ro, nestedCallTestChain+"-other", -1, viaPublicViewMethod("private_view_target")))
 	})
 }

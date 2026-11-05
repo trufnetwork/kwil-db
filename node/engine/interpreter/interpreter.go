@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/decred/dcrd/container/lru"
 
@@ -447,6 +448,9 @@ type baseInterpreter struct {
 	accounts common.Accounts
 	// namespaceRegister is used to register and unregister namespaces
 	namespaceRegister engine.NamespaceRegister
+	// loggedNoNestedCallChecksHeight is set once the interpreter has logged
+	// that a call ran on a chain with no height for nested-call checks.
+	loggedNoNestedCallChecksHeight atomic.Bool
 }
 
 // copy deep copies the state of the interpreter.
@@ -791,7 +795,7 @@ func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, nam
 	// The top-level call decides whether nested calls are checked, so an
 	// extension cannot turn the checks off by passing its own engine context.
 	if from == nil {
-		e.checkNestedCalls = i.nestedCallChecksActive(txCtx)
+		e.checkNestedCalls = i.nestedCallChecksActive(txCtx, e.canMutateState)
 	} else {
 		e.checkNestedCalls = from.checkNestedCalls
 	}
@@ -803,15 +807,19 @@ func (i *baseInterpreter) newExecCtx(txCtx *common.EngineContext, db sql.DB, nam
 // through their engine are checked during a top-level call made with ctx. It
 // follows the height set with precompiles.SetNestedCallChecksHeight for the
 // chain named in ctx or, when ctx names none (as with read-only RPC calls), for
-// the chain this node runs.
-func (i *baseInterpreter) nestedCallChecksActive(ctx *common.EngineContext) bool {
-	if ctx == nil || ctx.TxContext == nil || ctx.TxContext.BlockContext == nil {
-		return false
+// the chain this node runs. A chain with no height is not checked. On a chain
+// with one, a call that can change state, as every call that executes a block
+// does, is checked from the height. A call that cannot change state never
+// reaches consensus, so it is checked at every height, including on a node
+// that is still syncing.
+func (i *baseInterpreter) nestedCallChecksActive(ctx *common.EngineContext, canMutateState bool) bool {
+	var block *common.BlockContext
+	if ctx != nil && ctx.TxContext != nil {
+		block = ctx.TxContext.BlockContext
 	}
-	block := ctx.TxContext.BlockContext
 
 	var chainID string
-	if block.ChainContext != nil {
+	if block != nil && block.ChainContext != nil {
 		chainID = block.ChainContext.ChainID
 	}
 	if chainID == "" && i.service != nil && i.service.GenesisConfig != nil {
@@ -819,7 +827,30 @@ func (i *baseInterpreter) nestedCallChecksActive(ctx *common.EngineContext) bool
 	}
 
 	activation, ok := precompiles.NestedCallChecksHeight(chainID)
-	return ok && block.Height >= activation
+	if !ok {
+		i.logNoNestedCallChecksHeight(chainID)
+		return false
+	}
+	if !canMutateState {
+		return true
+	}
+	return block != nil && block.Height >= activation
+}
+
+// logNoNestedCallChecksHeight logs, the first time a call runs on a chain with
+// no height for nested-call checks, that the checks are off on that chain.
+// Logging changes no state, so blocks execute the same with or without it.
+func (i *baseInterpreter) logNoNestedCallChecksHeight(chainID string) {
+	// a context that names no chain, on an engine with no genesis config,
+	// is a test context with no chain to report
+	if chainID == "" || i.service == nil || i.service.Logger == nil {
+		return
+	}
+	if i.loggedNoNestedCallChecksHeight.Swap(true) {
+		return
+	}
+	i.service.Logger.Warn("no height is set for nested-call checks on this chain, so the calls that precompile methods make through their engine are not checked",
+		"chainID", chainID)
 }
 
 // syncNamespaceManager syncs all current namespaces with the namespace manager.

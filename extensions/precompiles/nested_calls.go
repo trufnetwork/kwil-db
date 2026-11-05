@@ -17,13 +17,17 @@ var nestedCallChecks = struct {
 //     method can be called directly by any user.
 //
 // Calls made from OnStart, OnUse and OnUnuse are not affected. The height is
-// compared with the block of the top-level call, and every call nested in it
-// follows that decision.
+// compared with the block of the top-level call when that call can change
+// state, as every call that executes a block does, and every call nested in it
+// follows that decision. A top-level call on a read-only database cannot change
+// state and never reaches consensus, so it is checked at every height, even on
+// a node that is still syncing.
 //
 // A chain with no height keeps the earlier behaviour at every height, so its
-// existing blocks replay unchanged. A height of zero or less removes the height
-// set for the chain. Set the height before the node starts executing blocks,
-// for example in an init function.
+// existing blocks replay unchanged. The engine logs a warning the first time a
+// call runs on a chain with no height. A height of zero or less removes the
+// height set for the chain. Set the height before the node starts executing
+// blocks, for example in an init function.
 func SetNestedCallChecksHeight(chainID string, height int64) {
 	nestedCallChecks.mu.Lock()
 	defer nestedCallChecks.mu.Unlock()
