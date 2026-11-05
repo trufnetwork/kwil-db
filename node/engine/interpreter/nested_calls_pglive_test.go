@@ -16,15 +16,15 @@ import (
 	"github.com/trufnetwork/kwil-db/node/types/sql"
 )
 
-// readOnlyTx is a transaction that reports itself as read-only, as the
+// nestedReadOnlyTx is a transaction that reports itself as read-only, as the
 // transaction of a read-only RPC call does.
-type readOnlyTx struct {
+type nestedReadOnlyTx struct {
 	sql.Tx
 }
 
-func (readOnlyTx) AccessMode() sql.AccessMode { return sql.ReadOnly }
+func (nestedReadOnlyTx) AccessMode() sql.AccessMode { return sql.ReadOnly }
 
-func (r readOnlyTx) QueryScanFn(ctx context.Context, stmt string, scans []any, fn func() error, args ...any) error {
+func (r nestedReadOnlyTx) QueryScanFn(ctx context.Context, stmt string, scans []any, fn func() error, args ...any) error {
 	return r.Tx.(sql.QueryScanner).QueryScanFn(ctx, stmt, scans, fn, args...)
 }
 
@@ -175,7 +175,7 @@ func Test_NestedCallsFromPrecompiles(t *testing.T) {
 	})
 
 	t.Run("read-only calls below the height", func(t *testing.T) {
-		ro := readOnlyTx{tx}
+		ro := nestedReadOnlyTx{tx}
 		viaPublicViewMethod := func(action string) call {
 			return call{"ext_a", "call_public_view", []any{"main", action}}
 		}
