@@ -3473,6 +3473,69 @@ func Test_SQLGeneratorUpgrade(t *testing.T) {
 	require.Equal(t, []any{ptrArr("b (", "a (")}, got[0])
 }
 
+// Test_DefaultOrderingUpgrade checks the order in which a block reads rows
+// with a statement that has no ORDER BY. Below the SQL generator upgrade
+// height, the block reads them in default order only if a context that may
+// change state prepared the statement first, as releases before the upgrade
+// did. From the upgrade height on, it always does.
+func Test_DefaultOrderingUpgrade(t *testing.T) {
+	db := newTestDB(t, nil, nil)
+
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) // always rollback
+
+	// the rows are stored in the reverse of their default order
+	interp := newTestInterp(t, tx, []string{
+		`INSERT INTO users (id, name, age) VALUES (2, 'b', 30), (1, 'a', 20);`,
+	}, true)
+
+	pggenerate.SetUpgradeHeights(func(chainID string) int64 {
+		if chainID == "test-chain" {
+			return 10
+		}
+		return math.MaxInt64
+	})
+	t.Cleanup(func() { pggenerate.SetUpgradeHeights(nil) })
+
+	ids := func(engCtx *common.EngineContext, db sql.DB, stmt string) []any {
+		var got []any
+		err := interp.Execute(engCtx, db, stmt, nil, func(r *common.Row) error {
+			got = append(got, r.Values[0])
+			return nil
+		})
+		require.NoError(t, err, stmt)
+		return got
+	}
+	readOnly := func(stmt string) []any {
+		return ids(newEngineCtx(defaultCaller), readOnlyTx{tx}, stmt)
+	}
+	block := func(height int64, stmt string) []any {
+		engCtx := newEngineCtx(defaultCaller)
+		engCtx.TxContext.BlockContext.Height = height
+		engCtx.TxContext.BlockContext.ChainContext.ChainID = "test-chain"
+		return ids(engCtx, tx, stmt)
+	}
+
+	stored := []any{int64(2), int64(1)}
+	ordered := []any{int64(1), int64(2)}
+
+	// a read-only call prepares this statement first
+	const readFirst = `SELECT id AS read_first FROM users;`
+	require.Equal(t, stored, readOnly(readFirst))
+	require.Equal(t, stored, block(9, readFirst))
+	require.Equal(t, ordered, block(10, readFirst))
+	require.Equal(t, stored, block(9, readFirst))
+
+	// a block prepares this statement first
+	const blockFirst = `SELECT id AS block_first FROM users;`
+	require.Equal(t, ordered, block(9, blockFirst))
+	require.Equal(t, stored, readOnly(blockFirst))
+	require.Equal(t, ordered, block(9, blockFirst))
+	require.Equal(t, ordered, block(10, blockFirst))
+}
+
 // readOnlyTx runs statements on a transaction the way a read-only call does,
 // so that they read the rows the test has written in that transaction.
 type readOnlyTx struct {
