@@ -2353,7 +2353,9 @@ func TestPrecommitWaitsForALargeTransaction(t *testing.T) {
 
 // TestNewDBReplicationRole opens a DB as a role that has REPLICATION and is not
 // a superuser. Such a role may not create the event trigger that gives new
-// tables full replica identity, so NewDB checks the one a superuser set up.
+// tables full replica identity, or the publication for all tables, so NewDB
+// checks the ones a superuser set up, along with the role's grants and
+// memberships.
 func TestNewDBReplicationRole(t *testing.T) {
 	ctx := context.Background()
 	const role, dbName = "kwild_repl_role", "kwil_test_repl_role"
@@ -2364,6 +2366,14 @@ func TestNewDBReplicationRole(t *testing.T) {
 
 	drop := func() error {
 		_, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`)
+		if err == nil {
+			// A role that holds a privilege on a parameter cannot be dropped.
+			_, err = admin.Exec(ctx, `DO $$ BEGIN
+				IF EXISTS (SELECT FROM pg_roles WHERE rolname = '`+role+`') THEN
+					REVOKE SET ON PARAMETER session_replication_role FROM `+role+`;
+				END IF;
+			END $$`)
+		}
 		if err == nil {
 			_, err = admin.Exec(ctx, `DROP ROLE IF EXISTS `+role)
 		}
@@ -2383,43 +2393,223 @@ func TestNewDBReplicationRole(t *testing.T) {
 	super, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, dbName, false))
 	require.NoError(t, err)
 	defer super.Close(ctx)
-	superExec := func(stmt string) {
+	superExec := func(t *testing.T, stmt string) {
 		t.Helper()
 		_, err := super.Exec(ctx, stmt)
 		require.NoError(t, err)
 	}
 
-	// A superuser sets up what the role may not, as the node's
-	// deployments/postgres-roles.sql does: the publication, and the event
-	// trigger with its function, which has a fixed search_path there.
-	superExec(`CREATE PUBLICATION ` + publicationName + ` FOR ALL TABLES`)
-	setUpTrigger := func() {
+	// A superuser sets up what the role may not, and keeps ownership of it:
+	// the grant on session_replication_role, the publication, and the event
+	// trigger with its function, which has a fixed search_path and lives in a
+	// schema that the superuser owns and the role may not use. The role owns
+	// the database, and so its public schema. The function's body is
+	// sqlReplicaIdentityFuncBody, the body kwild expects, so the test checks
+	// NewDB against kwild's own definition and not against any provisioning
+	// script from another repository.
+	// Running such a provisioning script through these checks is follow-up work.
+	superExec(t, `CREATE SCHEMA replica_identity`)
+	superExec(t, `REVOKE ALL ON SCHEMA replica_identity FROM PUBLIC`)
+	prepared := func(t *testing.T) []string {
 		t.Helper()
-		superExec(`CREATE OR REPLACE FUNCTION public.set_replica_identity() RETURNS event_trigger
-			LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$` + sqlReplicaIdentityFuncBody + `$$`)
-		superExec(sqlDropEvtTriggerReplIdent)
-		superExec(sqlCreateEvtTriggerReplIdent)
+		rows, _ := super.Query(ctx, `SELECT gid FROM pg_prepared_xacts WHERE database = current_database() ORDER BY gid`)
+		gids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		require.NoError(t, err)
+		return gids
+	}
+	createFunc := func(schema string) string {
+		return `CREATE FUNCTION ` + schema + `.set_replica_identity() RETURNS event_trigger
+			LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$` + sqlReplicaIdentityFuncBody + `$$`
+	}
+	createTrigger := func(tags, schema string) string {
+		return `CREATE EVENT TRIGGER set_replica_identity_on_create ON ddl_command_end
+			WHEN TAG IN (` + tags + `) EXECUTE FUNCTION ` + schema + `.set_replica_identity()`
+	}
+	setUp := func(t *testing.T) {
+		t.Helper()
+		// A case may leave prepared transactions, which would also keep the
+		// database from being dropped, and a NewDB that fails after it starts
+		// logical replication leaves the walsender running.
+		for _, gid := range prepared(t) {
+			superExec(t, `ROLLBACK PREPARED '`+gid+`'`)
+		}
+		superExec(t, `SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
+			WHERE database = current_database() AND active_pid IS NOT NULL`)
+		for _, stmt := range []string{
+			`ALTER ROLE ` + role + ` NOSUPERUSER`,
+			`REVOKE ` + cfg.User + `, pg_execute_server_program, pg_read_server_files, pg_write_server_files FROM ` + role,
+			`GRANT SET ON PARAMETER session_replication_role TO ` + role,
+			`DROP PUBLICATION IF EXISTS ` + publicationName,
+			`CREATE PUBLICATION ` + publicationName + ` FOR ALL TABLES`,
+			sqlDropEvtTriggerReplIdent,
+			`DROP FUNCTION IF EXISTS replica_identity.set_replica_identity(), public.set_replica_identity()`,
+			createFunc("replica_identity"),
+			createTrigger(`'CREATE TABLE'`, "replica_identity"),
+			`DROP FUNCTION IF EXISTS error(text), notice(text), end_notices(bigint),
+				parse_unix_timestamp(text, text), format_unix_timestamp(numeric, text)`,
+		} {
+			superExec(t, stmt)
+		}
 	}
 
 	roleCfg := *cfg
 	roleCfg.User, roleCfg.DBName = role, dbName
 
-	// NewDB fails, naming the setup step, while the trigger is missing or not
-	// as kwild creates it.
-	for _, tc := range []struct{ stmt, wantErr string }{
-		{sqlDropEvtTriggerReplIdent, "does not exist"},
-		{`ALTER EVENT TRIGGER set_replica_identity_on_create DISABLE`, "is not enabled"},
-		{`CREATE OR REPLACE FUNCTION public.set_replica_identity() RETURNS event_trigger
-			LANGUAGE plpgsql AS $$ BEGIN END; $$`, "does not run set_replica_identity()"},
+	// NewDB fails while the role may act as a superuser or on the database
+	// server, or while what a superuser sets up is missing, not as kwild
+	// creates it, or in the role's reach. Each error says what to change.
+	const (
+		trigger     = "event trigger set_replica_identity_on_create in database " + dbName + " "
+		publication = "publication " + publicationName + " in database " + dbName + " "
+		reachable   = "can be dropped or changed by postgres role " + role
+		notAsKwild  = "is not for all tables with every change published, as kwild creates it"
+		memberOf    = "postgres role " + role + " is not a superuser but is a member of "
+	)
+	for _, tc := range []struct {
+		name    string
+		stmts   []string
+		wantErr string
+	}{
+		{"trigger missing", []string{sqlDropEvtTriggerReplIdent}, trigger + "does not exist"},
+		{"trigger disabled", []string{`ALTER EVENT TRIGGER set_replica_identity_on_create DISABLE`},
+			trigger + "is not enabled"},
+		{"trigger on more tags", []string{sqlDropEvtTriggerReplIdent,
+			createTrigger(`'CREATE TABLE', 'CREATE TABLE AS'`, "replica_identity")},
+			trigger + "does not fire on CREATE TABLE alone"},
+		{"trigger on another tag", []string{sqlDropEvtTriggerReplIdent,
+			createTrigger(`'CREATE SCHEMA'`, "replica_identity")}, trigger + "does not fire on CREATE TABLE alone"},
+		{"trigger on another event", []string{sqlDropEvtTriggerReplIdent,
+			`CREATE EVENT TRIGGER set_replica_identity_on_create ON ddl_command_start
+			WHEN TAG IN ('CREATE TABLE') EXECUTE FUNCTION replica_identity.set_replica_identity()`},
+			trigger + "does not fire on CREATE TABLE alone"},
+		{"other function body", []string{`CREATE OR REPLACE FUNCTION replica_identity.set_replica_identity()
+			RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END; $$`},
+			trigger + "does not run set_replica_identity()"},
+		{"function in public", []string{sqlDropEvtTriggerReplIdent, createFunc("public"),
+			createTrigger(`'CREATE TABLE'`, "public")}, trigger + reachable},
+		{"function owned by role", []string{`ALTER FUNCTION replica_identity.set_replica_identity() OWNER TO ` + role},
+			trigger + reachable},
+		{"trigger owned by role", []string{`ALTER ROLE ` + role + ` SUPERUSER`,
+			`ALTER EVENT TRIGGER set_replica_identity_on_create OWNER TO ` + role, `ALTER ROLE ` + role + ` NOSUPERUSER`},
+			trigger + reachable},
+		{"publication missing", []string{`DROP PUBLICATION ` + publicationName}, publication + "does not exist"},
+		{"publication for one schema", []string{`DROP PUBLICATION ` + publicationName,
+			`CREATE PUBLICATION ` + publicationName + ` FOR TABLES IN SCHEMA public`}, publication + notAsKwild},
+		{"publication of inserts", []string{`ALTER PUBLICATION ` + publicationName + ` SET (publish = 'insert')`},
+			publication + notAsKwild},
+		{"publication without truncate", []string{`ALTER PUBLICATION ` + publicationName +
+			` SET (publish = 'insert, update, delete')`}, publication + notAsKwild},
+		{"publication via partition root", []string{`ALTER PUBLICATION ` + publicationName +
+			` SET (publish_via_partition_root = true)`}, publication + notAsKwild},
+		{"publication owned by role", []string{`ALTER PUBLICATION ` + publicationName + ` OWNER TO ` + role},
+			publication + reachable},
+		{"no grant on session_replication_role", []string{`REVOKE SET ON PARAMETER session_replication_role FROM ` + role},
+			"postgres role " + role + " may not set session_replication_role, which a snapshot restore sets"},
+		{"member of a superuser", []string{`GRANT ` + cfg.User + ` TO ` + role}, memberOf + cfg.User + " (a superuser)"},
+		{"member of pg_execute_server_program", []string{`GRANT pg_execute_server_program TO ` + role},
+			memberOf + "pg_execute_server_program"},
+		{"member of pg_read_server_files", []string{`GRANT pg_read_server_files TO ` + role},
+			memberOf + "pg_read_server_files"},
+		{"member of pg_write_server_files", []string{`GRANT pg_write_server_files TO ` + role},
+			memberOf + "pg_write_server_files"},
 	} {
-		setUpTrigger()
-		superExec(tc.stmt)
-		_, err = NewDB(ctx, &roleCfg)
-		require.ErrorContains(t, err, "set_replica_identity_on_create in database "+dbName+" "+tc.wantErr)
-		require.ErrorContains(t, err, "deployments/postgres-roles.sql")
+		t.Run(tc.name, func(t *testing.T) {
+			setUp(t)
+			for _, stmt := range tc.stmts {
+				superExec(t, stmt)
+			}
+			_, err := NewDB(ctx, &roleCfg)
+			require.ErrorContains(t, err, tc.wantErr)
+			if strings.HasPrefix(tc.wantErr, memberOf) {
+				require.ErrorContains(t, err, "revoke that membership")
+				return
+			}
+			// The error names everything a superuser must set up.
+			for _, want := range []string{
+				"GRANT SET ON PARAMETER session_replication_role TO " + role,
+				"create in database " + dbName + ", owned by the superuser",
+				"the publication " + publicationName + " FOR ALL TABLES",
+				"the function set_replica_identity() as kwild defines it in a schema the superuser owns",
+				"the event trigger set_replica_identity_on_create that runs it ON ddl_command_end WHEN TAG IN ('CREATE TABLE')",
+			} {
+				require.ErrorContains(t, err, want)
+			}
+		})
 	}
 
-	setUpTrigger()
+	// A role that is not a superuser may roll back only the prepared
+	// transactions it prepared, and may replace a function only with its
+	// owner's privileges. NewDB rolls back the role's own prepared
+	// transactions and creates or replaces the functions it may. It leaves a
+	// function that another role owns as it is when it is as kwild creates it,
+	// and otherwise stops, as it does on a prepared transaction that another
+	// role prepared, with an error that says what a superuser must do.
+	prepareAs := func(owner, gid string) []string {
+		return []string{`SET ROLE ` + owner, `BEGIN`, `PREPARE TRANSACTION '` + gid + `'`, `RESET ROLE`}
+	}
+	const otherFunc = `CREATE FUNCTION error(msg text) RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql`
+	notAsDefined := "function public.error(msg text) is not as kwild defines it, and postgres role " + role +
+		" may not replace it, since only its owner, postgres role " + cfg.User + ", or a role with that role's " +
+		"privileges may; a superuser must first run ALTER FUNCTION public.error(msg text) OWNER TO " + role
+	for _, tc := range []struct {
+		name    string
+		stmts   []string
+		wantErr string             // or NewDB opens the database
+		after   func(t *testing.T) // checks what NewDB left
+	}{
+		{"transaction prepared by another role",
+			slices.Concat(prepareAs(role, "kwil_test_own"), prepareAs(cfg.User, "kwil_test_other")),
+			"postgres role " + role + " is not a superuser, so it may roll back only the prepared transactions " +
+				"it prepared, but database " + dbName + " holds prepared transactions that other roles prepared: " +
+				"'kwil_test_other' (prepared by " + cfg.User + "); a superuser must first run ROLLBACK PREPARED " +
+				"for each in database " + dbName,
+			func(t *testing.T) { // NewDB rolled back neither
+				require.Equal(t, []string{"kwil_test_other", "kwil_test_own"}, prepared(t))
+			}},
+		{"transaction prepared by the role", prepareAs(role, "kwil_test_own"), "",
+			func(t *testing.T) { require.Empty(t, prepared(t)) }},
+		{"functions a superuser created as kwild does", []string{sqlCreateFuncError, sqlCreateFuncNotice,
+			sqlCreateFuncEndNotices, sqlCreateParseUnixTimestampFunc, sqlCreateFormatUnixTimestampFunc}, "",
+			func(t *testing.T) { // and still owns
+				var owned int
+				err := super.QueryRow(ctx, `SELECT count(*) FROM pg_proc
+					WHERE pronamespace = 'public'::regnamespace AND proowner = $1::regrole AND
+					proname IN ('error', 'notice', 'end_notices', 'parse_unix_timestamp', 'format_unix_timestamp')`,
+					cfg.User).Scan(&owned)
+				require.NoError(t, err)
+				require.Equal(t, 5, owned)
+			}},
+		{"function a superuser created otherwise", []string{otherFunc}, notAsDefined, nil},
+		{"function a superuser created as kwild does but strict", []string{sqlCreateFuncError,
+			`ALTER FUNCTION error(text) STRICT`}, notAsDefined, nil},
+		{"function the role owns, created otherwise", []string{otherFunc, `ALTER FUNCTION error(text) OWNER TO ` + role},
+			"", func(t *testing.T) { // NewDB replaced it
+				var body string
+				err := super.QueryRow(ctx, `SELECT prosrc FROM pg_proc WHERE oid = 'error(text)'::regprocedure`).
+					Scan(&body)
+				require.NoError(t, err)
+				require.Equal(t, sqlFuncErrorBody, body)
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setUp(t)
+			for _, stmt := range tc.stmts {
+				superExec(t, stmt)
+			}
+			db, err := NewDB(ctx, &roleCfg)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, db.Close())
+			}
+			if tc.after != nil {
+				tc.after(t)
+			}
+		})
+	}
+
+	setUp(t)
 	db, err := NewDB(ctx, &roleCfg)
 	require.NoError(t, err)
 	defer db.Close()

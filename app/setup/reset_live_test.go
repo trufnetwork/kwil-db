@@ -135,3 +135,64 @@ func TestResetPGStateRefusesWhileConnected(t *testing.T) {
 	require.Equal(t, 1, countPrepared(t, conf))
 	require.True(t, tableExists(t, conf))
 }
+
+// TestResetPGStateAsDatabaseOwner resets as a role that owns the database but
+// is not a superuser. Postgres lets such a role drop the database, but it may
+// create it again owned by kwild only with CREATEDB and the right to SET ROLE
+// kwild. Without both, the reset refuses before it changes anything.
+func TestResetPGStateAsDatabaseOwner(t *testing.T) {
+	const role, name = "kwil_test_reset_owner", "kwil_test_reset_owned"
+	ctx := context.Background()
+	admin, err := connect(ctx, &pg.ConnConfig{Host: "127.0.0.1", Port: "5432", User: "kwild", Pass: "kwild", DBName: "postgres"})
+	require.NoError(t, err)
+	t.Cleanup(func() { admin.Close(ctx) })
+	dropRole := func(t *testing.T) {
+		_, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+		require.NoError(t, err)
+		_, err = admin.Exec(ctx, `DROP ROLE IF EXISTS `+role)
+		require.NoError(t, err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		stmts []string // that give the role its attributes and memberships
+		reset bool     // or refuse
+	}{
+		{"without CREATEDB", []string{`ALTER ROLE ` + role + ` NOCREATEDB`}, false},
+		{"with CREATEDB but without SET ROLE kwild", []string{`ALTER ROLE ` + role + ` CREATEDB`}, false},
+		{"with CREATEDB and SET ROLE kwild", []string{`ALTER ROLE ` + role + ` CREATEDB`,
+			`GRANT kwild TO ` + role + ` WITH SET TRUE`}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dropRole(t) // left by an interrupted run
+			_, err := admin.Exec(ctx, `CREATE ROLE `+role+` LOGIN NOSUPERUSER PASSWORD 'kwild'`)
+			require.NoError(t, err)
+			t.Cleanup(func() { dropRole(t) }) // after scratchDB drops the database
+			for _, stmt := range tc.stmts {
+				_, err = admin.Exec(ctx, stmt)
+				require.NoError(t, err)
+			}
+
+			conf := scratchDB(t, name)
+			_, err = admin.Exec(ctx, `ALTER DATABASE `+name+` OWNER TO `+role)
+			require.NoError(t, err)
+			conn, err := connect(ctx, conf)
+			require.NoError(t, err)
+			_, err = conn.Exec(ctx, `CREATE TABLE blocks (height INT8)`)
+			require.NoError(t, err)
+			require.NoError(t, conn.Close(ctx))
+
+			ownerConf := *conf
+			ownerConf.User = role
+			err = resetPGState(ctx, &ownerConf)
+			if tc.reset {
+				require.NoError(t, err)
+				require.False(t, tableExists(t, conf), "the database was not recreated empty")
+				return
+			}
+			require.ErrorContains(t, err, "postgres role "+role+" is not a superuser and does not have both "+
+				"CREATEDB and the right to SET ROLE kwild")
+			require.True(t, tableExists(t, conf), "the database was dropped")
+		})
+	}
+}
