@@ -122,6 +122,23 @@ func ResetCmd() *cobra.Command {
 
 // resetPGState drops and creates the database.
 func resetPGState(ctx context.Context, conf *pg.ConnConfig) error {
+	// The owner of a database may drop it, but a role that is not a superuser
+	// may create it again owned by kwild, as below, only if it has CREATEDB and
+	// may SET ROLE kwild, so check that before changing anything. The check
+	// connects where the drop below does, so that its session is not counted as
+	// another client of the database.
+	checkConf := *conf
+	checkConf.DBName = "postgres"
+	mayCreate, err := pg.MayCreateDatabase(ctx, &checkConf, "kwild")
+	if err != nil {
+		return err
+	}
+	if !mayCreate {
+		return fmt.Errorf("postgres role %s is not a superuser and does not have both CREATEDB and the right to "+
+			"SET ROLE kwild, so it could drop database %s but not create it again owned by kwild; nothing was "+
+			"changed. Rerun the reset with --user set to a superuser", conf.User, conf.DBName)
+	}
+
 	// A node stopped mid-block can leave prepared transactions behind, and
 	// Postgres will not drop a database that holds any.
 	rolledBack, err := pg.RollbackOrphanedPreparedTxns(ctx, conf)

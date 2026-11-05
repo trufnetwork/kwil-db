@@ -38,8 +38,9 @@ var mets metrics.DBMetrics = metrics.DB
 //     dedicated logical replication connection and slot. The Precommit method
 //     is used to retrieve the commit ID prior to Commit.
 //
-// DB requires a superuser connection to a Postgres database that can perform
-// administrative actions on the database.
+// DB requires a connection to a Postgres database as a role with the
+// REPLICATION attribute. See NewDB for what a role that is not a superuser
+// needs.
 type DB struct {
 	pool *Pool    // raw connection pool
 	repl *replMon // logical replication monitor for collecting commit IDs
@@ -145,8 +146,28 @@ var defaultSchemaFilter = func(schema string) bool {
 // NewDB creates a new Kwil DB instance. On creation, it will connect to the
 // configured postgres process, creating as many connections as specified by the
 // PoolConfig plus a special connection for a logical replication slot receiver.
-// The database user (postgresql "role") must be a super user for several
-// reasons: creating triggers, collations, and the replication publication.
+// The database user (postgresql "role") must have the REPLICATION attribute. A
+// superuser role creates everything kwild needs. Any other role should own the
+// database, and must not be a member of a superuser role or of
+// pg_execute_server_program, pg_read_server_files or pg_write_server_files. A
+// superuser must first set up for it what only a superuser may, and keep
+// ownership of what it creates:
+//
+//   - GRANT SET ON PARAMETER session_replication_role to the role, which a
+//     snapshot restore sets.
+//   - The publication kwild_repl FOR ALL TABLES, as ensurePublication creates
+//     it.
+//   - The function set_replica_identity(), with the body in
+//     sqlReplicaIdentityFuncBody, in a schema the superuser owns, and the event
+//     trigger set_replica_identity_on_create that runs it, as
+//     ensureFullReplicaIdentityTrigger creates them.
+//
+// For a role that is not a superuser, NewDB checks the memberships and each
+// item above, and stops with an error that says what to change. It stops the
+// same way on a prepared transaction that another role prepared, which only
+// that role or a superuser may roll back, and on a function that NewDB
+// creates, such as error(), that another role owns and that differs from
+// kwild's definition, which only its owner may replace.
 //
 // WARNING: There must only be ONE instance of a DB for a given postgres
 // database. Transactions that use the Precommit method update an internal table
@@ -183,9 +204,16 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 		return nil, err
 	}
 
-	// Verify that the db user/role is superuser with replication privileges.
-	if err = checkSuperuser(ctx, conn); err != nil {
+	// Verify that the db user/role has replication privileges, and see whether
+	// it is a superuser.
+	superuser, err := checkRole(ctx, conn)
+	if err != nil {
 		return nil, err
+	}
+	if superuser {
+		logger.Warnf("Postgres role %s is a superuser, so it may also run programs on the database server and "+
+			"read or write its files. kwild can run as a role with REPLICATION that is not a superuser; "+
+			"see NewDB in kwil-db's node/pg package for what such a role needs.", cfg.User)
 	}
 
 	if err = setTimezoneUTC(ctx, conn); err != nil {
@@ -193,7 +221,14 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 	}
 
 	// Clean up orphaned prepared transaction that may have been left over from
-	// an unclean shutdown. If we don't, postgres will hang on query.
+	// an unclean shutdown. If we don't, postgres will hang on query. A role
+	// that is not a superuser may roll back only those it prepared, so first
+	// check that no other role left any.
+	if !superuser {
+		if err = checkPreparedTxnOwners(ctx, conn); err != nil {
+			return nil, err
+		}
+	}
 	if _, err = rollbackPreparedTxns(ctx, conn); err != nil {
 		return nil, fmt.Errorf("failed to rollback orphaned prepared transactions: %w", err)
 	}
@@ -205,13 +240,27 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 
 	// Ensure all tables that are created with no primary key or unique index
 	// are altered to have "full replication identity" for UPDATE and DELETES.
-	if err = ensureFullReplicaIdentityTrigger(ctx, conn); err != nil {
-		return nil, fmt.Errorf("failed to create full replication identity trigger: %w", err)
+	// Only a superuser may create the event trigger that does this, so for any
+	// other role, check that the one a superuser set up is as kwild creates it
+	// and out of the role's reach.
+	if superuser {
+		if err = ensureFullReplicaIdentityTrigger(ctx, conn); err != nil {
+			return nil, fmt.Errorf("failed to create full replication identity trigger: %w", err)
+		}
+	} else if err = checkFullReplicaIdentityTrigger(ctx, conn); err != nil {
+		return nil, err
 	}
 
-	// Create the publication that is required for logical replication.
-	if err = ensurePublication(ctx, conn); err != nil {
-		return nil, fmt.Errorf("failed to create publication: %w", err)
+	// Create the publication that is required for logical replication. Only a
+	// superuser may create a publication for all tables, so for any other role,
+	// check that the one a superuser set up is as kwild creates it and out of
+	// the role's reach.
+	if superuser {
+		if err = ensurePublication(ctx, conn); err != nil {
+			return nil, fmt.Errorf("failed to create publication: %w", err)
+		}
+	} else if err = checkPublication(ctx, conn); err != nil {
+		return nil, err
 	}
 
 	if err = ensureUUIDExtension(ctx, conn); err != nil {
@@ -238,18 +287,20 @@ func NewDB(ctx context.Context, cfg *DBConfig) (*DB, error) {
 	}
 
 	// Register the error function so a statement like `SELECT error('boom');`
-	// will raise an exception and cause the query to error.
-	if err = ensureErrorPLFunc(ctx, conn); err != nil {
+	// will raise an exception and cause the query to error. A role that is not
+	// a superuser leaves this function and the ones below as they are when it
+	// may not replace them and they are as kwild defines them.
+	if err = ensureErrorPLFunc(ctx, conn, superuser); err != nil {
 		return nil, fmt.Errorf("failed to create ERROR function: %w", err)
 	}
 
 	// Register the notice function so a statement like `SELECT notice('boom');`
 	// will raise a notice that can be captured by a subscriber
-	if err = ensureNoticePLFuncs(ctx, conn); err != nil {
+	if err = ensureNoticePLFuncs(ctx, conn, superuser); err != nil {
 		return nil, fmt.Errorf("failed to create NOTICE function: %w", err)
 	}
 
-	if err = ensureUnixTimestampFuncs(ctx, conn); err != nil {
+	if err = ensureUnixTimestampFuncs(ctx, conn, superuser); err != nil {
 		return nil, fmt.Errorf("failed to create parse_unix_timestamp function: %w", err)
 	}
 

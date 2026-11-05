@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,6 +46,16 @@ END$$;`
 	// the preparedTxn struct.
 	sqlListPreparedTxns = `SELECT transaction, gid, prepared, owner, database FROM pg_prepared_xacts;`
 
+	// sqlForeignPreparedTxns lists the prepared transactions in the current
+	// database that another role prepared, each with that role. Postgres lets
+	// only the role that prepared a transaction, or a superuser, roll it back,
+	// and being a member of that role is not enough. The role is NULL when it
+	// has since been dropped.
+	sqlForeignPreparedTxns = `SELECT format('%L (prepared by %s)', gid, COALESCE(owner::text, 'a dropped role'))
+	FROM pg_prepared_xacts
+	WHERE database = current_database() AND owner IS DISTINCT FROM current_user
+	ORDER BY prepared, gid;`
+
 	sqlCreateCollationNOCASE = `CREATE COLLATION IF NOT EXISTS nocase (
 		provider = icu, locale = 'und-u-ks-level2', deterministic = false
 	);`
@@ -57,24 +68,29 @@ END$$;`
 	// Since max unix timestamp is 2147483648, we can cast to numeric(16, 6) to allow 10 digits
 	// before the decimal and 6 after.
 	sqlCreateParseUnixTimestampFunc = `CREATE OR REPLACE FUNCTION parse_unix_timestamp(timestamp_string text, format_string text)
-	RETURNS NUMERIC(16, 6) AS $$
+	RETURNS NUMERIC(16, 6) AS $$` + sqlParseUnixTimestampBody + `$$ LANGUAGE plpgsql;`
+
+	// sqlParseUnixTimestampBody, and sqlFormatUnixTimestampBody below, are the
+	// bodies of the functions, as Postgres keeps them in pg_proc.prosrc.
+	sqlParseUnixTimestampBody = `
 	BEGIN
 		RETURN EXTRACT(EPOCH FROM TO_TIMESTAMP(timestamp_string, format_string))::numeric(16, 6);
 	END;
-	$$ LANGUAGE plpgsql;`
+	`
 
 	// this is the inverse of parse_unix_timestamp
 	sqlCreateFormatUnixTimestampFunc = `CREATE OR REPLACE FUNCTION format_unix_timestamp(unix_timestamp NUMERIC(16, 6), format_string text)
-	RETURNS TEXT AS $$
+	RETURNS TEXT AS $$` + sqlFormatUnixTimestampBody + `$$ LANGUAGE plpgsql;`
+
+	sqlFormatUnixTimestampBody = `
 	BEGIN
 		RETURN TO_CHAR(TO_TIMESTAMP(unix_timestamp), format_string);
 	END;
-	$$ LANGUAGE plpgsql;`
+	`
 
-	sqlCreateOrReplaceReplicaIdentity = `CREATE OR REPLACE FUNCTION set_replica_identity()
-RETURNS event_trigger
-LANGUAGE plpgsql
-AS $$
+	// sqlReplicaIdentityFuncBody is the body of set_replica_identity(), as
+	// Postgres keeps it in pg_proc.prosrc.
+	sqlReplicaIdentityFuncBody = `
 DECLARE
     obj record;
 BEGIN
@@ -84,7 +100,45 @@ BEGIN
         EXECUTE 'ALTER TABLE ' || obj.object_identity || ' REPLICA IDENTITY FULL';
     END LOOP;
 END;
-$$;`
+`
+
+	sqlCreateOrReplaceReplicaIdentity = `CREATE OR REPLACE FUNCTION set_replica_identity()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $$` + sqlReplicaIdentityFuncBody + `$$;`
+
+	// sqlCheckReplicaIdentityTrigger reads whether the event trigger that
+	// ensureFullReplicaIdentityTrigger creates is enabled, fires on CREATE
+	// TABLE alone, and runs set_replica_identity() with the body given as $1.
+	// It also reads whether the current role is a member of none of the roles
+	// that own the trigger, its function and the function's schema, since an
+	// owner may drop or change them.
+	sqlCheckReplicaIdentityTrigger = `SELECT e.evtenabled = 'O',
+		e.evtevent = 'ddl_command_end' AND e.evttags IS NOT DISTINCT FROM ARRAY['CREATE TABLE'],
+		p.proname = 'set_replica_identity' AND l.lanname = 'plpgsql' AND p.prosrc = $1,
+		NOT (pg_has_role(e.evtowner, 'MEMBER') OR pg_has_role(p.proowner, 'MEMBER') OR pg_has_role(n.nspowner, 'MEMBER'))
+	FROM pg_event_trigger e
+	JOIN pg_proc p ON p.oid = e.evtfoid
+	JOIN pg_namespace n ON n.oid = p.pronamespace
+	JOIN pg_language l ON l.oid = p.prolang
+	WHERE e.evtname = 'set_replica_identity_on_create';`
+
+	// sqlCheckPublication reads whether the publication named $1 is for all
+	// tables and publishes every change as CREATE PUBLICATION does by default,
+	// and whether the current role is not a member of the role that owns it,
+	// since an owner may drop or change it.
+	sqlCheckPublication = `SELECT puballtables AND pubinsert AND pubupdate AND pubdelete AND pubtruncate AND NOT pubviaroot,
+		NOT pg_has_role(pubowner, 'MEMBER')
+	FROM pg_publication WHERE pubname = $1;`
+
+	// sqlServerRoleMemberships lists the superuser roles, and the roles that
+	// may run programs on the database server or read and write its files,
+	// that the current role is a member of.
+	sqlServerRoleMemberships = `SELECT CASE WHEN rolsuper THEN rolname::text || ' (a superuser)' ELSE rolname::text END
+	FROM pg_roles
+	WHERE (rolsuper OR rolname IN ('pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files'))
+		AND pg_has_role(oid, 'MEMBER')
+	ORDER BY rolname;`
 
 	sqlAlterAllWithReplicaIdentFull = `DO $$
 DECLARE
@@ -101,22 +155,68 @@ BEGIN
 END $$;`
 )
 
-func checkSuperuser(ctx context.Context, conn *pgx.Conn) error {
+// checkRole verifies that the db user/role has the REPLICATION attribute, and
+// reports whether it is a superuser. A role that is not a superuser must not
+// be a member of a superuser role, or of a role that may run programs on the
+// database server or read and write its files. It must also be allowed to set
+// session_replication_role, which a snapshot restore sets.
+func checkRole(ctx context.Context, conn *pgx.Conn) (superuser bool, err error) {
 	user := conn.Config().User
-	// Verify that the db user/role is superuser with replication privileges.
-	var isSuper, isReplicator bool
-	err := conn.QueryRow(ctx, `SELECT rolsuper, rolreplication FROM pg_roles WHERE rolname = $1;`, user).
-		Scan(&isSuper, &isReplicator)
+	var isReplicator bool
+	err = conn.QueryRow(ctx, `SELECT rolsuper, rolreplication FROM pg_roles WHERE rolname = $1;`, user).
+		Scan(&superuser, &isReplicator)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("postgres role does not exists: %v", user)
+			return false, fmt.Errorf("postgres role does not exists: %v", user)
 		}
-		return fmt.Errorf("unable to verify superuser status of postgres role %v: %w", user, err)
+		return false, fmt.Errorf("unable to verify superuser status of postgres role %v: %w", user, err)
 	}
-	if !isSuper || !isReplicator {
-		return fmt.Errorf("postgres role is not a superuser with replication: %v", user)
+	if !isReplicator {
+		return false, fmt.Errorf("postgres role does not have the REPLICATION attribute: %v", user)
 	}
-	return nil
+	if superuser {
+		return true, nil
+	}
+
+	rows, _ := conn.Query(ctx, sqlServerRoleMemberships)
+	memberOf, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return false, fmt.Errorf("unable to read the role memberships of postgres role %v: %w", user, err)
+	}
+	if len(memberOf) > 0 {
+		revoke := "that membership"
+		if len(memberOf) > 1 {
+			revoke = "those memberships"
+		}
+		return false, fmt.Errorf("postgres role %s is not a superuser but is a member of %s, and a role that is not "+
+			"a superuser must not be able to act as one, run programs on the database server, or read and write its "+
+			"files; revoke %s, then start kwild again", user, strings.Join(memberOf, ", "), revoke)
+	}
+
+	var maySetReplicationRole bool
+	err = conn.QueryRow(ctx, `SELECT has_parameter_privilege('session_replication_role', 'SET');`).
+		Scan(&maySetReplicationRole)
+	if err != nil {
+		return false, fmt.Errorf("unable to verify whether postgres role %v may set session_replication_role: %w", user, err)
+	}
+	if !maySetReplicationRole {
+		return false, errSuperuserSetup(conn.Config(),
+			"postgres role "+user+" may not set session_replication_role, which a snapshot restore sets")
+	}
+	return false, nil
+}
+
+// errSuperuserSetup is the error for a role that is not a superuser when
+// something only a superuser may set up is missing or not as kwild needs it.
+// It names all of that, so that one pass by a superuser sets up everything.
+func errSuperuserSetup(cfg *pgx.ConnConfig, problem string) error {
+	return fmt.Errorf("%s; postgres role %s is not a superuser, so a superuser must first run "+
+		"GRANT SET ON PARAMETER session_replication_role TO %[2]s, and create in database %[3]s, owned by "+
+		"the superuser: the publication %[4]s FOR ALL TABLES, the function set_replica_identity() as kwild "+
+		"defines it in a schema the superuser owns, and the event trigger set_replica_identity_on_create that "+
+		"runs it ON ddl_command_end WHEN TAG IN ('CREATE TABLE') (NewDB in kwil-db's node/pg package describes "+
+		"each); then start kwild again",
+		problem, cfg.User, cfg.Database, publicationName)
 }
 
 func ensureCollation(ctx context.Context, conn *pgx.Conn) error {
@@ -129,6 +229,30 @@ func ensurePublication(ctx context.Context, conn *pgx.Conn) error {
 	return err
 }
 
+// checkPublication is ensurePublication for a role that is not a superuser,
+// which may not create a publication for all tables. It verifies that the
+// publication is as ensurePublication creates it, and that the role is not a
+// member of the role that owns it.
+func checkPublication(ctx context.Context, conn *pgx.Conn) error {
+	var asCreated, notOwned bool
+	err := conn.QueryRow(ctx, sqlCheckPublication, publicationName).Scan(&asCreated, &notOwned)
+	var problem string
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		problem = "does not exist"
+	case err != nil:
+		return fmt.Errorf("failed to read publication: %w", err)
+	case !asCreated:
+		problem = "is not for all tables with every change published, as kwild creates it"
+	case !notOwned:
+		problem = "can be dropped or changed by postgres role " + conn.Config().User + ", which owns it or is a member of its owner"
+	default:
+		return nil
+	}
+	cfg := conn.Config()
+	return errSuperuserSetup(cfg, fmt.Sprintf("publication %s in database %s %s", publicationName, cfg.Database, problem))
+}
+
 func ensureUUIDExtension(ctx context.Context, conn *pgx.Conn) error {
 	_, err := conn.Exec(ctx, sqlCreateUUIDExtension)
 	return err
@@ -139,14 +263,20 @@ func ensurePgCryptoExtension(ctx context.Context, conn *pgx.Conn) error {
 	return err
 }
 
-func ensureUnixTimestampFuncs(ctx context.Context, conn *pgx.Conn) error {
-	_, err := conn.Exec(ctx, sqlCreateParseUnixTimestampFunc)
+var (
+	funcParseUnixTimestamp = &helperFunc{sqlCreateParseUnixTimestampFunc, "parse_unix_timestamp(text, text)",
+		"timestamp_string text, format_string text", "numeric", sqlParseUnixTimestampBody}
+	funcFormatUnixTimestamp = &helperFunc{sqlCreateFormatUnixTimestampFunc, "format_unix_timestamp(numeric, text)",
+		"unix_timestamp numeric, format_string text", "text", sqlFormatUnixTimestampBody}
+)
+
+func ensureUnixTimestampFuncs(ctx context.Context, conn *pgx.Conn, superuser bool) error {
+	err := ensureHelperFunc(ctx, conn, superuser, funcParseUnixTimestamp)
 	if err != nil {
 		return err
 	}
 
-	_, err = conn.Exec(ctx, sqlCreateFormatUnixTimestampFunc)
-	return err
+	return ensureHelperFunc(ctx, conn, superuser, funcFormatUnixTimestamp)
 }
 
 // ErrDatabaseInUse means another session is connected to the database.
@@ -182,6 +312,23 @@ func RollbackOrphanedPreparedTxns(ctx context.Context, cfg *ConnConfig) (int, er
 	}
 
 	return rollbackPreparedTxns(ctx, conn)
+}
+
+// MayCreateDatabase reports whether the configured role may create a database
+// owned by the role named owner, as CREATE DATABASE ... OWNER requires: whether
+// it is a superuser, or has the CREATEDB attribute and may SET ROLE to owner.
+func MayCreateDatabase(ctx context.Context, cfg *ConnConfig, owner string) (bool, error) {
+	conn, err := pgx.Connect(ctx, connString(cfg.Host, cfg.Port, cfg.User, cfg.Pass, cfg.DBName, false))
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close(ctx)
+
+	var may bool
+	err = conn.QueryRow(ctx, `SELECT u.rolsuper OR (u.rolcreatedb AND EXISTS (
+			SELECT FROM pg_roles o WHERE o.rolname = $1 AND pg_has_role(o.oid, 'SET')))
+		FROM pg_roles u WHERE u.rolname = current_user`, owner).Scan(&may)
+	return may, err
 }
 
 // sqlListSchemas lists the schemas in the current database, leaving out the
@@ -304,6 +451,26 @@ type preparedTxn struct {
 	Database string    `db:"database"`
 }
 
+// checkPreparedTxnOwners is for a role that is not a superuser, which may roll
+// back only the prepared transactions that it prepared. It returns an error
+// that names each prepared transaction in the database that another role
+// prepared, so that rollbackPreparedTxns does not stop part way through.
+func checkPreparedTxnOwners(ctx context.Context, conn *pgx.Conn) error {
+	rows, _ := conn.Query(ctx, sqlForeignPreparedTxns)
+	foreign, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("failed to read prepared transactions: %w", err)
+	}
+	if len(foreign) == 0 {
+		return nil
+	}
+	cfg := conn.Config()
+	return fmt.Errorf("postgres role %s is not a superuser, so it may roll back only the prepared transactions it "+
+		"prepared, but database %s holds prepared transactions that other roles prepared: %s; a superuser must "+
+		"first run ROLLBACK PREPARED for each in database %[2]s, then start kwild again",
+		cfg.User, cfg.Database, strings.Join(foreign, ", "))
+}
+
 func rollbackPreparedTxns(ctx context.Context, conn *pgx.Conn) (int, error) {
 	rows, _ := conn.Query(ctx, sqlListPreparedTxns) // pgx ensures rows is readable and rows.Err contains any error
 	preparedTxns, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[preparedTxn])
@@ -384,6 +551,41 @@ func ensureFullReplicaIdentityTrigger(ctx context.Context, conn *pgx.Conn) error
 
 	_, err = conn.Exec(ctx, sqlCreateEvtTriggerReplIdent)
 	return err
+}
+
+// checkFullReplicaIdentityTrigger is ensureFullReplicaIdentityTrigger for a
+// role that is not a superuser, which may not create an event trigger. It
+// verifies that the trigger and its function are as
+// ensureFullReplicaIdentityTrigger creates them. It compares the function's
+// name, language and body, so the function may be in another schema or fix its
+// own search_path. It also verifies that the role is not a member of the roles
+// that own the trigger, the function and the function's schema, so that the
+// role may neither drop nor change them.
+func checkFullReplicaIdentityTrigger(ctx context.Context, conn *pgx.Conn) error {
+	var enabled, onCreateTable, runsFunc, notOwned bool
+	err := conn.QueryRow(ctx, sqlCheckReplicaIdentityTrigger, sqlReplicaIdentityFuncBody).
+		Scan(&enabled, &onCreateTable, &runsFunc, &notOwned)
+	var problem string
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		problem = "does not exist"
+	case err != nil:
+		return fmt.Errorf("failed to read full replication identity trigger: %w", err)
+	case !enabled:
+		problem = "is not enabled as kwild creates it"
+	case !onCreateTable:
+		problem = "does not fire on CREATE TABLE alone"
+	case !runsFunc:
+		problem = "does not run set_replica_identity() as kwild defines it"
+	case !notOwned:
+		problem = "can be dropped or changed by postgres role " + conn.Config().User +
+			", which owns, or is a member of the owner of, the trigger, its function or the function's schema"
+	default:
+		return nil
+	}
+	cfg := conn.Config()
+	return errSuperuserSetup(cfg, fmt.Sprintf("event trigger set_replica_identity_on_create in database %s %s",
+		cfg.Database, problem))
 }
 
 func ensureSentryTable(ctx context.Context, conn *pgx.Conn) error {
