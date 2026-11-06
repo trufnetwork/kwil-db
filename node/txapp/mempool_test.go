@@ -221,3 +221,49 @@ func Test_MempoolMAAExecActivationGate(t *testing.T) {
 	err = m.applyTransaction(txCtx, maaTx, db, rebroadcast)
 	require.NoError(t, err)
 }
+
+func Test_MempoolRefusesUndecodableArgs(t *testing.T) {
+	privkey, pubkey, _ := crypto.GenerateSecp256k1Key(nil)
+	m := &mempool{
+		accounts:   make(map[string]*types.Account),
+		accountMgr: &mockAccount{},
+		log:        log.DiscardLogger,
+		nodeIdent:  auth.GetNodeSigner(privkey),
+	}
+	txCtx := &common.TxContext{
+		Ctx:    context.Background(),
+		Caller: "A",
+		BlockContext: &common.BlockContext{
+			Height: 5,
+			ChainContext: &common.ChainContext{NetworkParameters: &types.NetworkParameters{
+				Leader:           types.PublicKey{PublicKey: pubkey},
+				DisabledGasCosts: true,
+			}},
+		},
+	}
+	db := &mockDb{}
+	rebroadcast := &mockRebroadcast{}
+
+	// a bool with the not-null marker and no value byte, and an empty element
+	badBool := &types.EncodedValue{Type: types.DataType{Name: "bool"}, Data: [][]byte{{1}}}
+	emptyText := &types.EncodedValue{Type: types.DataType{Name: "text"}, Data: [][]byte{{}}}
+	good, err := types.EncodeValue("x")
+	require.NoError(t, err)
+
+	execTx := func(sender string, nonce uint64, args ...*types.EncodedValue) *types.Transaction {
+		payload, err := (&types.ActionExecution{Namespace: "main", Action: "a", Arguments: [][]*types.EncodedValue{args}}).MarshalBinary()
+		require.NoError(t, err)
+		tx := newTx(t, nonce, sender)
+		tx.Body.PayloadType = types.PayloadTypeExecute
+		tx.Body.Payload = payload
+		return tx
+	}
+
+	for name, val := range map[string]*types.EncodedValue{"bool without value byte": badBool, "empty element": emptyText} {
+		err := m.applyTransaction(txCtx, execTx("A", 1, good, val), db, rebroadcast)
+		require.ErrorIs(t, err, errArgsNotDecodable, name)
+	}
+
+	// arguments that decode go on to the usual nonce handling
+	require.NoError(t, m.applyTransaction(txCtx, execTx("B", 1, good), db, rebroadcast))
+}
