@@ -2108,6 +2108,12 @@ func (e *extensionInfo) lockTokens(ctx context.Context, app *common.App, id *typ
 		return err
 	}
 
+	// an account that never held this token has no balances row, and
+	// balanceOf returns nil for it. Treat that as a zero balance.
+	if bal == nil {
+		return fmt.Errorf("insufficient balance")
+	}
+
 	cmp, err := bal.Cmp(amount)
 	if err != nil {
 		return err
