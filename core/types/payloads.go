@@ -954,7 +954,7 @@ func encodeNotNull(v []byte) []byte {
 
 func decodeNullable(v []byte) (val []byte, null bool, err error) {
 	if len(v) == 0 {
-		panic("empty byte slice")
+		return nil, false, errors.New("empty value, expected a leading null marker byte")
 	}
 
 	if v[0] == 0 {
@@ -987,7 +987,7 @@ func decodeAnyArr[T any](v [][]byte, typename string, metadata [2]uint16) ([]*T,
 
 		decT, ok := dec.(*T)
 		if !ok {
-			panic(fmt.Sprintf("expected type %T, got %T", decT, dec))
+			return nil, fmt.Errorf("expected type %T, got %T", decT, dec)
 		}
 
 		arr = append(arr, decT)
@@ -1025,6 +1025,9 @@ func decodeScalar(data []byte, typename string, metadata [2]uint16) (any, error)
 		copy(uuid[:], data)
 		return &uuid, nil
 	case BoolType.Name:
+		if len(data) == 0 {
+			return nil, errors.New("bool must have a value byte")
+		}
 		bb := data[0] == 1
 		return &bb, nil
 	case NullType.Name:

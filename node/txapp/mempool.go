@@ -60,6 +60,46 @@ func (m *mempool) accountInfoSafe(ctx context.Context, tx sql.Executor, acctID *
 	return m.accountInfo(ctx, tx, acctID)
 }
 
+// errArgsNotDecodable is returned when an action call's arguments do not decode.
+var errArgsNotDecodable = errors.New("transaction arguments do not decode")
+
+// checkArgsDecode decodes the arguments of an execute or maa_exec payload the
+// way the route does when the transaction runs in a block. A transaction whose
+// arguments fail here would only fail in the block, so it is not admitted, and
+// a node that cannot decode such a value never sees it in a block.
+func checkArgsDecode(tx *types.Transaction) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("decoding arguments panicked: %v", p)
+		}
+	}()
+	switch tx.Body.PayloadType {
+	case types.PayloadTypeExecute:
+		action := &types.ActionExecution{}
+		if action.UnmarshalBinary(tx.Body.Payload) != nil {
+			return nil // the route fails it with an encoding error, without decoding
+		}
+		for _, arg := range action.Arguments {
+			for _, val := range arg {
+				if _, err := val.Decode(); err != nil {
+					return err
+				}
+			}
+		}
+	case types.PayloadTypeMAAExec:
+		payload := &types.MAAExec{}
+		if payload.UnmarshalBinary(tx.Body.Payload) != nil {
+			return nil // the route fails it with an encoding error, without decoding
+		}
+		for _, val := range payload.Arguments {
+			if _, err := val.Decode(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // applyTransaction validates account specific info and applies valid transactions to the mempool state.
 func (m *mempool) applyTransaction(ctx *common.TxContext, tx *types.Transaction, dbTx sql.Executor, rebroadcaster Rebroadcaster) error {
 	// if the network is in a migration, there are numerous
@@ -99,6 +139,12 @@ func (m *mempool) applyTransaction(ctx *common.TxContext, tx *types.Transaction,
 		if _, err := maaExecActivationGate(ctx); err != nil {
 			return err
 		}
+	}
+
+	// Arguments that do not decode would fail the transaction in the block.
+	// Refusing them here keeps them out of blocks altogether.
+	if err := checkArgsDecode(tx); err != nil {
+		return fmt.Errorf("%w: %v", errArgsNotDecodable, err)
 	}
 
 	// Migration proposals and its approvals are not allowed once the migration is approved
