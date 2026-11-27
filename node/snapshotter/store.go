@@ -83,6 +83,7 @@ type SnapshotStore struct {
 
 type DBSnapshotter interface {
 	CreateSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludeTables []string, excludeTableData []string) (*Snapshot, error)
+	StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludeTables []string, excludeTableData []string) (func() (*Snapshot, error), error)
 }
 
 func NewSnapshotStore(cfg *SnapshotConfig, bs BlockStore, ns NamespaceManager, logger log.Logger) (*SnapshotStore, error) {
@@ -155,22 +156,41 @@ func (s *SnapshotStore) GetSnapshot(height uint64, _ uint32) *Snapshot {
 // schemas: list of schemas to include in the snapshot
 // excludedTables: list of tables to exclude from the snapshot
 // excludeTableData: list of tables to include schema but exclude data from the snapshot
+// It is StartSnapshot followed by its finish.
 func (s *SnapshotStore) CreateSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) error {
-	// Create a snapshot of the database at the given height
-	snapshot, err := s.snapshotter.CreateSnapshot(ctx, height, snapshotID, schemas, excludedTables, excludeTableData)
+	finish, err := s.StartSnapshot(ctx, height, snapshotID, schemas, excludedTables, excludeTableData)
+	if err != nil {
+		return err
+	}
+	return finish()
+}
+
+// StartSnapshot starts a snapshot at the given height and returns once pg_dump
+// holds the exported snapshot and the locks on the tables it dumps. finish
+// writes and registers the snapshot, and must be called exactly once. The
+// snapshot is listed only after finish succeeds.
+func (s *SnapshotStore) StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) (finish func() error, err error) {
+	finishDump, err := s.snapshotter.StartSnapshot(ctx, height, snapshotID, schemas, excludedTables, excludeTableData)
 	if err != nil {
 		os.RemoveAll(snapshotHeightDir(s.cfg.SnapshotDir, height))
-		return fmt.Errorf("failed to create snapshot at height %d: %w", height, err)
+		return nil, fmt.Errorf("failed to start snapshot at height %d: %w", height, err)
 	}
 
-	// Register the snapshot
-	err = s.RegisterSnapshot(snapshot)
-	if err != nil {
-		os.RemoveAll(snapshotHeightDir(s.cfg.SnapshotDir, height))
-		return fmt.Errorf("failed to register snapshot at height %d: %w", height, err)
-	}
+	return func() error {
+		snapshot, err := finishDump()
+		if err != nil {
+			os.RemoveAll(snapshotHeightDir(s.cfg.SnapshotDir, height))
+			return fmt.Errorf("failed to create snapshot at height %d: %w", height, err)
+		}
 
-	return nil
+		err = s.RegisterSnapshot(snapshot)
+		if err != nil {
+			os.RemoveAll(snapshotHeightDir(s.cfg.SnapshotDir, height))
+			return fmt.Errorf("failed to register snapshot at height %d: %w", height, err)
+		}
+
+		return nil
+	}, nil
 }
 
 // RegisterSnapshot registers the existing snapshot in the snapshot store.

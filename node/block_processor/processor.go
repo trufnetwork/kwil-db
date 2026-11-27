@@ -66,6 +66,11 @@ type BlockProcessor struct {
 	mempool     Mempool // only for rechecks
 	log         log.Logger
 
+	// snapDone is closed when the background snapshot dump ends, and
+	// snapCancel stops it. Both are guarded by mtx.
+	snapDone   chan struct{}
+	snapCancel context.CancelFunc
+
 	// broadcast function to send transactions to the network
 	broadcastTxFn BroadcastTxFn
 	// Whitelist functions for adding and removing peers
@@ -179,6 +184,12 @@ func (bp *BlockProcessor) SetCallbackFns(broadcastFn BroadcastTxFn, addPeer, rem
 func (bp *BlockProcessor) Close() error {
 	bp.mtx.Lock()
 	defer bp.mtx.Unlock()
+
+	// Stop a snapshot dump that is still running and wait for it to end.
+	if bp.snapDone != nil {
+		bp.snapCancel()
+		<-bp.snapDone
+	}
 
 	if err := bp.db.RollbackAll(context.Background()); err != nil {
 		return fmt.Errorf("failed to rollback transactions on close: %w", err)
@@ -741,7 +752,8 @@ func (bp *BlockProcessor) Commit(ctx context.Context, req *ktypes.CommitRequest)
 		return err
 	}
 
-	// Snapshots:
+	// Snapshots: start one if due. It is written in the background once
+	// pg_dump holds the snapshot.
 	if err := bp.snapshotDB(ctx, req.Height); err != nil {
 		bp.log.Warn("Failed to create snapshot of the database", "err", err)
 	}
@@ -781,28 +793,61 @@ var (
 	statsyncExcludedTables   = []string{"kwild_internal.sentry"}
 )
 
+// snapshotDB starts a snapshot dump if one is due and none is running. It must
+// be called with mtx held. It returns once pg_dump holds the snapshot and its
+// table locks, and the rest of the dump runs in the background.
 func (bp *BlockProcessor) snapshotDB(ctx context.Context, height int64) error {
-	snapshotsDue := bp.snapshotter.Enabled() && bp.snapshotter.IsSnapshotDue(uint64(height))
-	// snapshotsDue = snapshotsDue && height > max(1, a.cfg.InitialHeight)
-
-	if snapshotsDue {
-		// we make a snapshot tx but don't directly use it. This is because under the hood,
-		// we are using the pg_dump executable to create the snapshot, and we are simply
-		// giving pg_dump the snapshot ID to guarantee it has an isolated view of the database.
-		snapshotTx, snapshotId, err := bp.db.BeginSnapshotTx(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to start snapshot tx: %w", err)
-		}
-		defer snapshotTx.Rollback(ctx) // always rollback, since this is just for view isolation
-
-		err = bp.snapshotter.CreateSnapshot(ctx, uint64(height), snapshotId, statesyncSnapshotSchemas, statsyncExcludedTables, nil)
-		if err != nil {
-			return err
-		} else {
-			bp.log.Info("created snapshot", "height", height, "snapshot_id", snapshotId)
-			return nil
+	if bp.snapDone != nil {
+		select {
+		case <-bp.snapDone:
+		default:
+			return nil // the previous dump is still running
 		}
 	}
+
+	snapshotsDue := bp.snapshotter.Enabled() && bp.snapshotter.IsSnapshotDue(uint64(height))
+	// snapshotsDue = snapshotsDue && height > max(1, a.cfg.InitialHeight)
+	if !snapshotsDue {
+		return nil
+	}
+
+	snapCtx, cancel := context.WithCancel(ctx)
+	start := time.Now()
+
+	// we make a snapshot tx but don't directly use it. This is because under the hood,
+	// we are using the pg_dump executable to create the snapshot, and we are simply
+	// giving pg_dump the snapshot ID to guarantee it has an isolated view of the database.
+	snapshotTx, snapshotId, err := bp.db.BeginSnapshotTx(snapCtx)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to start snapshot tx: %w", err)
+	}
+
+	finish, err := bp.snapshotter.StartSnapshot(snapCtx, uint64(height), snapshotId, statesyncSnapshotSchemas, statsyncExcludedTables, nil)
+	// pg_dump has imported the snapshot once StartSnapshot returns, so the
+	// snapshot tx is no longer needed.
+	if err2 := snapshotTx.Rollback(ctx); err2 != nil {
+		bp.log.Warn("Failed to rollback the snapshot tx", "err", err2)
+	}
+	if err != nil {
+		cancel()
+		return err
+	}
+	bp.log.Info("snapshot dump started", "height", height, "held", time.Since(start))
+
+	done := make(chan struct{})
+	bp.snapDone, bp.snapCancel = done, cancel
+	go func() {
+		defer close(done)
+		defer cancel()
+
+		start := time.Now()
+		if err := finish(); err != nil {
+			bp.log.Warn("Failed to create snapshot of the database", "height", height, "err", err)
+			return
+		}
+		bp.log.Info("created snapshot", "height", height, "snapshot_id", snapshotId, "took", time.Since(start))
+	}()
 
 	return nil
 }

@@ -91,23 +91,55 @@ func NewSnapshotter(cfg *config.DBConfig, dir string, namespaceMgr NamespaceMana
 // huge I/O spikes caused by materialising intermediate stage files in older
 // versions. By wiring the stages with pipes we cap disk usage to the final
 // chunk artefacts and surface errors as soon as a downstream stage fails.
+// It is StartSnapshot followed by its finish.
 func (s *Snapshotter) CreateSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludeTables []string, excludeTableData []string) (*Snapshot, error) {
+	finish, err := s.StartSnapshot(ctx, height, snapshotID, schemas, excludeTables, excludeTableData)
+	if err != nil {
+		return nil, err
+	}
+	return finish()
+}
+
+// StartSnapshot starts pg_dump and returns once pg_dump has written its first
+// byte. In plain format pg_dump writes nothing before it has imported the
+// snapshot, locked every table it dumps and read the catalog and the sequence
+// values, so the exported snapshot may be released and blocks may be written
+// once StartSnapshot returns. ctx owns the pg_dump process until finish
+// returns. finish runs the rest of the pipeline and must be called exactly
+// once.
+func (s *Snapshotter) StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludeTables []string, excludeTableData []string) (finish func() (*Snapshot, error), err error) {
 	// create snapshot directory
 	snapshotDir := snapshotHeightDir(s.snapshotDir, height)
 	formatDir := snapshotFormatDir(s.snapshotDir, height, DefaultSnapshotFormat)
 	chunkDir := snapshotChunkDir(s.snapshotDir, height, DefaultSnapshotFormat)
-	err := os.MkdirAll(chunkDir, 0755)
+	err = os.MkdirAll(chunkDir, 0755)
 	if err != nil {
 		return nil, err
 	}
 
 	// Stage1: Stream the database snapshot via pg_dump
-	dumpReader, waitDump, err := s.dbSnapshotStream(ctx, height, DefaultSnapshotFormat, snapshotID, schemas, excludeTables, excludeTableData)
+	dumpOut, waitDump, err := s.dbSnapshotStream(ctx, height, DefaultSnapshotFormat, snapshotID, schemas, excludeTables, excludeTableData)
 	if err != nil {
 		os.RemoveAll(snapshotDir)
 		return nil, err
 	}
 
+	dumpReader := bufio.NewReader(dumpOut)
+	if _, err := dumpReader.Peek(1); err != nil {
+		dumpOut.Close()
+		waitErr := waitDump()
+		os.RemoveAll(snapshotDir)
+		return nil, errors.Join(fmt.Errorf("pg_dump wrote no output: %w", err), waitErr, ctx.Err())
+	}
+
+	return func() (*Snapshot, error) {
+		return s.finishSnapshot(ctx, height, snapshotDir, formatDir, dumpOut, dumpReader, waitDump)
+	}, nil
+}
+
+// finishSnapshot streams the pg_dump output through sanitisation, compression
+// and chunking, and waits for pg_dump to exit.
+func (s *Snapshotter) finishSnapshot(ctx context.Context, height uint64, snapshotDir, formatDir string, dumpOut io.Closer, dumpReader io.Reader, waitDump func() error) (*Snapshot, error) {
 	sanitizedReader, sanitizedWriter := io.Pipe()
 	compressedReader, compressedWriter := io.Pipe()
 	hashCh := make(chan []byte, 1)
@@ -115,12 +147,24 @@ func (s *Snapshotter) CreateSnapshot(ctx context.Context, height uint64, snapsho
 	var snapshot *Snapshot
 	group, groupCtx := errgroup.WithContext(ctx)
 
+	// Each stage closes only its own writer, so a stage that stops leaves the
+	// stage writing into it blocked. Close every reader once groupCtx is done,
+	// which is when a stage fails, ctx is cancelled or all stages have returned,
+	// so that no stage stays blocked.
+	stop := context.AfterFunc(groupCtx, func() {
+		cause := context.Cause(groupCtx)
+		sanitizedReader.CloseWithError(cause)
+		compressedReader.CloseWithError(cause)
+		dumpOut.Close()
+	})
+	defer stop()
+
 	group.Go(func() error {
 		defer sanitizedWriter.Close()
 		defer close(hashCh)
 
 		hash, err := s.sanitizeDumpStream(groupCtx, height, DefaultSnapshotFormat, formatDir, dumpReader, sanitizedWriter)
-		dumpReader.Close()
+		dumpOut.Close()
 		if err != nil {
 			sanitizedWriter.CloseWithError(err)
 			_ = waitDump()

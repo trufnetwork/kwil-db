@@ -3,6 +3,7 @@ package snapshotter
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 type MockSnapshotter struct {
 	snapshotDir string
+	finishErr   error // returned by the finish of StartSnapshot after it writes the files
 }
 
 func NewMockSnapshotter(dir string) *MockSnapshotter {
@@ -57,6 +59,16 @@ func (m *MockSnapshotter) CreateSnapshot(ctx context.Context, height uint64, sna
 	}
 
 	return snapshot, nil
+}
+
+func (m *MockSnapshotter) StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludeTables []string, excludeTableData []string) (func() (*Snapshot, error), error) {
+	return func() (*Snapshot, error) {
+		snapshot, err := m.CreateSnapshot(ctx, height, snapshotID, schemas, excludeTables, excludeTableData)
+		if err == nil && m.finishErr != nil {
+			return nil, m.finishErr
+		}
+		return snapshot, err
+	}, nil
 }
 
 func NewMockSnapshotStore(dir string, cfg *SnapshotConfig, logger log.Logger) (*SnapshotStore, error) {
@@ -122,6 +134,38 @@ func TestCreateSnapshots(t *testing.T) {
 	for _, snap := range snaps {
 		require.NotEqual(t, uint64(1), snap.Height)
 	}
+}
+
+func TestStoreStartSnapshotRegistersOnlyAfterFinish(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &SnapshotConfig{
+		Enable:          true,
+		RecurringHeight: 1,
+		SnapshotDir:     dir,
+		MaxSnapshots:    1,
+	}
+	store, err := NewMockSnapshotStore(dir, cfg, log.DiscardLogger)
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, store.CreateSnapshot(ctx, 1, "snapshot1", nil, nil, nil))
+
+	finish, err := store.StartSnapshot(ctx, 2, "snapshot2", nil, nil, nil)
+	require.NoError(t, err)
+	require.Nil(t, store.GetSnapshot(2, 0))
+	require.True(t, store.IsSnapshotDue(2))
+
+	require.NoError(t, finish())
+	snaps := store.ListSnapshots()
+	require.Len(t, snaps, 1) // height 1 pruned by MaxSnapshots
+	require.Equal(t, uint64(2), snaps[0].Height)
+
+	// A failed finish registers nothing and removes the snapshot directory.
+	store.snapshotter.(*MockSnapshotter).finishErr = errors.New("disk full")
+	finish, err = store.StartSnapshot(ctx, 3, "snapshot3", nil, nil, nil)
+	require.NoError(t, err)
+	require.ErrorContains(t, finish(), "disk full")
+	require.Nil(t, store.GetSnapshot(3, 0))
+	require.NoDirExists(t, snapshotHeightDir(dir, 3))
 }
 
 func TestRegisterSnapshot(t *testing.T) {
