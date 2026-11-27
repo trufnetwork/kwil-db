@@ -306,6 +306,10 @@ func (s *snapshotStore) CreateSnapshot(ctx context.Context, height uint64, snaps
 	return nil
 }
 
+func (s *snapshotStore) StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) (func() error, error) {
+	return func() error { return nil }, nil
+}
+
 func (s *snapshotStore) snapshotCatalogRequestHandler(stream network.Stream) {
 	defer stream.Close()
 	stream.SetReadDeadline(time.Now().Add(time.Second))

@@ -102,6 +102,17 @@ jobs:
           version: "latest"
           args: ./... ./core/... --timeout=10m --config=.golangci.yml
 
+      # The snapshot tests need pg_dump 16, the same major version as the
+      # server. The runner's own pg_dump is newer, so run the one in the
+      # postgres service container.
+      - name: Put pg_dump 16 on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/pg16"
+          printf '#!/bin/sh\nexec docker exec -i %s pg_dump "$@"\n' "${{ job.services.postgres.id }}" > "$RUNNER_TEMP/pg16/pg_dump"
+          chmod +x "$RUNNER_TEMP/pg16/pg_dump"
+          echo "$RUNNER_TEMP/pg16" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pg16/pg_dump" --version
+
       # unit test
       - name: Run unit test
         run: |

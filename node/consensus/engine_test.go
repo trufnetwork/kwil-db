@@ -1246,8 +1246,8 @@ func (s *snapshotStore) ListSnapshots() []*snapshotter.Snapshot {
 	return nil
 }
 
-func (s *snapshotStore) CreateSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) error {
-	return nil
+func (s *snapshotStore) StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) (func() error, error) {
+	return func() error { return nil }, nil
 }
 
 func (s *snapshotStore) IsSnapshotDue(height uint64) bool {

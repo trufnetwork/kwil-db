@@ -77,8 +77,11 @@ type SnapshotModule interface {
 	// Returns the snapshot chunk of index chunkId at a given height
 	LoadSnapshotChunk(height uint64, format uint32, chunkID uint32) ([]byte, error)
 
-	// CreateSnapshot creates a snapshot of the current state.
-	CreateSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) error
+	// StartSnapshot starts a snapshot of the state exported as snapshotID. It
+	// returns once pg_dump holds the exported snapshot and the locks on the
+	// tables it dumps. ctx owns the dump until finish returns. finish writes and
+	// registers the snapshot, and must be called exactly once.
+	StartSnapshot(ctx context.Context, height uint64, snapshotID string, schemas, excludedTables []string, excludeTableData []string) (finish func() error, err error)
 
 	// IsSnapshotDue returns true if a snapshot is due at the given height.
 	IsSnapshotDue(height uint64) bool
